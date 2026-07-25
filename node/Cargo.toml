@@ -8,9 +8,9 @@ edition = "2021"
 [dependencies]
 bincode = "1"
 config = { package = "config", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-mpc = {package = "mpc", path = "../protocol/mpc"}
+mpc = {package = "mpc", path = "../mpc"}
 
-protocol = { package = "protocol", path="../protocol"}
+fields = { package = "fields", path="../fields"}
 util = { package = "util", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
 
 anyhow = "1"

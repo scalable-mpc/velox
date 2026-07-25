@@ -2,7 +2,7 @@
 # This should only list projects that are not
 # in the dependency tree in any other way
 members = [
-    "protocol",
+    "fields",
     "node",
     "config"
 ]

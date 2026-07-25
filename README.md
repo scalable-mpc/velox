@@ -125,12 +125,13 @@ This repository implements scalable anonymous broadcast using asynchronous Multi
 
 ```
 mpc/
-├── protocol/           # Core MPC protocol implementations
+├── fields/             # Finite-field arithmetic, polynomials, and GEMM (CPU/GPU)
+├── secret_sharing/     # Secret-sharing building blocks
 │   ├── acss_ab/       # Asynchronous Complete Secret Sharing with Abort
 │   ├── avid_ab/       # Asynchronous Verifiable Information Dispersal with Abort
-│   ├── mpc/           # Main MPC protocols(multiplication, online phase, verification)
 │   └── sh2t/          # Degree-2t sharing with Abort
 │
+├── mpc/               # Main MPC protocols (multiplication, online phase, verification)
 ├── node/              # Executable node implementation and coordination logic
 ├── benchmark/         # AWS benchmarking infrastructure and analysis tools
 ├── testdata/          # Configuration files and test inputs for different node setups

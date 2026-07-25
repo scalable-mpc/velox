@@ -1,0 +1,59 @@
+[package]
+name = "fields"
+version = "0.1.0"
+authors = ["akhilsb <akhilsai2712@gmail.com>"]
+edition = "2021"
+build = "build.rs"
+
+[features]
+default = []
+# Opt-in CUDA GPU GEMM. Requires NVIDIA hardware, CUDA Toolkit ≥ 10.0, and nvcc on
+# $PATH at build time (set $CUDA_HOME if non-default). On non-CUDA hosts (e.g. macOS
+# Apple Silicon) leave the feature off — build.rs is a no-op without it.
+gpu = []
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+config = { package = "config", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+types = { package = "types", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+crypto = { package = "crypto", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+tokio = { version = "1.0", features = ["full"] }
+futures = "^0.3"
+bytes = "1.0"
+tokio-util = "0.6"
+tokio-stream = "0.1"
+serde = "1.0.70"
+serde_json = "1.0" # For JSON serialization
+log="*"
+priority-queue="1"
+fnv = "1"
+reed-solomon-erasure = "4.0"
+num-traits = "0.2.19"
+
+
+# Local randomness
+rand = "0.6"
+rand_core = "0.6.4"
+rand_chacha = "0.3.1"
+
+# Big Integers for field operations
+num-bigint-dig = "0.4"
+num-bigint = {version = "0.2.6", features = ["rand"]}
+
+network = { package = "network", git = "https://github.com/akhilsb/libnet-rs.git" }
+async-trait = "0"
+futures-util = "0"
+
+# Polynomial Operations with FFT
+lambdaworks-math = "=0.13.0"
+
+# Data parallelism
+rayon = "=1.10.0"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "field_gemm"
+harness = false
