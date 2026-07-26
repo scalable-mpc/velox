@@ -1,3 +1,4 @@
+use application::{Application, Multiplication};
 use std::ops::Mul;
 
 use crypto::{hash::{Hash}};
@@ -5,21 +6,118 @@ use lambdaworks_math::{polynomial::Polynomial};
 use fields::{LargeField};
 use types::{Replica};
 
-use crate::{Context, msg::ProtMsg};
+use crate::{Context, msg::ProtMsg, protocol::online_phase::APPLICATION_DEPTH_OFFSET};
 
 use super::mult_state::SingleDepthState;
 
-impl Context{
+impl<A: Application> Context<A>{
+    /// Multiplication driven by the engine itself — random bit squaring and
+    /// tuple verification — which draws its preprocessing from the engine's pool.
     pub async fn choose_multiplication_protocol(&mut self,a_shares: Vec<Vec<LargeField>>, b_shares: Vec<Vec<LargeField>>, depth: usize){
+        let (rand_needed, zero_needed) = self.multiplication_preprocessing_requirement(a_shares.len());
+        let Some((rand_sharings, zero_sharings)) = self.take_multiplication_preprocessing(rand_needed, zero_needed) else {
+            log::error!("Not enough preprocessed sharings for the multiplication at depth {}: need {} random and {} zero sharings, {} and {} left",
+                depth, rand_needed, zero_needed,
+                self.rand_sharings_state.rand_sharings_mult.len(),
+                self.rand_sharings_state.rand_2t_sharings_mult.len());
+            return;
+        };
+        self.multiply_with_preprocessing(a_shares, b_shares, depth, rand_sharings, zero_sharings).await;
+    }
+
+    /// Multiplication scheduled by the application. The batch carries the
+    /// preprocessing it consumes — the engine's pool is reserved for random bit
+    /// generation and verification — and its depth is shifted into the
+    /// application range before it reaches the multiplication protocol.
+    pub async fn multiply_application_batch(&mut self, mult: Multiplication<LargeField>){
+        let input = &mult.input;
+        if !input.x.1.is_empty() || !input.y.1.is_empty() || !input.x_ip.1.is_empty() || !input.y_ip.1.is_empty(){
+            log::warn!("Application supplied second-half sharings at depth {}, but Velox sharings are unpacked; ignoring them", input.depth);
+        }
+
+        // Element-wise gates multiply one sharing by one sharing; inner-product
+        // gates multiply two vectors of sharings into a single output.
+        let mut a_shares: Vec<Vec<LargeField>> = input.x.0.iter().map(|x| vec![x.clone()]).collect();
+        let mut b_shares: Vec<Vec<LargeField>> = input.y.0.iter().map(|y| vec![y.clone()]).collect();
+        a_shares.extend(input.x_ip.0.iter().cloned());
+        b_shares.extend(input.y_ip.0.iter().cloned());
+
+        if a_shares.is_empty(){
+            log::warn!("Application scheduled an empty multiplication batch at depth {}; nothing to do", input.depth);
+            return;
+        }
+
+        let depth = input.depth + APPLICATION_DEPTH_OFFSET;
+        let (rand_needed, zero_needed) = self.multiplication_preprocessing_requirement(a_shares.len());
+        if mult.random_sharings.len() < rand_needed || mult.random_zero_sharings.len() < zero_needed{
+            log::error!("Application supplied too little preprocessing for its {} gates at depth {}: need {} random and {} zero sharings, got {} and {}",
+                a_shares.len(), input.depth, rand_needed, zero_needed,
+                mult.random_sharings.len(), mult.random_zero_sharings.len());
+            return;
+        }
+
+        self.multiply_with_preprocessing(
+            a_shares,
+            b_shares,
+            depth,
+            mult.random_sharings.clone(),
+            mult.random_zero_sharings.clone()
+        ).await;
+    }
+
+    /// Run a multiplication batch against preprocessing the caller supplies.
+    pub async fn multiply_with_preprocessing(&mut self,
+        a_shares: Vec<Vec<LargeField>>,
+        b_shares: Vec<Vec<LargeField>>,
+        depth: usize,
+        rand_sharings: Vec<LargeField>,
+        zero_sharings: Vec<LargeField>
+    ){
         // Padding necessary to make sure each group has the same number of elements
         let num_multiplications = a_shares.len();
         if num_multiplications > self.multiplication_switch_threshold{
-            Box::pin(self.init_linear_multiplication_prot(a_shares, b_shares, depth)).await;
+            Box::pin(self.init_linear_multiplication_prot(a_shares, b_shares, depth, rand_sharings, zero_sharings)).await;
         }
         else{
             // Use quadratic multiplication protocol here
-            Box::pin(self.init_quadratic_multiplication_prot(a_shares, b_shares, depth)).await;
+            Box::pin(self.init_quadratic_multiplication_prot(a_shares, b_shares, depth, rand_sharings, zero_sharings)).await;
         }
+    }
+
+    /// Preprocessing a batch of `num_gates` multiplications consumes, as
+    /// `(random sharings, 2t-sharings of zero)`.
+    pub fn multiplication_preprocessing_requirement(&self, num_gates: usize) -> (usize, usize){
+        if num_gates > self.multiplication_switch_threshold{
+            // The linear protocol pads the batch up to a multiple of 2t+1, draws
+            // one mask per padded gate, and t+1 zero sharings per group — half a
+            // zero sharing per gate.
+            let group = 2*self.num_faults + 1;
+            let padded_gates = num_gates.div_ceil(group)*group;
+            (padded_gates, (padded_gates/group)*(self.num_faults + 1))
+        }
+        else{
+            // The quadratic protocol draws one of each per gate.
+            (num_gates, num_gates)
+        }
+    }
+
+    /// Depths whose multiplication tuples the verification phase checks: the
+    /// random bit squaring and every application circuit depth. Verification's
+    /// own multiplications are excluded — they are what does the checking.
+    pub fn is_verified_depth(&self, depth: usize) -> bool{
+        depth == self.preprocessing_mult_depth
+            || (depth >= APPLICATION_DEPTH_OFFSET && depth < self.delinearization_depth)
+    }
+
+    /// Draw multiplication preprocessing from the engine's own pool.
+    fn take_multiplication_preprocessing(&mut self, num_rand: usize, num_zero: usize) -> Option<(Vec<LargeField>, Vec<LargeField>)>{
+        let pool = &mut self.rand_sharings_state;
+        if pool.rand_sharings_mult.len() < num_rand || pool.rand_2t_sharings_mult.len() < num_zero{
+            return None;
+        }
+        let rand_sharings = pool.rand_sharings_mult.drain(0..num_rand).collect();
+        let zero_sharings = pool.rand_2t_sharings_mult.drain(0..num_zero).collect();
+        Some((rand_sharings, zero_sharings))
     }
 
     pub async fn init_hash_broadcast(&mut self, hash: Hash, depth: usize){
@@ -92,16 +190,14 @@ impl Context{
                 self.mix_circuit_state.rand_bit_recon_shares.insert(self.myid, shares_next_depth);
                 self.init_rand_bit_reconstruction().await;
             }
-            else if depth <= self.max_depth{
-                // Start the next depth multiplication here
-                log::info!("Terminated multiplication at mixing depth {}, initializing next mixing level", depth);
-                self.mix_circuit_state.mult_result.insert(depth, shares_next_depth.clone());
-                self.verify_mixing_level_termination(depth).await;
-            }
-            else if depth > self.max_depth{
-                // Temporary
+            else if depth >= self.delinearization_depth{
+                // Verification multiplies its own compressed tuples.
                 self.verify_ex_mult_termination_verification(depth, shares_next_depth).await;
-                //self.handle_mult_term_tmp(shares_next_depth).await;
+            }
+            else{
+                // An application circuit depth: hand the results back and let the
+                // application decide what runs next.
+                self.verify_application_depth_termination(depth, shares_next_depth).await;
             }
         }
         else{

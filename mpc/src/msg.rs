@@ -10,7 +10,16 @@ pub enum ProtMsg{
     SharesL2(Vec<u8>, usize),
 
     QuadShares(Vec<u8>, usize),
-    ReconstructRandBitShares(Vec<LargeFieldSer>),
+
+    // Public reconstruction of the squared random sharings during random bit
+    // preparation, structured like the linear multiplication protocol:
+    // L1 carries this party's evaluation of every chunk polynomial at the
+    // recipient's point (privately addressed), L2 broadcasts the points each
+    // party reconstructed from L1, and the hash pins down the values everyone
+    // recovered from L2.
+    RandBitReconL1(Vec<u8>),
+    RandBitReconL2(Vec<u8>),
+    RandBitReconHash(Hash),
 
     // Hash Message to ensure at least t+1 parties are consistent with the hash value
     // Bool is for indicating linear or quadratic layer

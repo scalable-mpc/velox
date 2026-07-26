@@ -3,6 +3,7 @@
 # in the dependency tree in any other way
 members = [
     "fields",
+    "application",
     "node",
     "config"
 ]

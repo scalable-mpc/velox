@@ -1,10 +1,11 @@
+use application::Application;
 use std::sync::Arc;
 
 use crate::{context::Context, msg::ProtMsg};
 use crypto::{hash::verf_mac};
 use types::{WrapperMsg};
 
-impl Context {
+impl<A: Application> Context<A>{
     // This function verifies the Message Authentication Code (MAC) of a sent message
     // A node cannot impersonate as another node because of MACs
     pub fn check_proposal(&self, wrapper_msg: Arc<WrapperMsg<ProtMsg>>) -> bool {
@@ -46,9 +47,17 @@ impl Context {
                     log::debug!("Received Init for instance id {} from node : {}", depth, wrapper_msg.sender);
                     self.handle_quadratic_mult_shares(depth,main_msg, wrapper_msg.sender).await;
                 },
-                ProtMsg::ReconstructRandBitShares(shares)=>{
-                    log::debug!("Received ReconstructRandBitShares message");
-                    self.handle_reconstruct_rand_bits(shares, wrapper_msg.sender).await;
+                ProtMsg::RandBitReconL1(shares)=>{
+                    log::debug!("Received RandBitReconL1 message from node : {}", wrapper_msg.sender);
+                    self.handle_rand_bit_recon_l1(shares, wrapper_msg.sender).await;
+                },
+                ProtMsg::RandBitReconL2(points)=>{
+                    log::debug!("Received RandBitReconL2 message from node : {}", wrapper_msg.sender);
+                    self.handle_rand_bit_recon_l2(points, wrapper_msg.sender).await;
+                },
+                ProtMsg::RandBitReconHash(hash)=>{
+                    log::debug!("Received RandBitReconHash message from node : {}", wrapper_msg.sender);
+                    self.handle_rand_bit_recon_hash(hash, wrapper_msg.sender).await;
                 },
                 ProtMsg::ReconstructRandBits(shares)=>{
                     log::debug!("Received ReconstructRandBits message");

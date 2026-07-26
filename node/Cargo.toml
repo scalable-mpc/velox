@@ -7,14 +7,15 @@ edition = "2021"
 
 [dependencies]
 bincode = "1"
-config = { package = "config", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+config = { package = "config", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 mpc = {package = "mpc", path = "../mpc"}
+application = {package = "application", path = "../application"}
 
 fields = { package = "fields", path="../fields"}
-util = { package = "util", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+util = { package = "util", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 
 anyhow = "1"
-types = { package = "types", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+types = { package = "types", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 clap = {version = "2", features = ["yaml"]}
 tokio = { version = "1.0", features = ["full"] }
 futures = "0.3.8"

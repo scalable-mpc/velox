@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use application::Application;
 use config::Node;
 
 use fnv::FnvHashMap;
@@ -23,12 +24,16 @@ use types::{Replica, WrapperMsg, SyncMsg, SyncState};
 
 use crypto::{aes_hash::HashState, hash::Hash};
 
-use crate::{handlers::{handler::Handler, sync_handler::SyncHandler}, input::read_input_from_files, msg::ProtMsg, protocol::{online_phase::mix_circuit_state::MixCircuitState, rand_sharings::rand_mask::RandomOutputMaskStruct, MultState, RandSharings, VerificationState}};
+use crate::{handlers::{handler::Handler, sync_handler::SyncHandler}, msg::ProtMsg, protocol::{online_phase::mix_circuit_state::MixCircuitState, rand_sharings::rand_mask::RandomOutputMaskStruct, MultState, RandSharings, VerificationState}};
 
 /// Number of coins sent to the MVBA/ACS instances to facilitate consensus.
 pub const NUM_CONSENSUS_COINS: usize = 500;
 
-pub struct Context {
+pub struct Context<A: Application> {
+    /// Application-specific logic. The engine drives the protocol phases and
+    /// hands control back to the application at each phase boundary.
+    pub app: A,
+
     /// Networking context
     pub net_send: TcpReliableSender<Replica, WrapperMsg<ProtMsg>, Acknowledgement>,
     pub net_recv: UnboundedReceiver<WrapperMsg<ProtMsg>>,
@@ -49,12 +54,7 @@ pub struct Context {
     pub cancel_handlers: HashMap<u64, Vec<CancelHandler<Acknowledgement>>>,
     exit_rx: oneshot::Receiver<()>,
 
-    pub inputs: Vec<LargeField>,
     pub input_acss_id_offset: usize,
-    
-    pub k_value: usize,
-    pub log_k: usize,
-    pub tot_batches: usize,
 
     pub total_sharings_for_coins: usize,
 
@@ -107,8 +107,16 @@ pub struct Context {
     pub roots_of_unity: Vec<LargeField>,
 
     // Protocol parameters
-    pub total_sharings: usize,
-    pub max_depth: usize,
+    /// Preprocessing batch sizes, in raw values dealt per party. Each raw value
+    /// yields `t+1` sharings after Vandermonde extraction. All three are derived
+    /// from the application's `PreprocessingCounts` in `init_rand_sh`.
+    // ACSS batch 0: the `r` sharings that get squared to make random bits.
+    pub rand_bit_batch_size: usize,
+    // ACSS batch 1: masks for multiplication gates, coins and verification.
+    pub mult_batch_size: usize,
+    // Sh2t batch 0: 2t-sharings of zero consumed by the multiplication protocol.
+    pub zero_batch_size: usize,
+
     pub output_mask_size: usize,
 
     pub preprocessing_mult_depth: usize,
@@ -117,10 +125,10 @@ pub struct Context {
     pub multiplication_switch_threshold: usize,
 }
 
-impl Context {
+impl<A: Application> Context<A> {
     pub fn spawn(
         config: Node,
-        mixing_batch_size: usize,
+        app: A,
         compression_factor: usize,
         _byz: bool
     ) -> anyhow::Result<oneshot::Sender<()>> {
@@ -220,35 +228,19 @@ impl Context {
 
         let use_fft = false;
 
-        let k = mixing_batch_size as u64;
-        let log_k = (u64::BITS - k.leading_zeros() -1) as usize;
-        let k = k as usize;
-
         // TODO: rand_bit reconstruction uses this constant as a "p/2" threshold for
         // square-root sign selection — that's a prime-field-specific operation, and
         // the protocol's field is now Mersenne61 Fp4 (an extension field with no
         // canonical p/2). Reworking rand_bit for extension fields is out of scope
         // for the GPU/field-switch slice; placeholder zero keeps the build green.
         let sqrt_power = LargeField::zero();
-        
-        let tot_sharings = (((k)*log_k*log_k)/(config.num_faults+1))+20;
-        let num_batches = 1;
-        // Ensure this is a power of 2. 
 
-        let high_threshold = 2*config.num_faults+1;
-        let inputs_per_party = (k / high_threshold) + 1;
-
-        let file_location_1 = format!("testdata/inputs/input_{}.txt", config.id);
-        let file_location_2 = format!("input_{}.txt", config.id);
-
-        let inputs = read_input_from_files(file_location_1.as_str(),file_location_2.as_str(),inputs_per_party).or_else(|e| {
-            log::error!("Error reading input files: {}", e);
-            Err(e)
-        })?;
-
-        log::info!("Generating {} random sharings and proposing {} sharings over {} batches for mixing {} inputs", 8*(k/2)*log_k*log_k, tot_sharings, num_batches, k);
+        // Preprocessing volumes are no longer derived from a circuit baked into
+        // the engine: `init_rand_sh` queries the application for them once the
+        // protocol starts.
         tokio::spawn(async move {
             let mut c = Context {
+                app,
                 net_send: consensus_net,
                 net_recv: rx_net_to_consensus,
                 
@@ -265,12 +257,7 @@ impl Context {
 
                 max_id: rbc_start_id,
 
-                inputs: inputs.clone(),
                 input_acss_id_offset: 500,
-
-                k_value: k,
-                log_k: log_k,
-                tot_batches: num_batches,
 
                 total_sharings_for_coins: 10*config.num_nodes,
                 
@@ -308,9 +295,11 @@ impl Context {
                 use_fft: use_fft,
                 roots_of_unity: gen_roots_of_unity(config.num_nodes),
 
-                total_sharings: tot_sharings,
-                max_depth: log_k*log_k,
-                output_mask_size: 2*k/(config.num_faults+1),
+                // Sized from the application's preprocessing counts in `init_rand_sh`.
+                rand_bit_batch_size: 0,
+                mult_batch_size: 0,
+                zero_batch_size: 0,
+                output_mask_size: 0,
 
                 preprocessing_mult_depth: 0,
                 delinearization_depth: 5000, 

@@ -1,8 +1,9 @@
+use application::Application;
 use fields::LargeField;
 
 use crate::Context;
 
-impl Context{
+impl<A: Application> Context<A>{
     // This function will be used to compress the multiplication tuples
     // It will take the shares of a, b, and the output and compress them into a single representation
     pub async fn delinearize_mult_tuples(&mut self){
@@ -39,11 +40,18 @@ impl Context{
         let mut y_values = Vec::new();
         let mut mult_values = Vec::new();
 
-        for i in 0..self.max_depth+1{
-            if !self.verf_state.mult_tuples.contains_key(&i){
-                continue;
-            }
-            let verf_state = self.verf_state.mult_tuples.get(&i).unwrap();
+        // Every depth the circuit and the random bit preparation multiplied at,
+        // in a fixed order so all parties delinearize the same tuple sequence.
+        // Verification's own multiplications live at `delinearization_depth` and
+        // above, and are not themselves verified.
+        let mut verified_depths: Vec<usize> = self.verf_state.mult_tuples.keys()
+            .copied()
+            .filter(|depth| self.is_verified_depth(*depth))
+            .collect();
+        verified_depths.sort();
+
+        for depth in verified_depths{
+            let verf_state = self.verf_state.mult_tuples.get(&depth).unwrap();
             x_values.extend(verf_state.0.clone());
             y_values.extend(verf_state.1.clone());
             mult_values.extend(verf_state.2.clone());

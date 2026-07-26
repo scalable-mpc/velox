@@ -8,12 +8,12 @@ edition = "2021"
 [dependencies]
 fields = { package = "fields", path="../../fields"}
 
-consensus = {package = "consensus", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-ctrbc  = {package = "ctrbc", git= "https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-ra = {package = "ra", git= "https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-config = { package = "config", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-types = { package = "types", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-crypto = { package = "crypto", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+consensus = {package = "consensus", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+ctrbc  = {package = "ctrbc", git= "https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+ra = {package = "ra", git= "https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+config = { package = "config", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+types = { package = "types", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+crypto = { package = "crypto", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 
 avid_ab = {package = "avid_ab", path = "../avid_ab"}
 

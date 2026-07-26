@@ -9,6 +9,9 @@ pub mod mersenne_61;
 pub mod poly;
 pub use poly::*;
 
+pub mod mul;
+pub use mul::*;
+
 #[cfg(feature = "gpu")]
 pub mod gpu_ffi;
 #[cfg(feature = "gpu")]

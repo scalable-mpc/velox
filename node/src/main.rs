@@ -100,10 +100,33 @@ async fn main() -> Result<()> {
         //         ).unwrap();
         // }
         "mpc" => {
+            // The circuit lives in the application; the engine only drives the
+            // protocol phases around it.
+            let app = application::AnonymousBroadcast::new(
+                config.num_nodes,
+                config.num_faults,
+                config.id,
+                mixing_batch_size,
+            );
+
+            // This party's messages into the mixing network. A short or missing
+            // input file is not fatal — the application pads with random values.
+            let file_location_1 = format!("testdata/inputs/input_{}.txt", config.id);
+            let file_location_2 = format!("input_{}.txt", config.id);
+            let inputs = mpc::input::read_input_from_files(
+                file_location_1.as_str(),
+                file_location_2.as_str(),
+                app.inputs_per_party(),
+            ).unwrap_or_else(|e| {
+                log::error!("Error reading input files: {}, falling back to random inputs", e);
+                Vec::new()
+            });
+            let app = app.with_inputs(inputs);
+
             exit_tx =
                 mpc::Context::spawn(
-                    config, 
-                    mixing_batch_size,
+                    config,
+                    app,
                     compression_factor,
                     node_normal
                 ).or_else(|e| {

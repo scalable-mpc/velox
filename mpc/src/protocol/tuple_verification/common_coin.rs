@@ -1,3 +1,4 @@
+use application::Application;
 use lambdaworks_math::polynomial::Polynomial;
 use fields::ByteConversion;
 use fields::{
@@ -6,7 +7,7 @@ use fields::{
 
 use crate::{Context, msg::ProtMsg, protocol::tuple_verification::ex_compr_state::ExComprState};
 
-impl Context{
+impl<A: Application> Context<A>{
     pub async fn toss_common_coin(&mut self, depth: usize){
         if self.rand_sharings_state.rand_sharings_coin.is_empty() {
             log::warn!("toss_common_coin: No coins left to toss at depth {}. Cannot proceed.", depth);

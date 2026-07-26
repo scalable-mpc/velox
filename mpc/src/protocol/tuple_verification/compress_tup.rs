@@ -1,3 +1,4 @@
+use application::Application;
 use lambdaworks_math::{polynomial::Polynomial};
 use fields::ByteConversion;
 use fields::{LargeField, LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_matrix_multiply};
@@ -9,7 +10,7 @@ use super::ex_compr_state::ExComprState;
 
 use fields::poly::check_if_all_points_lie_on_degree_x_polynomial;
 
-impl Context{
+impl<A: Application> Context<A>{
     // This method starts compression from the second level onwards
     pub async fn init_compression_level(&mut self, x_vector: Vec<LargeField>, y_vector: Vec<LargeField>, agg_val: LargeField, depth: usize){
         // Split into chunks for compression

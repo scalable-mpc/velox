@@ -7,16 +7,17 @@ edition = "2021"
 
 [dependencies]
 fields = { package = "fields", path="../fields"}
+application = { package = "application", path="../application"}
 
-consensus = {package = "consensus", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-config = { package = "config", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-types = { package = "types", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-crypto = { package = "crypto", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-ctrbc = { package = "ctrbc", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git" }
-# acs = {package = "acs", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+consensus = {package = "consensus", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+config = { package = "config", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+types = { package = "types", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+crypto = { package = "crypto", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+ctrbc = { package = "ctrbc", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git" }
+# acs = {package = "acs", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 acss_ab = { package = "acss_ab", path = "../secret_sharing/acss_ab" }
 sh2t = { package = "sh2t", path = "../secret_sharing/sh2t" }
-fin_mvba = {package = "fin_mvba", git = "https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+fin_mvba = {package = "fin_mvba", git = "https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 
 tokio = { version = "1.0", features = ["full"] }
 futures = "^0.3"

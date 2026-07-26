@@ -1,3 +1,4 @@
+use application::Application;
 use std::collections::{HashMap, VecDeque, HashSet};
 
 use fields::ByteConversion;
@@ -35,7 +36,7 @@ impl RandomOutputMaskStruct{
 }
 
 
-impl Context{
+impl<A: Application> Context<A>{
     pub async fn handle_avss_share_output(&mut self, origin: Replica, avss_share: AvssShare){
         log::info!("Handling AVSS share from sender {}", origin);
         self.output_mask_state.avss_shares.insert(origin, avss_share);

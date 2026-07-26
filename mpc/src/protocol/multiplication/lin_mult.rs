@@ -1,3 +1,4 @@
+use application::Application;
 use std::{collections::HashMap, ops::Add};
 
 use crate::Context;
@@ -12,11 +13,17 @@ use types::{Replica, WrapperMsg};
 
 use crate::{msg::ProtMsg};
 
-impl Context{
-    pub async fn init_linear_multiplication_prot(&mut self, mut a_vec_shares: Vec<Vec<LargeField>>, mut b_vec_shares: Vec<Vec<LargeField>>, depth: usize) {
+impl<A: Application> Context<A>{
+    pub async fn init_linear_multiplication_prot(&mut self,
+        mut a_vec_shares: Vec<Vec<LargeField>>,
+        mut b_vec_shares: Vec<Vec<LargeField>>,
+        depth: usize,
+        mut rand_sharings: Vec<LargeField>,
+        mut zero_sharings: Vec<LargeField>
+    ) {
         // Pad shares until they become a multiple of 2t+1
         // Share inputs for later verification
-        if depth <= self.max_depth {
+        if self.is_verified_depth(depth) {
             let first_a_shares: Vec<LargeField> = a_vec_shares.clone().into_iter().map(|x| x[0].clone()).collect();
             let first_b_shares: Vec<LargeField> = b_vec_shares.clone().into_iter().map(|x| x[0].clone()).collect();
             log::info!("Adding shares to verification state with a:{} b:{} at depth {}", first_a_shares.len(), first_b_shares.len(), depth);
@@ -50,32 +57,25 @@ impl Context{
 
         depth_state.padding_shares = padding_length;
 
-        // Get random sharings
-        let mut r_sharings = Vec::with_capacity(tot_shares);
-        for _ in 0..tot_shares {
-            // Check if there are enough random shares
-            if self.rand_sharings_state.rand_sharings_mult.len() > 0 {
-                
-                let rand_sharing = self.rand_sharings_state.rand_sharings_mult.pop_front().unwrap();
-                r_sharings.push(rand_sharing.clone());
-                depth_state.util_rand_sharings.push(rand_sharing);
-            
-            } else {
-                log::error!("Not enough random shares for linear multiplication protocol");
-                return;
-            }
+        // Take the masks this batch consumes: one per padded gate, and t+1 zero
+        // sharings per group of 2t+1 gates.
+        let num_zero_sharings = tot_groups*(self.num_faults+1);
+        if rand_sharings.len() < tot_shares {
+            log::error!("Not enough random shares for linear multiplication protocol at depth {}: need {}, got {}",
+                depth, tot_shares, rand_sharings.len());
+            return;
         }
+        if zero_sharings.len() < num_zero_sharings {
+            log::error!("Not enough random shares for zero multiplication protocol at depth {}: need {}, got {}",
+                depth, num_zero_sharings, zero_sharings.len());
+            return;
+        }
+        rand_sharings.truncate(tot_shares);
+        zero_sharings.truncate(num_zero_sharings);
 
-        let mut o_sharings = Vec::with_capacity(tot_shares/2);
-        for _ in 0..(tot_groups*(self.num_faults+1)) {
-            // Check if there are enough random shares for zero multiplication
-            if self.rand_sharings_state.rand_2t_sharings_mult.len() > 0 {
-                o_sharings.push(self.rand_sharings_state.rand_2t_sharings_mult.pop_front().unwrap());
-            } else {
-                log::error!("Not enough random shares for zero multiplication protocol");
-                return;
-            }
-        }
+        let r_sharings = rand_sharings;
+        let o_sharings = zero_sharings;
+        depth_state.util_rand_sharings.extend(r_sharings.iter().cloned());
             
         // Group inputs
         // let a_vec_shares_grouped = Self::group_elements_by_count(a_vec_shares.clone(), tot_shares / (2 * self.num_faults + 1));

@@ -1,3 +1,4 @@
+use application::Application;
 use crypto::hash::do_hash;
 use lambdaworks_math::{polynomial::Polynomial};
 use fields::ByteConversion;
@@ -7,36 +8,37 @@ use types::Replica;
 
 use crate::{Context, msg::ProtMsg};
 
-impl Context{
-    pub async fn init_quadratic_multiplication_prot(&mut self, a_shares: Vec<Vec<LargeField>>, b_shares: Vec<Vec<LargeField>>, depth: usize){
+impl<A: Application> Context<A>{
+    pub async fn init_quadratic_multiplication_prot(&mut self,
+        a_shares: Vec<Vec<LargeField>>,
+        b_shares: Vec<Vec<LargeField>>,
+        depth: usize,
+        mut rand_sharings: Vec<LargeField>,
+        mut zero_sharings: Vec<LargeField>
+    ){
         log::info!("Starting quadratic multiplication protocol");
         if a_shares.len() != b_shares.len() {
             log::error!("Quadratic multiplication protocol failed: a and b shares length mismatch");
             return;
         }
         let n = a_shares.len();
+        // One mask and one zero sharing per gate.
+        if rand_sharings.len() < n || zero_sharings.len() < n{
+            log::error!("Not enough random shares for multiplication protocol at depth {}: {} gates need {} random and {} zero sharings, got {} and {}",
+                depth, n, n, n, rand_sharings.len(), zero_sharings.len());
+            return;
+        }
+        rand_sharings.truncate(n);
+        zero_sharings.truncate(n);
+
+        let verified_depth = self.is_verified_depth(depth);
         let depth_state = self.mult_state.get_single_depth_state(depth, false, n);
 
         // Log these entries in the verification state for later verification
-        if depth <= self.max_depth {
+        if verified_depth {
             let first_a_shares = a_shares.clone().into_iter().map(|x| x[0].clone()).collect();
             let first_b_shares = b_shares.clone().into_iter().map(|x| x[0].clone()).collect();
             self.verf_state.add_mult_inputs(depth, first_a_shares, first_b_shares);
-        }
-
-        // Poll the r multiplication random shares
-        // Pull n shares from r_sharings and n/2 shares from o sharings
-
-        let mut rand_sharings = Vec::new();
-        let mut zero_sharings = Vec::new();
-        for _ in 0..n{
-            if self.rand_sharings_state.rand_sharings_mult.len() > 0 && self.rand_sharings_state.rand_2t_sharings_mult.len()>0{
-                rand_sharings.push(self.rand_sharings_state.rand_sharings_mult.pop_front().unwrap());
-                zero_sharings.push(self.rand_sharings_state.rand_2t_sharings_mult.pop_front().unwrap());
-            } else {
-                log::error!("Not enough random shares for multiplication protocol");
-                return;
-            }
         }
 
         // Share rand_utils

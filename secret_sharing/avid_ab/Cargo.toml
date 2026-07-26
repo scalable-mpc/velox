@@ -8,10 +8,10 @@ edition = "2021"
 [dependencies]
 fields = { package = "fields", path="../../fields"}
 
-consensus = {package = "consensus", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-config = { package = "config", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-types = { package = "types", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
-crypto = { package = "crypto", git="https://github.com/akhilsb/Secure-Distributed-Computing-Protocols.git"}
+consensus = {package = "consensus", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+config = { package = "config", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+types = { package = "types", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
+crypto = { package = "crypto", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 
 tokio = { version = "1.0", features = ["full"] }
 futures = "^0.3"

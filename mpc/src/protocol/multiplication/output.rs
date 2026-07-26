@@ -1,3 +1,4 @@
+use application::Application;
 use std::collections::HashSet;
 
 use crypto::hash::do_hash;
@@ -7,7 +8,7 @@ use types::Replica;
 
 use crate::{Context, msg::ProtMsg};
 
-impl Context{
+impl<A: Application> Context<A>{
     // Last layer of the protocol
     pub async fn reconstruct_output(&mut self){
         if self.mult_state.output_layer.output_shares.is_none(){

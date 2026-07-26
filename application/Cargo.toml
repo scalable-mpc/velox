@@ -1,0 +1,22 @@
+[package]
+name = "application"
+version = "0.1.0"
+edition = "2021"
+
+# The `application` crate defines the interface any application implements to run
+# on top of this MPC engine. It intentionally carries only the trait and the
+# minimal protocol data-model types the trait exposes — no concrete application.
+
+[dependencies]
+fields = { package = "fields", path = "../fields" }
+
+async-trait = "0"
+anyhow = "1"
+log = "*"
+rand = "0.6"
+
+# Field element type used in the trait's data model.
+lambdaworks-math = "=0.13.0"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt"] }
