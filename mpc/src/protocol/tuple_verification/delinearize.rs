@@ -1,7 +1,7 @@
 use application::Application;
 use fields::LargeField;
 
-use crate::Context;
+use crate::{Context, protocol::online_phase::APPLICATION_DEPTH_OFFSET};
 
 impl<A: Application> Context<A>{
     // This function will be used to compress the multiplication tuples
@@ -19,12 +19,23 @@ impl<A: Application> Context<A>{
 
         self.verf_state.random_mask.0 = Some(random_a_share);
         self.verf_state.random_mask.1 = Some(random_b_share);
+        // Only now is this party's tuple sequence complete. `handle_common_coin_msg`
+        // can reconstruct the delinearization coin well before we get here - the
+        // coin shares come from parties that have already finished their circuit -
+        // and without this flag it would delinearize whatever subset of depths had
+        // been recorded so far.
+        self.verf_state.delinearization_ready = true;
 
         //self.choose_multiplication_protocol(vec_a_share, vec_b_share, self.delinearization_depth).await;
         self.toss_common_coin(self.delinearization_depth).await;
     }
 
     pub async fn verify_coin_toss_deserialization(&mut self){
+        // Both guards are load-bearing: this is reached from `toss_common_coin`
+        // and again from `handle_common_coin_msg`, in either order.
+        if !self.verf_state.delinearization_ready || self.verf_state.delinearized{
+            return;
+        }
         if !self.verf_state.ex_compr_state.contains_key(&self.delinearization_depth){
             return;
         }
@@ -35,27 +46,23 @@ impl<A: Application> Context<A>{
         let coin_value = ex_compr_state.coin_output.clone().unwrap();
         let _depth_factor = self.compression_factor;
         // Reduce multiplicative depth by a factor of k in each iteration
-        // Collect all multiplication tuples so far
-        let mut x_values = Vec::new();
-        let mut y_values = Vec::new();
-        let mut mult_values = Vec::new();
-
+        // Collect all multiplication tuples so far.
+        //
         // Every depth the circuit and the random bit preparation multiplied at,
         // in a fixed order so all parties delinearize the same tuple sequence.
         // Verification's own multiplications live at `delinearization_depth` and
         // above, and are not themselves verified.
-        let mut verified_depths: Vec<usize> = self.verf_state.mult_tuples.keys()
-            .copied()
-            .filter(|depth| self.is_verified_depth(*depth))
-            .collect();
-        verified_depths.sort();
-
-        for depth in verified_depths{
-            let verf_state = self.verf_state.mult_tuples.get(&depth).unwrap();
-            x_values.extend(verf_state.0.clone());
-            y_values.extend(verf_state.1.clone());
-            mult_values.extend(verf_state.2.clone());
-        }
+        //
+        // The tuples are moved out, not copied: this is their last reader, so
+        // holding a second copy of every (a, b, a*b) in the circuit alongside
+        // `verf_state.mult_tuples` doubled the largest long-lived allocation in
+        // the engine for the whole of verification.
+        self.verf_state.delinearized = true;
+        let is_verified_depth = |depth: usize| {
+            depth == self.preprocessing_mult_depth
+                || (depth >= APPLICATION_DEPTH_OFFSET && depth < self.delinearization_depth)
+        };
+        let (mut x_values, y_values, mut mult_values) = self.verf_state.take_verified_tuples(is_verified_depth);
         log::info!("Initiating verification process for {} multiplication tuples: x: {}, y: {}, mult: {}",x_values.len(), x_values.len(), y_values.len(), mult_values.len());
         if x_values.len() != y_values.len() || x_values.len() != mult_values.len() || x_values.len() == 0{
             log::error!("Invalid number of shares for delinearization {} {} {}, abandoning process", x_values.len(), y_values.len(), mult_values.len());

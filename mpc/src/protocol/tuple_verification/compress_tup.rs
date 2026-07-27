@@ -88,8 +88,13 @@ impl<A: Application> Context<A>{
         }
         let ex_compr_state = self.verf_state.ex_compr_state.get_mut(&depth).expect("ExComprState should exist for the given depth");
         
-        let mut x_vectors = ex_compr_state.x_sharings.clone(); // This should be a vector of vectors of shares for x
-        let mut y_vectors = ex_compr_state.y_sharings.clone(); // This should be a vector of vectors of shares for y
+        // Moved out, not cloned: `x_sharings` / `y_sharings` have no reader past
+        // this function - the level's later steps work off `x_polys` / `y_polys`
+        // and `mult_sharings` - and this function runs once per level. At the
+        // first compression level these two hold the entire delinearized tuple
+        // sequence, so the clone was doubling it.
+        let mut x_vectors = std::mem::take(&mut ex_compr_state.x_sharings); // This should be a vector of vectors of shares for x
+        let mut y_vectors = std::mem::take(&mut ex_compr_state.y_sharings); // This should be a vector of vectors of shares for y
         let mut mult_vec = ex_compr_state.mult_sharings.clone(); // This should be a vector of shares for the multiplication results
 
         if ex_compr_state.rem_mult_tup.is_none() {
@@ -109,12 +114,14 @@ impl<A: Application> Context<A>{
         
         // If this round is the last round, mask the output with a random sharing to ensure adversary does not know any thing about the inputs or gates
         // Add back the sum of multiplication results back into the mix for ex_compr
-        x_vectors.push(rem_x.clone());
-        y_vectors.push(rem_y.clone());
+        x_vectors.push(rem_x);
+        y_vectors.push(rem_y);
         mult_vec.push(sub_mult.clone());
 
-        ex_compr_state.x_sharings.push(rem_x);
-        ex_compr_state.y_sharings.push(rem_y);
+        // `mult_sharings` is still read by `handle_level_mult_termination`, so
+        // the remaining tuple's product is appended there as before. The x/y
+        // halves are not: they live in `x_vectors` / `y_vectors` above, which is
+        // where the rest of this function reads them from.
         ex_compr_state.mult_sharings.push(sub_mult);
 
         if x_vectors.len() != y_vectors.len() || x_vectors.len() != mult_vec.len() {
@@ -122,7 +129,7 @@ impl<A: Application> Context<A>{
             return; // Handle error: x and y vectors must be of the same length
         }
 
-        if !ex_compr_state.extended_mult_sharings.is_empty() && !ex_compr_state.extended_x_sharings.is_empty(){
+        if !ex_compr_state.extended_mult_sharings.is_empty() && ex_compr_state.extended_sharings_generated{
             // Directly go to the extended protocol now. 
             // TODO: something here
             self.handle_level_mult_termination(depth).await;
@@ -176,10 +183,12 @@ impl<A: Application> Context<A>{
         ex_compr_state.x_polys = Some(x_polynomials);
         ex_compr_state.y_polys = Some(y_polynomials);
 
-        ex_compr_state.extended_x_sharings.extend(x_poly_evals_ss.clone());
-        ex_compr_state.extended_y_sharings.extend(y_poly_evals_ss.clone()); // Store the evaluations in the state for future reference
+        // Record only that the extension happened. The evaluations themselves go
+        // straight to multiplication below; the state copy existed solely to be
+        // tested with `is_empty()`.
+        ex_compr_state.extended_sharings_generated = true;
         // Send these tuples to multiplication
-        // Remember, asynchrony can cause extended_mult_sharings to be filled first as well. 
+        // Remember, asynchrony can cause extended_mult_sharings to be filled first as well.
         let mult_sharings_filled = ex_compr_state.extended_mult_sharings.len() > 0;
         if mult_sharings_filled{
             //self.handle_ex_mult_termination(depth+1, ).await;
@@ -224,25 +233,30 @@ impl<A: Application> Context<A>{
             return;
         }
         let ex_compr_state = self.verf_state.ex_compr_state.get_mut(&depth).unwrap();
+        // This level is already done. Both halves of a level can call in here,
+        // and without this guard a second call would re-interpolate H from the
+        // freed buffers and burn another common-coin sharing on a level whose
+        // result has already been handed to `depth + 2`.
+        if ex_compr_state.ex_compr_terminated{
+            return;
+        }
         if ex_compr_state.x_polys.is_none() ||
             ex_compr_state.y_polys.is_none() ||
-            ex_compr_state.extended_x_sharings.is_empty() || 
-            ex_compr_state.extended_y_sharings.is_empty() || 
+            !ex_compr_state.extended_sharings_generated ||
             ex_compr_state.extended_mult_sharings.is_empty() {
             // We haven't filled the extended sharings yet, return early
-            log::error!("handle_level_termination: Not enough data to proceed with level termination at depth {}. x_polys: {:?}, y_polys: {:?}, extended_x_sharings: {}, extended_y_sharings: {}, extended_mult_sharings: {}",
+            log::error!("handle_level_termination: Not enough data to proceed with level termination at depth {}. x_polys: {}, y_polys: {}, extended_sharings_generated: {}, extended_mult_sharings: {}",
                 depth,
-                0,
-                0,
-                ex_compr_state.extended_x_sharings.len(),
-                ex_compr_state.extended_y_sharings.len(),
+                ex_compr_state.x_polys.is_some(),
+                ex_compr_state.y_polys.is_some(),
+                ex_compr_state.extended_sharings_generated,
                 ex_compr_state.extended_mult_sharings.len());
             return;
         }
 
         // Interpolate h polynomial
         let mut h_shares = ex_compr_state.mult_sharings.clone();
-        h_shares.extend(ex_compr_state.extended_mult_sharings.clone()); // Include the multiplication results for interpolation
+        h_shares.extend(ex_compr_state.extended_mult_sharings.iter().cloned()); // Include the multiplication results for interpolation
 
         let (mut evaluation_points,evaluation_points_2) = Self::gen_evaluation_points_ex_compr(ex_compr_state.mult_sharings.len());
         evaluation_points.extend(evaluation_points_2);
@@ -251,12 +265,12 @@ impl<A: Application> Context<A>{
         // Single-poly interpolation: the 50k-element bailout will keep it on CPU
         // regardless, but the call site lives on the GEMM pipeline for uniformity.
         let h_inv_vdm = inverse_vandermonde(vandermonde_matrix(evaluation_points.clone()));
-        let h_coeffs_mat = matrix_matrix_multiply(&h_inv_vdm, &[h_shares.clone()], false);
+        let h_coeffs_mat = matrix_matrix_multiply(&h_inv_vdm, &[h_shares], false);
         let h_polynomial = Polynomial::new(&h_coeffs_mat[0]);
         log::info!("Interpolated H polynomial with degree {} at ExCompr at depth {}", h_polynomial.degree(), depth);
 
         // Evaluate x,y,h polynomials at a random point to get final value at this level
-        ex_compr_state.h_poly = Some(h_polynomial.clone());
+        ex_compr_state.h_poly = Some(h_polynomial);
 
         // Toss coin here
         self.toss_common_coin(depth).await;
@@ -292,6 +306,12 @@ impl<A: Application> Context<A>{
             log::info!("Last level of compression at depth {} with size of vectors {}, proceeding to reconstruct sharings",depth,x_points.len());
         }
         ex_compr_state.ex_compr_terminated = true;
+        // Everything this level held has now been reduced to the three points
+        // above, which are handed to `depth + 2` (a separate entry) or broadcast
+        // for the final reconstruction. Free the sharings, the extended products
+        // and the polynomials; the entry, `coin_output` and the coin-toss shares
+        // stay so late coin messages for this depth are still deduped.
+        ex_compr_state.clear_level_payload();
         log::info!("Terminated compression at depth {} with size of xvector {}, yvector {} hpoint {:?}, proceeding to next depth",depth,x_points.len(),y_points.len(),h_point);
         if x_points.len() == 1{
             log::info!("Last level of compression, reconstructing secrets");

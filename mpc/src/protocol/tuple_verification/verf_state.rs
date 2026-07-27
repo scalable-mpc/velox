@@ -11,7 +11,15 @@ pub struct VerificationState{
     // Prepare a beaver triple as a random mask for verification
     pub random_mask: (Option<LargeField>,Option<LargeField>,Option<LargeField>),
     // indices, x_shares, y_shares, z_shares
-    pub output_verf_reconstruction_shares: (Vec<LargeField>, Vec<LargeField>, Vec<LargeField>, Vec<LargeField>)
+    pub output_verf_reconstruction_shares: (Vec<LargeField>, Vec<LargeField>, Vec<LargeField>, Vec<LargeField>),
+
+    /// Set once this party's own circuit has finished and `delinearize_mult_tuples`
+    /// has drawn the verification mask. Until then `mult_tuples` is still being
+    /// filled, and delinearizing it would fold a partial tuple sequence.
+    pub delinearization_ready: bool,
+    /// Set once the tuple sequence has actually been delinearized, so the step
+    /// runs exactly once.
+    pub delinearized: bool,
 }
 
 impl VerificationState{
@@ -20,8 +28,40 @@ impl VerificationState{
             mult_tuples: HashMap::new(),
             ex_compr_state: HashMap::new(),
             random_mask: (None, None, None),
-            output_verf_reconstruction_shares: (Vec::new(), Vec::new(), Vec::new(), Vec::new())
+            output_verf_reconstruction_shares: (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            delinearization_ready: false,
+            delinearized: false,
         }
+    }
+
+    /// Move every verified depth's `(a, b, a·b)` triple out of `mult_tuples`, in
+    /// ascending depth order so all parties delinearize the same sequence.
+    ///
+    /// Takes rather than clones, and drops the map afterwards: delinearization is
+    /// the only reader of `mult_tuples` (see `verify_coin_toss_deserialization`),
+    /// it runs once, and nothing writes to the map after it — `add_mult_inputs`
+    /// and `add_mult_output_shares` are both gated on `is_verified_depth`, and no
+    /// verified depth is still running by the time this is called.
+    pub fn take_verified_tuples(&mut self, is_verified: impl Fn(usize) -> bool)
+        -> (Vec<LargeField>, Vec<LargeField>, Vec<LargeField>)
+    {
+        let mut verified_depths: Vec<usize> = self.mult_tuples.keys()
+            .copied()
+            .filter(|depth| is_verified(*depth))
+            .collect();
+        verified_depths.sort();
+
+        let mut x_values = Vec::new();
+        let mut y_values = Vec::new();
+        let mut mult_values = Vec::new();
+        for depth in verified_depths{
+            let Some(tuples) = self.mult_tuples.get_mut(&depth) else { continue };
+            x_values.append(&mut tuples.0);
+            y_values.append(&mut tuples.1);
+            mult_values.append(&mut tuples.2);
+        }
+        self.mult_tuples.clear();
+        (x_values, y_values, mult_values)
     }
 
     // Function to add a multiplication tuple for verification

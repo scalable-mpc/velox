@@ -34,15 +34,18 @@ impl<A: Application> Context<A>{
         let verified_depth = self.is_verified_depth(depth);
         let depth_state = self.mult_state.get_single_depth_state(depth, false, n);
 
-        // Log these entries in the verification state for later verification
+        // Log these entries in the verification state for later verification.
+        // Read by reference: only the first sharing of each gate is verified, so
+        // cloning the whole batch duplicated every inner-product operand too.
         if verified_depth {
-            let first_a_shares = a_shares.clone().into_iter().map(|x| x[0].clone()).collect();
-            let first_b_shares = b_shares.clone().into_iter().map(|x| x[0].clone()).collect();
+            let first_a_shares = a_shares.iter().map(|x| x[0].clone()).collect();
+            let first_b_shares = b_shares.iter().map(|x| x[0].clone()).collect();
             self.verf_state.add_mult_inputs(depth, first_a_shares, first_b_shares);
         }
 
-        // Share rand_utils
-        depth_state.util_rand_sharings.extend(rand_sharings.clone());
+        // Share rand_utils. Cloned element-wise rather than as a whole `Vec`, so
+        // the batch's masks are not materialised a third time as a temporary.
+        depth_state.util_rand_sharings.extend(rand_sharings.iter().cloned());
         
         // Perform multiplication
         let mult_shares = 
@@ -69,10 +72,11 @@ impl<A: Application> Context<A>{
         // Add shares to the depth state
         let depth_state = self.mult_state.get_single_depth_state(depth, false, shares_lf.len());
         // If this depth already terminated, `clear_shares()` emptied l1_shares,
-        // so its per-group inner vectors are gone. A late quadratic share is
-        // dead; drop it to avoid corrupting l1_shares.0 / recv_share_count_l1
-        // against an empty l1_shares.1.
-        if depth_state.depth_terminated {
+        // and once this depth's interpolation has run `clear_l1_shares()` did
+        // the same, so its per-group inner vectors are gone. A late quadratic
+        // share is dead; drop it to avoid corrupting l1_shares.0 /
+        // recv_share_count_l1 against an empty l1_shares.1.
+        if depth_state.depth_terminated || depth_state.l1_reconstruction_done {
             return;
         }
         depth_state.l1_shares.0.push(evaluation_point.clone()); // Add the evaluation point to the indices
@@ -86,7 +90,10 @@ impl<A: Application> Context<A>{
         if depth_state.recv_share_count_l1 == self.num_nodes - self.num_faults{
             // Reconstruct secrets
             log::info!("Received n-t shares for quadratic protocol reconstruction at depth {}, reconstructing secrets", depth);
-            
+            // Claimed before the work, so a later quadratic share is dropped by
+            // the guard above instead of piling onto buffers nobody reads again.
+            depth_state.l1_reconstruction_done = true;
+
             let indices = depth_state.l1_shares.0.clone();
             let vdm_matrix = vandermonde_matrix(indices);
             let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
@@ -99,12 +106,16 @@ impl<A: Application> Context<A>{
                     return polynomial.evaluate(&LargeField::zero());
                 }).collect();
             
-            depth_state.l1_shares_reconstructed.extend(reconstructed_secrets.clone());
-            // Broadcast hash of this reconstructed value. 
+            // The raw per-party shares are dead: this interpolation is their only
+            // reader and it runs exactly once. The depth carries
+            // `l1_shares_reconstructed` from here on.
+            depth_state.clear_l1_shares();
+            // Broadcast hash of this reconstructed value.
             let mut appended_msg = Vec::new();
             for secret in reconstructed_secrets.iter(){
                 appended_msg.extend(secret.to_bytes_be());
             }
+            depth_state.l1_shares_reconstructed.extend(reconstructed_secrets);
             let hash = do_hash(&appended_msg);
             log::info!("Completed processing triples at depth {} with quadratic sharings, broadcasting hash {:?}", depth, hash);
             self.init_hash_broadcast(hash, depth).await;

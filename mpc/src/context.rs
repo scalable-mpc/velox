@@ -106,8 +106,6 @@ pub struct Context<A: Application> {
 
     pub field_div_2: LargeField,
 
-    pub tmp_mult_state: HashMap<usize, (Vec<LargeField>,Vec<Vec<LargeField>>)>,
-
     /// Fast fourier transforms utility
     pub use_fft: bool,
     pub roots_of_unity: Vec<LargeField>,
@@ -303,7 +301,6 @@ impl<A: Application> Context<A> {
                 verf_state: VerificationState::new(),
                 output_mask_state: RandomOutputMaskStruct::new(),
                 mix_circuit_state: MixCircuitState::new(),
-                tmp_mult_state: HashMap::default(),
 
                 field_div_2: sqrt_power,
 

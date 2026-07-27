@@ -142,6 +142,8 @@ impl<A: Application> Context<A>{
         if !self.mult_state.depth_share_map.contains_key(&depth){
             return;
         }
+        // Computed before `mult_state` borrows `self.mult_state`.
+        let verified_depth = self.is_verified_depth(depth);
         let mult_state = self.mult_state.depth_share_map.get_mut(&depth).unwrap();
         if mult_state.depth_terminated{
             return;
@@ -152,45 +154,66 @@ impl<A: Application> Context<A>{
         else{
             return;
         }
-        let reconstructed_blinded_secrets;
-        if mult_state.two_levels {
-            reconstructed_blinded_secrets = mult_state.l2_shares_reconstructed.clone();
-        }
-        else{
+        // Which reconstruction this depth terminates on depends on the protocol
+        // it ran. Length-check before taking ownership: this function is re-run
+        // on every hash message, and the reconstruction may legitimately still
+        // be empty (hash agreement can be reached before this party's own L1/L2
+        // interpolation), in which case the depth has to stay retryable.
+        let reconstructed_len = if mult_state.two_levels {
+            mult_state.l2_shares_reconstructed.len()
+        } else {
             // Quadratic multiplication layer
-            reconstructed_blinded_secrets = mult_state.l1_shares_reconstructed.clone();
-        }
-        
+            mult_state.l1_shares_reconstructed.len()
+        };
+
         // Get the random sharings
         // Subtract random sharings
-        log::info!("Subtracting random sharings with length {} from reconstructed secrets {} at depth {}",mult_state.util_rand_sharings.len(), reconstructed_blinded_secrets.len(), depth);
+        log::info!("Subtracting random sharings with length {} from reconstructed secrets {} at depth {}",mult_state.util_rand_sharings.len(), reconstructed_len, depth);
 
-        // Weird bugs occurring in this phase. 
-        if mult_state.util_rand_sharings.len() == reconstructed_blinded_secrets.len() && reconstructed_blinded_secrets.len() > 0{
+        // Weird bugs occurring in this phase.
+        if mult_state.util_rand_sharings.len() == reconstructed_len && reconstructed_len > 0{
             log::info!("Moving on to depth {}", depth + 1);
+            // Both operands are consumed here and nothing else reads them again
+            // (`clear_shares()` below would free them regardless), so move them
+            // out instead of cloning two full per-depth vectors.
+            let reconstructed_blinded_secrets = if mult_state.two_levels {
+                std::mem::take(&mut mult_state.l2_shares_reconstructed)
+            } else {
+                std::mem::take(&mut mult_state.l1_shares_reconstructed)
+            };
             // Par iter from rayon not needed here because we are not doing heavy computation
-            let mut shares_next_depth: Vec<LargeField> 
-                    = mult_state.util_rand_sharings.clone().into_iter()
+            let mut shares_next_depth: Vec<LargeField>
+                    = std::mem::take(&mut mult_state.util_rand_sharings).into_iter()
                         .zip(reconstructed_blinded_secrets.into_iter())
                             .map(|(sharing, recon_secret)|recon_secret-sharing)
                                 .collect();
-            
+
             // Trim the last k shares for padding
             for _i in 0..mult_state.padding_shares{
                 shares_next_depth.pop();
             }
             log::info!("Shares for next depth: {}", shares_next_depth.len());
-            self.verf_state.add_mult_output_shares(depth, shares_next_depth.clone()); // Store the shares for the next depth
+            // Only verified depths' tuples are ever read back (delinearization
+            // filters on `is_verified_depth`), so recording the outputs of
+            // verification's own compression multiplications just retained a
+            // vector per compression level for the rest of the run.
+            if verified_depth{
+                self.verf_state.add_mult_output_shares(depth, shares_next_depth.clone()); // Store the shares for the next depth
+            }
             // self.choose_multiplication_protocol(a_shares, b_shares, depth)
             // How to handle next depth wires?
             mult_state.depth_terminated = true;
             // The per-party L1/L2 share buffers for this depth are now dead: the
-            // reconstructed secrets have been cloned into `shares_next_depth`
+            // reconstructed secrets have been moved into `shares_next_depth`
             // above and handed to the next depth / verification. Free them. The
             // termination bookkeeping is retained so late shares stay deduped.
             // NOTE: this only frees party-sent shares; the multiplication tuples
             // in `verf_state` are kept, as verification consumes them across all
             // depths.
+            // Most of this is already gone by now - the raw shares were freed at
+            // their interpolation and the two vectors above were moved out - so
+            // this is the backstop for the paths that did not reach those points
+            // (e.g. hash agreement on a depth whose L1 shares never all arrived).
             mult_state.clear_shares();
             if depth == self.preprocessing_mult_depth{
                 // Random bit sharings, add them to mix_circuit state

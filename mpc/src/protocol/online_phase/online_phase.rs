@@ -12,13 +12,14 @@ impl<A: Application> Context<A>{
     // This function will be used to run the online phase of the protocol
     pub async fn init_random_shared_bits_preparation(&mut self) {
         // Take two random sharings, and multiply them using a random double sharing
-        let a_shares = self.rand_sharings_state.rand_sharings_inputs.0.clone().into_iter()
+        // Moved out rather than cloned-then-cleared: the clear immediately below
+        // was already saying these are dead here, so the clone only served to
+        // hold a second copy of both halves of the batch while the `Vec<Vec<_>>`
+        // wrappers were being built.
+        let a_shares = std::mem::take(&mut self.rand_sharings_state.rand_sharings_inputs.0).into_iter()
             .map(|x| vec![x]).collect();
-        let b_shares = self.rand_sharings_state.rand_sharings_inputs.1.clone().into_iter()
-        .map(|x| vec![x]).collect();
-
-        self.rand_sharings_state.rand_sharings_inputs.0.clear();
-        self.rand_sharings_state.rand_sharings_inputs.1.clear();
+        let b_shares = std::mem::take(&mut self.rand_sharings_state.rand_sharings_inputs.1).into_iter()
+            .map(|x| vec![x]).collect();
 
         self.choose_multiplication_protocol(a_shares, b_shares, self.preprocessing_mult_depth).await;
     }

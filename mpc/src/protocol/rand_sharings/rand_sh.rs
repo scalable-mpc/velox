@@ -307,11 +307,14 @@ impl<A: Application> Context<A>{
                 let x_values: Vec<LargeField> = (2..self.num_faults+3).into_iter().map(|x| LargeField::from(x as u64)).collect();
                 let vandermonde_matrix = Self::vandermonde_matrix(x_values, 2*self.num_faults+1);
                 
-                // Build party-accumulated share vectors
-                let acs_indexed_rand_bit_group = self.gen_random_sharings(RAND_BIT_ACSS_BATCH, self.rand_bit_batch_size);
-                let acs_indexed_mult_group = self.gen_random_sharings(MULT_ACSS_BATCH, self.mult_batch_size);
+                // Build party-accumulated share vectors. Batch sizes are read into
+                // locals first because the grouping now borrows `self` mutably.
+                let (rand_bit_batch_size, mult_batch_size, zero_batch_size) =
+                    (self.rand_bit_batch_size, self.mult_batch_size, self.zero_batch_size);
+                let acs_indexed_rand_bit_group = self.gen_random_sharings(RAND_BIT_ACSS_BATCH, rand_bit_batch_size);
+                let acs_indexed_mult_group = self.gen_random_sharings(MULT_ACSS_BATCH, mult_batch_size);
 
-                let acs_indexed_2t_share_groups = self.gen_2t_sharings(ZERO_SH2T_BATCH, self.zero_batch_size);
+                let acs_indexed_2t_share_groups = self.gen_2t_sharings(ZERO_SH2T_BATCH, zero_batch_size);
 
                 // Multiply each vector with the indexed vector in the Vandermonde matrix
                 let rand_sharings_bits: Vec<LargeField> = acs_indexed_rand_bit_group.into_par_iter().map(|x| {
@@ -375,9 +378,11 @@ impl<A: Application> Context<A>{
         matrix
     }
 
+    /// Takes the vector as a slice so callers can hand it a chunk of a larger
+    /// buffer without copying that chunk out first.
     pub fn matrix_vector_multiply(
         matrix: &Vec<Vec<LargeField>>,
-        vector: &Vec<LargeField>,
+        vector: &[LargeField],
     ) -> Vec<LargeField> {
         matrix
             .iter()
@@ -389,31 +394,45 @@ impl<A: Application> Context<A>{
             .collect()
     }
 
-    pub fn gen_random_sharings(&self, batch: usize, batch_size: usize)-> Vec<Vec<LargeField>>{
-        Self::group_batch_by_position(
-            &self.rand_sharings_state.shares,
-            &self.rand_sharings_state.acs_output,
+    pub fn gen_random_sharings(&mut self, batch: usize, batch_size: usize)-> Vec<Vec<LargeField>>{
+        let acs_output = std::mem::take(&mut self.rand_sharings_state.acs_output);
+        let grouped = Self::group_batch_by_position(
+            &mut self.rand_sharings_state.shares,
+            &acs_output,
             self.num_nodes,
             batch,
             batch_size,
-        )
+        );
+        self.rand_sharings_state.acs_output = acs_output;
+        grouped
     }
 
-    pub fn gen_2t_sharings(&self, batch: usize, batch_size: usize) -> Vec<Vec<LargeField>>{
-        Self::group_batch_by_position(
-            &self.rand_sharings_state.sh2t_shares,
-            &self.rand_sharings_state.acs_output,
+    pub fn gen_2t_sharings(&mut self, batch: usize, batch_size: usize) -> Vec<Vec<LargeField>>{
+        let acs_output = std::mem::take(&mut self.rand_sharings_state.acs_output);
+        let grouped = Self::group_batch_by_position(
+            &mut self.rand_sharings_state.sh2t_shares,
+            &acs_output,
             self.num_nodes,
             batch,
             batch_size,
-        )
+        );
+        self.rand_sharings_state.acs_output = acs_output;
+        grouped
     }
 
     /// Group one batch's contributions by position: group `i` collects the
     /// `i`-th value dealt by every party in the ACS output set, ready to be
     /// combined through the Vandermonde matrix into `t+1` sharings.
+    ///
+    /// The batch is *moved* out of `shares_per_party` as it is regrouped. Every
+    /// caller is on the path that ends in `shares.clear()` / `sh2t_shares.clear()`
+    /// a few lines later, so the map's copy is dead the moment it has been
+    /// regrouped; copying it first meant holding the whole dealt batch twice
+    /// (`batch_size` x `|acs_output|` field elements) at the preprocessing peak.
+    /// The party's entry itself is left in place so `verify_sender_termination`
+    /// still sees a completed sender.
     fn group_batch_by_position(
-        shares_per_party: &HashMap<usize, HashMap<usize, Vec<LargeField>>>,
+        shares_per_party: &mut HashMap<usize, HashMap<usize, Vec<LargeField>>>,
         acs_output: &HashSet<Replica>,
         num_nodes: usize,
         batch: usize,
@@ -424,11 +443,11 @@ impl<A: Application> Context<A>{
             if !acs_output.contains(&party){
                 continue;
             }
-            let Some(batches) = shares_per_party.get(&party) else {
+            let Some(batches) = shares_per_party.get_mut(&party) else {
                 log::error!("No sharings recorded for party {} in the ACS output set", party);
                 continue;
             };
-            let Some(shares_batch) = batches.get(&batch) else {
+            let Some(mut shares_batch) = batches.remove(&batch) else {
                 log::error!("Batch {} not found in sharings of party {}", batch, party);
                 continue;
             };
@@ -436,8 +455,9 @@ impl<A: Application> Context<A>{
                 log::error!("Party {} dealt {} values in batch {}, expected {}",
                     party, shares_batch.len(), batch, batch_size);
             }
-            for (index, share) in shares_batch.iter().take(batch_size).enumerate(){
-                indexed_share_groups[index].push(share.clone());
+            shares_batch.truncate(batch_size);
+            for (index, share) in shares_batch.into_iter().enumerate(){
+                indexed_share_groups[index].push(share);
             }
         }
         indexed_share_groups

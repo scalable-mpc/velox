@@ -29,7 +29,10 @@ impl<A: Application> Context<A>{
             return;
         }
         let chunk_size = 2*self.num_faults + 1;
-        let mut my_shares = self.mix_circuit_state.rand_bit_recon_shares.get(&self.myid).unwrap().clone();
+        // Taken, not cloned: this is the only reader of our own squaring output,
+        // and removing it makes the `contains_key` guard above short-circuit any
+        // re-entry - which is what the guard was there for anyway.
+        let mut my_shares = self.mix_circuit_state.rand_bit_recon_shares.remove(&self.myid).unwrap();
 
         // Pad with shares of zero so the batch splits into whole chunks. A
         // degree-t sharing of zero is the all-zero share vector, so every party
@@ -124,7 +127,11 @@ impl<A: Application> Context<A>{
                 Polynomial::new(&coefficients).evaluate(&LargeField::zero())
             })
             .collect();
-        recon_state.l1_reconstructed.extend(my_points.clone());
+        // The per-party L1 shares are dead: this interpolation is their only
+        // reader, the claim flag above makes it run once, and every later L1
+        // message is dropped by the same flag in `handle_rand_bit_recon_l1`.
+        recon_state.l1_shares = (Vec::new(), Vec::new());
+        recon_state.l1_reconstructed.extend(my_points.iter().cloned());
 
         let points_ser: Vec<LargeFieldSer> = my_points.iter().map(|point| point.to_bytes_be()).collect();
         let ser_points = bincode::serialize(&points_ser).unwrap();
@@ -191,7 +198,9 @@ impl<A: Application> Context<A>{
         for _ in 0..recon_state.padding.unwrap(){
             reconstructed_values.pop();
         }
-        recon_state.l2_reconstructed.extend(reconstructed_values.clone());
+        // Same argument as L1: the raw L2 points have no reader past this
+        // interpolation, and late L2 messages are dropped by the claim flag.
+        recon_state.l2_shares = (Vec::new(), Vec::new());
 
         // Pin down what everyone reconstructed before deriving random bits from it.
         let mut appended_msg = Vec::new();
@@ -200,6 +209,7 @@ impl<A: Application> Context<A>{
         }
         let hash = do_hash(&appended_msg);
         log::info!("Reconstructed {} squared random sharings, broadcasting hash {:?}", reconstructed_values.len(), hash);
+        recon_state.l2_reconstructed.extend(reconstructed_values);
         self.broadcast(ProtMsg::RandBitReconHash(hash)).await;
         self.verify_rand_bit_recon_termination().await;
     }
@@ -231,7 +241,10 @@ impl<A: Application> Context<A>{
             return;
         }
         recon_state.terminated = true;
-        let reconstructed_values = recon_state.l2_reconstructed.clone();
+        // Moved out: the `terminated` flag set above turns every later entry
+        // into this function - and into both share handlers - into an early
+        // return, so nothing reads `l2_reconstructed` again.
+        let reconstructed_values = std::mem::take(&mut recon_state.l2_reconstructed);
 
         // Take each value's square root in Fp4_61 via the local `Sqrt` trait
         // (Scott's complex method recursing Fp4 → Fp2 → Fp), and invert. Matches
@@ -308,16 +321,18 @@ impl<A: Application> Context<A>{
             return;
         }
         
-        let reconstructed_shares = self.mix_circuit_state.rand_bit_inverse_recon_values.clone();
-        let rand_bit_input_shares = self.mix_circuit_state.rand_bit_inp_shares.clone();
+        // Both inputs are consumed here and have no other reader; taking them
+        // also makes the two guards above short-circuit any re-entry, which is
+        // exactly what the third guard (`rand_bit_sharings` non-empty) did.
+        let reconstructed_shares = std::mem::take(&mut self.mix_circuit_state.rand_bit_inverse_recon_values);
+        let rand_bit_input_shares = std::mem::take(&mut self.mix_circuit_state.rand_bit_inp_shares);
 
-    
         let final_rand_bit_sharings: Vec<LargeField> = rand_bit_input_shares.into_par_iter().zip(reconstructed_shares.into_par_iter()).map(|(r,re)|{
             let mult_share = r.mul(re);
             return mult_share
         }).collect();
 
-        self.mix_circuit_state.rand_bit_sharings.extend(final_rand_bit_sharings.clone());
+        self.mix_circuit_state.rand_bit_sharings.extend(final_rand_bit_sharings);
 
         self.terminate("Preprocessing".to_string(), vec![]).await;
         // Preprocessing is complete: hand the application its share of it and

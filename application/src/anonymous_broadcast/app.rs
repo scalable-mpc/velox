@@ -198,6 +198,12 @@ impl AnonymousBroadcast {
         );
         self.wire_sharings.insert(1, input_sharings);
         self.inputs_assembled = true;
+        // The per-dealer sharings have been concatenated into wire vector 1 and
+        // have no other reader. Dropping them here is safe precisely because
+        // `inputs_assembled` is now set: `input_sharing_termination` bails on
+        // that flag before it would insert a late dealer back into this map, so
+        // an emptied map can never be mistaken for "still waiting for dealers".
+        self.input_wire_sharings.clear();
     }
 
     /// Schedule depth 1 as soon as both the input wires and the preprocessing
@@ -223,23 +229,28 @@ impl AnonymousBroadcast {
             return DepthInput::empty();
         };
 
-        let mut wire_index_map: HashMap<usize, SmallField> = wires
-            .iter()
-            .enumerate()
-            .map(|(i, wire)| (i, wire.clone()))
-            .collect();
-
         let log_switch_index = ((self.log_k - (depth % self.log_k)) % self.log_k) as u32;
         let switch_index = usize::pow(2, log_switch_index);
 
+        // Butterfly pairing read straight off the wire vector. The previous
+        // version copied every wire into a `HashMap<usize, SmallField>` and
+        // drained it with `remove` purely to answer "is this wire still
+        // unpaired"; a bitmap answers that in one byte per wire instead of a
+        // hash-map entry per wire, and drops the copy of the wires entirely.
+        // `contains_key(&i)` on that map was true exactly when `i` indexed a
+        // wire that had not been consumed yet, which is what `!paired[i]` says.
+        let mut paired = vec![false; wires.len()];
         let mut sums = Vec::new();
         let mut diffs = Vec::new();
         for i in 0..self.k_value {
-            if wire_index_map.contains_key(&i) && wire_index_map.contains_key(&(i + switch_index)) {
-                let w1 = wire_index_map.remove(&i).unwrap();
-                let w2 = wire_index_map.remove(&(i + switch_index)).unwrap();
+            let j = i + switch_index;
+            if j < wires.len() && !paired[i] && !paired[j] {
+                paired[i] = true;
+                paired[j] = true;
+                let w1 = &wires[i];
+                let w2 = &wires[j];
                 sums.push(w1.clone() + w2.clone());
-                diffs.push(w1 - w2);
+                diffs.push(w1.clone() - w2.clone());
             }
         }
 
@@ -248,7 +259,7 @@ impl AnonymousBroadcast {
             depth,
             diffs.len(),
             switch_index,
-            wire_index_map.len()
+            paired.iter().filter(|is_paired| !**is_paired).count()
         );
 
         // Check every piece of preprocessing this depth consumes before touching
@@ -309,6 +320,19 @@ impl AnonymousBroadcast {
         self.current_depth = depth;
         self.wire_pair_sums.insert(depth, sums);
 
+        // This depth's input wires are dead: they have been folded into the
+        // `sums` recorded above and the `diffs` handed to multiplication, and
+        // every remaining reader works off those two. Reached only past all the
+        // early returns above, so a depth that could not start yet keeps its
+        // wires and stays retryable.
+        //
+        // The entry is emptied, not removed: `handle_mult_results` dedupes a
+        // replayed depth termination by testing `wire_sharings.contains_key`,
+        // so removing it would let a replay re-run the depth.
+        if let Some(consumed_wires) = self.wire_sharings.get_mut(&depth) {
+            *consumed_wires = Vec::new();
+        }
+
         let rand_sharings = self.random_sharings.remove(&depth).unwrap();
         let zero_sharings = self.zero_sharings.remove(&depth).unwrap();
         DepthInput::from_mult(Multiplication::new(mult_input, rand_sharings, zero_sharings))
@@ -358,7 +382,11 @@ impl AnonymousBroadcast {
                 self.max_depth,
                 next_depth_wires.len()
             );
-            self.wire_sharings.insert(depth + 1, next_depth_wires.clone());
+            // Record the key so a replayed termination of the last depth is
+            // deduped, but not the payload: no depth reads wire vector
+            // `max_depth + 1`, so the stored copy was write-only. The wires
+            // themselves are moved into the output below.
+            self.wire_sharings.insert(depth + 1, Vec::new());
             // The last depth's wires are the circuit's outputs: hand them back
             // for output reconstruction rather than scheduling another depth.
             return DepthInput::from_mult(Multiplication::from_output(
