@@ -9,16 +9,15 @@ from benchmark.instance import InstanceManager
 from benchmark.remote import Bench, BenchError
 from benchmark.utils import PathMaker
 
-# Merge: keep the user's local run parameters (n=97, k=22000) but switch
-# the pacing knob to Akhil's `num_batches` — the old `batch_size` constant
-# is dead now (there's no `--batchsize` CLI flag; the active pacing flag
-# is `--rand-batches`, which Akhil's commands.py threads through).
-n = 97
-num_messages = 22000
-num_batches = 5            # actual pacing knob: flows into --rand-batches at runtime
+n = 49
+num_messages = 65536
+# Flows into `--rand-batches` via commands.py. Note that the flag is currently
+# inert on the node side after the memory-reclaim merge: preprocessing batch
+# counts are semantic now, so this knob has nothing to subdivide.
+num_batches = 5
 # NAMING-ONLY label kept so PathMaker / config.py / log filenames stay
-# consistent with the pre-Akhil runs (`syncer-n_N_messages_BATCH_comp.log`).
-# Has no runtime effect — the real pacing is `num_batches`.
+# consistent with earlier runs (`syncer-n_N_messages_BATCH_comp.log`).
+# Has no runtime effect.
 batch_size = 500
 compression_factor = 10
 

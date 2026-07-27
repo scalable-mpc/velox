@@ -20,6 +20,7 @@ RAND_BATCHES_ARG=${4:+--rand-batches $4}
     --syncer $TESTDIR/syncer \
     --messages $2 \
     --comp $3 \
+    $RAND_BATCHES_ARG \
     --byzantine false > logs/syncer_n_$1_$2_$3.log &
 
 for((i=0;i<$1;i++)); do

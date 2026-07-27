@@ -1,24 +1,18 @@
 {
     "key": {
         "name": "aws",
-        "path": "/Users/gustavofrancocamilo/.ssh/aws"
+        "path": "/home/akhil/.ssh/aws"
     },
     "port": 5000,
-    "client_base_port": 9200,
+    "client_base_port": 9000,
     "client_run_port": 9500,
     "repo": {
-        "name": "Velox-MPC",
-        "url": "https://github.com/gFrancoCamilo/Velox-MPC.git",
-        "branch": "memory-reclaim-party-shares"
+        "name": "velox",
+        "url": "https://github.com/scalable-mpc/velox.git",
+        "branch": "master"
     },
     "instances": {
         "type": "r7i.xlarge",
-        "regions": [
-            "us-east-1",
-            "us-west-1",
-            "eu-west-1",
-            "eu-central-1",
-            "ap-southeast-1"
-        ]
+        "regions": ["us-east-1"]
     }
 }

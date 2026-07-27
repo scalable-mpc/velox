@@ -67,13 +67,12 @@ class Bench:
             # Install rust (non-interactive).
             'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y',
             'source $HOME/.cargo/env',
-            # Need rustc >= 1.85 for edition-2024 transitive deps (time-macros >= 0.2.27,
-            # pulled in by lambdaworks-math 0.13). The old `rustup install 1.83.0` +
-            # `override set 1.83.0` would silently fail every cargo build.
-            'rustup install stable',
-            'rustup default stable',
-            # `override unset` clears any per-directory pin that beats `default`.
-            'rustup override unset 2>/dev/null || true',
+            # Needs rustc >= 1.85 for edition-2024 transitive deps (time-macros >= 0.2.27,
+            # pulled in by lambdaworks-math 0.13). The older 1.83.0 pin would silently
+            # fail every cargo build. 1.88.0 is pinned rather than `stable` so benchmark
+            # runs stay reproducible across the fleet.
+            'rustup install 1.88.0',
+            'rustup override set 1.88.0',
 
             # This is missing from the Rocksdb installer (needed for Rocksdb).
             'sudo apt-get install -y clang',
@@ -135,14 +134,13 @@ class Bench:
             f'(cd {self.settings.repo_name} && git checkout -f {self.settings.branch})',
             f'(cd {self.settings.repo_name} && git pull -f)',
             'source $HOME/.cargo/env',
-            # Defensive: every re-deploy re-asserts stable + clears any
+            # Defensive: every re-deploy re-asserts the 1.88.0 pin, overwriting any
             # leftover per-dir 1.83 pin (both at $HOME and inside the repo).
             # Hosts provisioned by the old install logic — or by the velox
-            # README's manual setup — carry that pin until something clears it.
-            'rustup update stable',
-            'rustup default stable',
-            'rustup override unset 2>/dev/null || true',
-            f'(cd {self.settings.repo_name} && rustup override unset 2>/dev/null || true)',
+            # README's manual setup — carry that pin until something overwrites it.
+            'rustup install 1.88.0',
+            'rustup override set 1.88.0',
+            f'(cd {self.settings.repo_name} && rustup override set 1.88.0)',
             # libgmp3-dev needed by lambdaworks 0.13 transitive deps.
             'sudo apt-get install -y pkg-config libssl-dev libgmp3-dev',
             'export RUSTFLAGS="-C target-feature=+aes,+ssse3"',
