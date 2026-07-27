@@ -29,6 +29,12 @@ use crate::{handlers::{handler::Handler, sync_handler::SyncHandler}, msg::ProtMs
 /// Number of coins sent to the MVBA/ACS instances to facilitate consensus.
 pub const NUM_CONSENSUS_COINS: usize = 500;
 
+/// Default number of sub-batches each random-sharing group is split into, used when
+/// the `--rand-batches` CLI flag is not supplied. The total work
+/// (`tot_batches * total_sharings`) is unchanged; splitting it into more, smaller
+/// ACSS/Sh2t instances (dealt one at a time) bounds peak memory at large batch sizes.
+pub const NUM_RAND_BATCHES: usize = 16;
+
 pub struct Context<A: Application> {
     /// Application-specific logic. The engine drives the protocol phases and
     /// hands control back to the application at each phase boundary.
@@ -130,6 +136,15 @@ impl<A: Application> Context<A> {
         config: Node,
         app: A,
         compression_factor: usize,
+        // Currently inert. Preprocessing is now sized from the application's
+        // `preprocessing_count()` in `init_rand_sh`, and the resulting ACSS/Sh2t
+        // batch ids are semantic (`RAND_BIT_ACSS_BATCH`, `MULT_ACSS_BATCH`,
+        // `ZERO_SH2T_BATCH`), so the batch count is fixed rather than tunable.
+        // Peak memory is still bounded: those batches are dealt one at a time via
+        // `dispatch_next_acss_batch` / `dispatch_next_sh2t_batch`. Kept plumbed so
+        // subdividing each semantic batch can be reintroduced without re-threading
+        // the flag.
+        _num_rand_batches: usize,
         _byz: bool
     ) -> anyhow::Result<oneshot::Sender<()>> {
         // Add a separate configuration for RBC service. 

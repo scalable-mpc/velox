@@ -95,34 +95,45 @@ impl<A: Application> Context<A>{
             self.rand_bit_batch_size, self.mult_batch_size, self.zero_batch_size, self.output_mask_size
         );
 
-        // Start ACSS with abort and 2t-sharing simultaneously for each batch.
+        // Prepare the ACSS secret batches. The vector index doubles as the ACSS
+        // instance id, so the order here has to match `RAND_BIT_ACSS_BATCH` /
+        // `MULT_ACSS_BATCH`.
         let acss_batch_sizes = [
             (RAND_BIT_ACSS_BATCH, self.rand_bit_batch_size),
             (MULT_ACSS_BATCH, self.mult_batch_size),
         ];
-        for (index, batch_size) in acss_batch_sizes.into_iter(){
-            log::info!("Initiating secret sharing in preprocessing phase for batch {} with {} values", index, batch_size);
-            let batch: Vec<LargeFieldSer> = (0..batch_size).into_par_iter()
-                .map(|_| rand_field_element().to_bytes_be())
-                .collect();
-            let status = self.acss_ab_send.send((index,batch)).await;
-            if status.is_err(){
-                log::error!("Failed to send random values to ACSS protocol for batch {} because of error: {:?}", index, status.err().unwrap());
-            }
-        }
+        let deg_t_batches: Vec<Vec<LargeFieldSer>> = acss_batch_sizes.into_iter()
+            .map(|(index, batch_size)|{
+                log::info!("Preparing secret sharing batch {} with {} values", index, batch_size);
+                (0..batch_size).into_par_iter()
+                    .map(|_| rand_field_element().to_bytes_be())
+                    .collect()
+            })
+            .collect();
+
+        // Hold all prepared ACSS secret batches in memory and deal only the first one.
+        // Subsequent batches are dealt one at a time as senders complete the in-flight
+        // batch (see `dispatch_next_acss_batch` / `handle_acss_term_msg`).
+        self.rand_sharings_state.acss_pending = deg_t_batches;
+        self.rand_sharings_state.acss_dispatch_cursor = 0;
+        self.dispatch_next_acss_batch().await;
 
         // Initiate input sharing module as well. The application decides what
         // this party contributes to the circuit's input wires.
         self.initialize_input_sharing().await;
 
-        log::info!("Initiating 2t sharing in preprocessing phase with {} values", self.zero_batch_size);
-        let zeros: Vec<LargeFieldSer> = (0..self.zero_batch_size).into_par_iter()
-            .map(|_| LargeField::zero().to_bytes_be())
-            .collect();
-        let status = self.sh2t_send.send((ZERO_SH2T_BATCH,zeros)).await;
-        if status.is_err(){
-            log::error!("Failed to send random values to Sh2t protocol for batch {} because of error: {:?}", ZERO_SH2T_BATCH, status.err().unwrap());
-        }
+        log::info!("Preparing 2t sharing in preprocessing phase with {} values", self.zero_batch_size);
+        let zeros: Vec<Vec<LargeFieldSer>> = vec![
+            (0..self.zero_batch_size).into_par_iter()
+                .map(|_| LargeField::zero().to_bytes_be())
+                .collect()
+        ];
+
+        // Likewise, hold all prepared Sh2t (zero) batches and deal only the first one;
+        // the rest are paced as senders complete the in-flight batch.
+        self.rand_sharings_state.sh2t_pending = zeros;
+        self.rand_sharings_state.sh2t_dispatch_cursor = 0;
+        self.dispatch_next_sh2t_batch().await;
 
         // Random masks for output wires
         let mut random_masks = Vec::new();
@@ -132,6 +143,39 @@ impl<A: Application> Context<A>{
         let avss_status = self.avss_send.send((true, Some(random_masks), None)).await;
         if avss_status.is_err(){
             log::error!("Failed to send random values to AVSS protocol {:?}", avss_status.err().unwrap());
+        }
+    }
+
+    /// Deal the next pending ACSS secret batch, if any remain. The vector index is
+    /// used as the instance id, and the secret is moved out (freeing it from the
+    /// pending buffer) as it is dealt.
+    pub async fn dispatch_next_acss_batch(&mut self){
+        let cur = self.rand_sharings_state.acss_dispatch_cursor;
+        if cur >= self.rand_sharings_state.acss_pending.len(){
+            return;
+        }
+        let batch = std::mem::take(&mut self.rand_sharings_state.acss_pending[cur]);
+        self.rand_sharings_state.acss_dispatch_cursor += 1;
+        log::info!("Initiating secret sharing in preprocessing phase for batch {}", cur);
+        let status = self.acss_ab_send.send((cur, batch)).await;
+        if status.is_err(){
+            log::error!("Failed to send random values to ACSS protocol for batch {} because of error: {:?}", cur, status.err().unwrap());
+        }
+    }
+
+    /// Deal the next pending Sh2t (zero) batch, if any remain. Mirrors
+    /// `dispatch_next_acss_batch` for the Sh2t module.
+    pub async fn dispatch_next_sh2t_batch(&mut self){
+        let cur = self.rand_sharings_state.sh2t_dispatch_cursor;
+        if cur >= self.rand_sharings_state.sh2t_pending.len(){
+            return;
+        }
+        let batch = std::mem::take(&mut self.rand_sharings_state.sh2t_pending[cur]);
+        self.rand_sharings_state.sh2t_dispatch_cursor += 1;
+        log::info!("Initiating 2t sharing in preprocessing phase for batch {}", cur);
+        let status = self.sh2t_send.send((cur, batch)).await;
+        if status.is_err(){
+            log::error!("Failed to send random values to Sh2t protocol for batch {} because of error: {:?}", cur, status.err().unwrap());
         }
     }
 
@@ -158,6 +202,18 @@ impl<A: Application> Context<A>{
         let shares_batches_map = self.rand_sharings_state.shares.get_mut(&sender).unwrap();
         shares_batches_map.insert(instance, shares_deser);
 
+        // Pace dealing: once `n-t` distinct senders have returned shares for the
+        // in-flight batch (`cursor - 1`), deal the next batch. This keeps at most one
+        // ACSS instance in flight at a time so the module can reclaim its memory.
+        if self.rand_sharings_state.acss_dispatch_cursor > 0{
+            let inflight = self.rand_sharings_state.acss_dispatch_cursor - 1;
+            let done = self.rand_sharings_state.shares.values()
+                .filter(|m| m.contains_key(&inflight)).count();
+            if done >= self.num_nodes - self.num_faults{
+                self.dispatch_next_acss_batch().await;
+            }
+        }
+
         self.verify_sender_termination(sender).await;
     }
 
@@ -182,6 +238,16 @@ impl<A: Application> Context<A>{
 
         let shares_batches_map = self.rand_sharings_state.sh2t_shares.get_mut(&sender).unwrap();
         shares_batches_map.insert(instance, shares_deser);
+
+        // Pace dealing of the Sh2t module identically to ACSS above.
+        if self.rand_sharings_state.sh2t_dispatch_cursor > 0{
+            let inflight = self.rand_sharings_state.sh2t_dispatch_cursor - 1;
+            let done = self.rand_sharings_state.sh2t_shares.values()
+                .filter(|m| m.contains_key(&inflight)).count();
+            if done >= self.num_nodes - self.num_faults{
+                self.dispatch_next_sh2t_batch().await;
+            }
+        }
 
         self.verify_sender_termination(sender).await;
     }
@@ -282,6 +348,11 @@ impl<A: Application> Context<A>{
                 // Clear acss sharings now
                 self.rand_sharings_state.shares.clear();
                 self.rand_sharings_state.sh2t_shares.clear();
+                // The per-party input ACSS shares were just consumed by
+                // `gen_input_sharings()` above and are not read again (late
+                // senders are short-circuited by the cleared `shares` map). Free
+                // them alongside the other consumed ACSS share buffers.
+                self.mix_circuit_state.input_acss_shares.clear();
 
                 self.generate_random_mask_shares(self.rand_sharings_state.acs_output.clone(),vandermonde_matrix).await;
                 self.init_random_shared_bits_preparation().await;

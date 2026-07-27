@@ -32,6 +32,11 @@ async fn main() -> Result<()> {
         .value_of("comp")
         .expect("Unable to parse compression factor")
         .parse::<usize>().unwrap();
+    // Optional; defaults to mpc::NUM_RAND_BATCHES when not supplied.
+    let num_rand_batches = m
+        .value_of("rand_batches")
+        .map(|v| v.parse::<usize>().expect("Unable to parse number of random-sharing batches"))
+        .unwrap_or(mpc::NUM_RAND_BATCHES);
     // let broadcast_msgs_file = m
     //     .value_of("bfile")
     //     .expect("Unable to parse broadcast messages file");
@@ -128,6 +133,7 @@ async fn main() -> Result<()> {
                     config,
                     app,
                     compression_factor,
+                    num_rand_batches,
                     node_normal
                 ).or_else(|e| {
                     log::error!("Error starting MPC protocol: {}", e);
