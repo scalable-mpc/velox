@@ -116,6 +116,9 @@ impl AnonymousBroadcast {
     /// the circuit but carries no message.
     pub fn with_inputs(mut self, inputs: Vec<SmallField>) -> Self {
         self.my_inputs = Some(inputs);
+        // party set with inputs
+        let parties:Vec<usize> = (0..self.num_nodes).into_iter().collect();
+        self.set_input_party_set(parties);
         self
     }
 
@@ -271,14 +274,15 @@ impl AnonymousBroadcast {
             return DepthInput::empty();
         };
         // The multiplication protocol consumes one random sharing per gate and,
-        // in its linear variant, roughly one zero sharing per two gates.
-        if rand_sharings.len() < num_switches || zero_sharings.len() < num_switches / 2 {
+        // in its linear variant, t+1 zero sharings per group of 2t+1 gates.
+        let zero_sharings_needed = num_switches.div_ceil(2*self.num_faults + 1) * (self.num_faults + 1);
+        if rand_sharings.len() < num_switches || zero_sharings.len() < zero_sharings_needed {
             log::warn!(
                 "AnonymousBroadcast: cannot start depth {} — {} gates need {} random and {} zero sharings, have {} and {}",
                 depth,
                 num_switches,
                 num_switches,
-                num_switches / 2,
+                zero_sharings_needed,
                 rand_sharings.len(),
                 zero_sharings.len()
             );

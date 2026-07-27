@@ -43,7 +43,7 @@ impl<A: Application> Context<A>{
         self.mix_circuit_state.rand_bit_recon_state.init_chunks(num_chunks);
         // Set independently of the chunk count: a peer's message may have sized
         // the chunks already, but only this party's own batch knows the padding.
-        self.mix_circuit_state.rand_bit_recon_state.padding = padding;
+        self.mix_circuit_state.rand_bit_recon_state.padding = Some(padding);
 
         // Evaluate every chunk polynomial at all n party points in one GEMM:
         // evals[p][chunk] is this party's share of Z_chunk(α_p).
@@ -61,10 +61,14 @@ impl<A: Application> Context<A>{
             let cancel_handler = self.net_send.send(party, wrapper_msg).await;
             self.add_cancel_handler(cancel_handler);
         }
+        self.verify_rand_bit_recon_l1().await;
+        self.verify_rand_bit_recon_l2().await;
+        self.verify_rand_bit_recon_termination().await;
     }
 
-    /// L1: shares of this party's point on each chunk polynomial. With n-t of
-    /// them the point itself is reconstructed and broadcast.
+    /// L1: record a sender's shares of this party's point on each chunk
+    /// polynomial. Only bookkeeping — the interpolation happens in
+    /// `verify_rand_bit_recon_l1` once the threshold is in.
     pub async fn handle_rand_bit_recon_l1(&mut self, ser_shares: Vec<u8>, sender: Replica){
         log::debug!("Received L1 random bit reconstruction shares from party {}", sender);
         let shares_ser: Vec<LargeFieldSer> = match bincode::deserialize(&ser_shares){
@@ -78,12 +82,10 @@ impl<A: Application> Context<A>{
             .map(|share| LargeField::from_bytes_be(&share).unwrap())
             .collect();
 
-        let num_nodes = self.num_nodes;
-        let num_faults = self.num_faults;
         let evaluation_point = Self::get_share_evaluation_point(sender, self.use_fft, self.roots_of_unity.clone());
 
         let recon_state = &mut self.mix_circuit_state.rand_bit_recon_state;
-        if recon_state.terminated || !recon_state.l1_reconstructed.is_empty(){
+        if recon_state.terminated || recon_state.l1_reconstruction_started{
             return;
         }
         // The sender chunked the same batch we did, so it fixes the chunk count
@@ -95,9 +97,24 @@ impl<A: Application> Context<A>{
         }
         recon_state.recv_share_count_l1 += 1;
 
-        if recon_state.recv_share_count_l1 != num_nodes - num_faults{
+        self.verify_rand_bit_recon_l1().await;
+    }
+
+    /// Interpolate this party's point on every chunk polynomial from the L1
+    /// shares, and broadcast the result.
+    ///
+    /// The claim flag is set before any of the work, so whichever message
+    /// crosses the threshold owns the reconstruction and the ones behind it
+    /// return immediately.
+    pub async fn verify_rand_bit_recon_l1(&mut self){
+        let recon_state = &mut self.mix_circuit_state.rand_bit_recon_state;
+        if recon_state.terminated || recon_state.l1_reconstruction_started{
             return;
         }
+        if recon_state.recv_share_count_l1 < self.num_nodes - self.num_faults{
+            return;
+        }
+        recon_state.l1_reconstruction_started = true;
 
         log::info!("Attempting L1 reconstruction of random bit sharings");
         let inv_vdm_matrix = inverse_vandermonde(vandermonde_matrix(recon_state.l1_shares.0.clone()));
@@ -112,10 +129,11 @@ impl<A: Application> Context<A>{
         let points_ser: Vec<LargeFieldSer> = my_points.iter().map(|point| point.to_bytes_be()).collect();
         let ser_points = bincode::serialize(&points_ser).unwrap();
         self.broadcast(ProtMsg::RandBitReconL2(ser_points)).await;
+        self.verify_rand_bit_recon_l2().await;
     }
 
-    /// L2: the points other parties reconstructed. n-t of them interpolate each
-    /// chunk polynomial, whose coefficients are the reconstructed values.
+    /// L2: record the point a sender reconstructed on each chunk polynomial.
+    /// Only bookkeeping — `verify_rand_bit_recon_l2` does the interpolation.
     pub async fn handle_rand_bit_recon_l2(&mut self, ser_points: Vec<u8>, sender: Replica){
         log::debug!("Received L2 random bit reconstruction shares from party {}", sender);
         let points_ser: Vec<LargeFieldSer> = match bincode::deserialize(&ser_points){
@@ -129,13 +147,11 @@ impl<A: Application> Context<A>{
             .map(|point| LargeField::from_bytes_be(&point).unwrap())
             .collect();
 
-        let num_nodes = self.num_nodes;
-        let num_faults = self.num_faults;
         // L1 evaluated the chunk polynomials at these same points.
         let evaluation_point = self.roots_of_unity.get(sender).unwrap().clone();
 
         let recon_state = &mut self.mix_circuit_state.rand_bit_recon_state;
-        if recon_state.terminated || !recon_state.l2_reconstructed.is_empty(){
+        if recon_state.terminated || recon_state.l2_reconstruction_started{
             return;
         }
         recon_state.init_chunks(points.len());
@@ -145,9 +161,24 @@ impl<A: Application> Context<A>{
         }
         recon_state.recv_share_count_l2 += 1;
 
-        if recon_state.recv_share_count_l2 != num_nodes - num_faults{
+        self.verify_rand_bit_recon_l2().await;
+    }
+
+    /// Interpolate the publicly reconstructed values from the L2 points, and
+    /// broadcast a hash of them. Claimed by the first message to cross the
+    /// threshold, like the L1 step.
+    pub async fn verify_rand_bit_recon_l2(&mut self){
+        let recon_state = &mut self.mix_circuit_state.rand_bit_recon_state;
+        if recon_state.terminated || recon_state.l2_reconstruction_started{
             return;
         }
+        if recon_state.recv_share_count_l2 < self.num_nodes - self.num_faults{
+            return;
+        }
+        if recon_state.padding.is_none(){
+            return;
+        }
+        recon_state.l2_reconstruction_started = true;
 
         log::info!("Attempting L2 reconstruction of random bit sharings");
         let inv_vdm_matrix = inverse_vandermonde(vandermonde_matrix(recon_state.l2_shares.0.clone()));
@@ -157,7 +188,7 @@ impl<A: Application> Context<A>{
             .map(|chunk_points| matrix_vector_multiply(&inv_vdm_matrix, chunk_points))
             .flatten()
             .collect();
-        for _ in 0..recon_state.padding{
+        for _ in 0..recon_state.padding.unwrap(){
             reconstructed_values.pop();
         }
         recon_state.l2_reconstructed.extend(reconstructed_values.clone());
@@ -306,8 +337,9 @@ impl<A: Application> Context<A>{
         // needs when the linear protocol rounds it up to a multiple of 2t+1.
         let mult_padding = (counts.depth + 1) * (2*self.num_faults + 1);
         let rand_sharings_needed = counts.simd_mult + mult_padding;
-        // Half a zero sharing per gate.
-        let zero_sharings_needed = rand_sharings_needed.div_ceil(2);
+        // `t+1` zero sharings per group of 2t+1 gates, matching what the linear
+        // multiplication protocol draws.
+        let zero_sharings_needed = rand_sharings_needed.div_ceil(2*self.num_faults + 1) * (self.num_faults + 1);
 
         let available_rand = self.rand_sharings_state.rand_sharings_mult.len();
         let available_zero = self.rand_sharings_state.rand_2t_sharings_mult.len();
@@ -338,9 +370,5 @@ impl<A: Application> Context<A>{
             None,
         ).await;
         self.handle_application_depth_input(depth_input).await;
-
-        // The input sharings may have terminated while preprocessing was still
-        // running; hand them over now if so.
-        self.forward_input_sharings().await;
     }
 }

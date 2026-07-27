@@ -10,7 +10,7 @@ use types::Replica;
 pub struct RandBitReconState{
     /// Zero shares appended to round the batch up to a multiple of 2t+1; the
     /// same number of reconstructed values is trimmed at the end.
-    pub padding: usize,
+    pub padding: Option<usize>,
     /// Number of chunks of 2t+1 values the batch was split into.
     pub num_chunks: usize,
 
@@ -18,6 +18,9 @@ pub struct RandBitReconState{
     /// party's point on the chunk polynomial.
     pub l1_shares: (Vec<LargeField>, Vec<Vec<LargeField>>),
     pub recv_share_count_l1: usize,
+    /// Claimed by whoever crosses the L1 threshold first, so a later message
+    /// arriving while the interpolation is in flight does not redo it.
+    pub l1_reconstruction_started: bool,
     /// This party's point on each chunk polynomial, recovered from L1.
     pub l1_reconstructed: Vec<LargeField>,
 
@@ -25,6 +28,8 @@ pub struct RandBitReconState{
     /// reconstructed at L1.
     pub l2_shares: (Vec<LargeField>, Vec<Vec<LargeField>>),
     pub recv_share_count_l2: usize,
+    /// Same claim flag for the L2 interpolation.
+    pub l2_reconstruction_started: bool,
     /// The publicly reconstructed values, recovered from L2.
     pub l2_reconstructed: Vec<LargeField>,
 
@@ -38,13 +43,15 @@ pub struct RandBitReconState{
 impl RandBitReconState{
     pub fn new() -> Self{
         RandBitReconState{
-            padding: 0,
+            padding: None,
             num_chunks: 0,
             l1_shares: (Vec::new(), Vec::new()),
             recv_share_count_l1: 0,
+            l1_reconstruction_started: false,
             l1_reconstructed: Vec::new(),
             l2_shares: (Vec::new(), Vec::new()),
             recv_share_count_l2: 0,
+            l2_reconstruction_started: false,
             l2_reconstructed: Vec::new(),
             recv_hash_set: HashSet::new(),
             recv_hash_msgs: Vec::new(),

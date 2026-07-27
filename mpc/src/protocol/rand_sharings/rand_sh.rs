@@ -54,7 +54,7 @@ impl<A: Application> Context<A>{
             compression_levels += 1;
         }
         // Two extra masks: the random beaver mask `delinearize_mult_tuples` pops.
-        let verification_gates = compression_levels * (2*t + 1) + 2;
+        let verification_gates = self.num_nodes*compression_levels * (2*t + 1) + 2;
 
         // Random sharings, by consumer:
         //  - one mask per multiplication gate,
@@ -69,12 +69,21 @@ impl<A: Application> Context<A>{
             + verification_gates
             + self.total_sharings_for_coins
         );
-        // Zero sharings: half a sharing per multiplication gate and half per
-        // random bit, since the linear protocol draws `t+1` zeros per group of
-        // 2t+1 gates.
-        self.zero_batch_size = batch_size_for(
-            (num_mult_gates + num_rand_bits + mult_padding + verification_gates).div_ceil(2)
-        );
+        // Zero sharings: the linear protocol draws `t+1` of them for every group
+        // of 2t+1 gates — more than half a sharing per gate, so budgeting half
+        // underfeeds it and the protocol aborts partway through.
+        //
+        // Every batch rounds up to whole groups on its own, and a depth holding
+        // fewer than 2t+1 gates still burns a full group. Budget per consumer so
+        // that waste is counted once per batch rather than once overall: the
+        // rand-bit squaring is one batch, each circuit depth is one, and so is
+        // each compression level of verification.
+        let group = 2*t + 1;
+        let zero_sharing_groups =
+            (num_rand_bits + group).div_ceil(group)
+            + num_mult_gates.div_ceil(group) + counts.depth
+            + verification_gates.div_ceil(group) + compression_levels;
+        self.zero_batch_size = batch_size_for(zero_sharing_groups * (t + 1));
         // AVSS masks blind the output wires before public reconstruction.
         self.output_mask_size = batch_size_for(counts.output) + 1;
 
@@ -182,19 +191,14 @@ impl<A: Application> Context<A>{
             log::debug!("ACSS, Sh2t, and AVSS not completed for sender {} for all batches", sender);
             return;
         }
-        if !self.mix_circuit_state.input_acss_shares.contains_key(&sender){
-            return;
-        }
         if self.rand_sharings_state.acss_completed_parties.contains(&sender){
             log::debug!("ACSS, Sh2t, and AVSS already completed for sender {} for all batches", sender);
             return;
         }
         let shares_batches_map = self.rand_sharings_state.shares.get_mut(&sender).unwrap();
         let share_2t_batches_map = self.rand_sharings_state.sh2t_shares.get_mut(&sender).unwrap();
-        let input_sharings = self.mix_circuit_state.input_acss_shares.get_mut(&sender).unwrap();
         if shares_batches_map.len() == NUM_ACSS_BATCHES &&
             share_2t_batches_map.len() == NUM_SH2T_BATCHES &&
-            input_sharings.len() == 1 &&
             self.output_mask_state.avss_shares.contains_key(&sender){
             // ACSS is complete. Wait for sh2t sharings now
             log::info!("ACSS, ACSS Input, Sh2t, and AVSS completed for sender {} for all batches", sender);

@@ -62,49 +62,9 @@ impl<A: Application> Context<A>{
             .map(|el| LargeField::from_bytes_be(&el).unwrap())
             .collect();
 
-        input_sharing_state.insert(input_sharing_inst, shares_deser);
-        self.verify_sender_termination(sender).await;
-        self.forward_input_sharings().await;
-    }
-
-    /// Hand the input sharings to the application, one dealer at a time.
-    ///
-    /// The application decides which sharings become which input wires, so the
-    /// order it sees them in has to be identical at every party — otherwise
-    /// parties would mix different wire orders. We therefore wait until the ACS
-    /// output set is decided and every dealer in it has terminated its input
-    /// ACSS, then walk that set in ascending party order.
-    pub async fn forward_input_sharings(&mut self){
-        if self.mix_circuit_state.input_sharings_forwarded{
-            return;
-        }
-        if self.rand_sharings_state.acs_output.is_empty(){
-            return;
-        }
-
-        let mut dealers: Vec<Replica> = self.rand_sharings_state.acs_output.iter().copied().collect();
-        dealers.sort();
-        for dealer in dealers.iter(){
-            let terminated = self.mix_circuit_state.input_acss_shares
-                .get(dealer)
-                .map_or(false, |batches| batches.contains_key(&0));
-            if !terminated{
-                log::debug!("Input ACSS of dealer {} has not terminated yet; deferring input handover", dealer);
-                return;
-            }
-        }
-
-        self.mix_circuit_state.input_sharings_forwarded = true;
-        log::info!("Handing input sharings of {} dealers over to the application", dealers.len());
-        for dealer in dealers.into_iter(){
-            let shares = self.mix_circuit_state.input_acss_shares
-                .get(&dealer)
-                .unwrap()
-                .get(&0)
-                .unwrap()
-                .clone();
-            let depth_input = self.app.input_sharing_termination(dealer, shares).await;
-            self.handle_application_depth_input(depth_input).await;
-        }
+        input_sharing_state.insert(input_sharing_inst, shares_deser.clone());
+        
+        let depth_input = self.app.input_sharing_termination(sender, shares_deser).await;
+        self.handle_application_depth_input(depth_input).await;
     }
 }
