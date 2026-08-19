@@ -423,6 +423,10 @@ impl<A: Application> Context<A> {
         self.add_cancel_handler(cancel_handler);
     }
 
+    // TODO: the handlers dispatched from this loop call rayon `par_iter` inline
+    // (quad_mult, lin_mult, compress_tup, rand_sh, ...). Those block the tokio
+    // worker running this task rather than yielding, so the loop stops draining
+    // while the unbounded `net_recv` inbox keeps growing. See TODO.md.
     pub async fn run(&mut self) -> Result<()> {
         // The process starts listening to messages in this process.
         // First, the node sends an alive message

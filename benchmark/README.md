@@ -50,6 +50,7 @@ The file [settings.json](https://github.com/akhilsb/Velox-MPC/blob/master/benchm
     "port": 5000,
     "client_base_port": 7500,
     "client_run_port": 8000,
+    "use_private_ips": true,
     "repo": {
         "name": "Velox-MPC",
         "url": "https://github.com/akhilsb/Velox-MPC.git",
@@ -78,6 +79,12 @@ The second block (`ports`) specifies the TCP ports to use:
 "client_run_port": 8000,
 ```
 The artifact requires a number of TCP ports for communication between the processes. Note that the script will open a large port range (5000-10000) to the LAN on all your AWS instances. 
+
+`use_private_ips` selects which addresses the nodes dial each other on. It does not affect SSH, which always uses the public ips, so `fab` still runs from anywhere:
+```json
+"use_private_ips": true,
+```
+Leave it `true` for a single-region testbed: the n^2 protocol traffic then stays inside the VPC instead of hairpinning out through the internet gateway, which is both faster and cheaper. Set it to `false` for a WAN testbed spanning several regions (see [settings-wan.json](settings-wan.json)) — each region has its own VPC, and without peering between them only the global (public) ips are routable. The field is optional and defaults to `true`.
 
 The third block (`repo`) contains the information regarding the repository's name, the URL of the repo, and the branch containing the code to deploy: 
 ```json

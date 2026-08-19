@@ -8,7 +8,7 @@ class SettingsError(Exception):
 
 class Settings:
     def __init__(self, key_name, key_path, base_port,client_base_port,client_run_port, repo_name, repo_url,
-                 branch, instance_type, aws_regions):
+                 branch, instance_type, aws_regions, use_private_ips=True):
         inputs_str = [
             key_name, key_path, repo_name, repo_url, branch, instance_type
         ]
@@ -19,6 +19,7 @@ class Settings:
         inputs_str += regions
         ok = all(isinstance(x, str) for x in inputs_str)
         ok &= isinstance(base_port, int)
+        ok &= isinstance(use_private_ips, bool)
         ok &= len(regions) > 0
         if not ok:
             raise SettingsError('Invalid settings types')
@@ -38,6 +39,12 @@ class Settings:
         self.instance_type = instance_type
         self.aws_regions = regions
 
+        # Whether the protocol addresses nodes by their private ip. True keeps
+        # the n^2 traffic inside the VPC, which is what a single-region testbed
+        # wants. A WAN testbed spans regions whose VPCs are not peered, so its
+        # nodes can only reach each other over their global (public) ips.
+        self.use_private_ips = use_private_ips
+
     @classmethod
     def load(cls, filename):
         try:
@@ -55,6 +62,9 @@ class Settings:
                 data['repo']['branch'],
                 data['instances']['type'],
                 data['instances']['regions'],
+                # Optional so that older settings files keep working; they are
+                # single-region, where private ips are the right default.
+                data.get('use_private_ips', True),
             )
         except (OSError, JSONDecodeError) as e:
             raise SettingsError(str(e))

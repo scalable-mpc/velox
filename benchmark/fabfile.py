@@ -9,12 +9,12 @@ from benchmark.instance import InstanceManager
 from benchmark.remote import Bench, BenchError
 from benchmark.utils import PathMaker
 
-n = 49
+n = 97
 num_messages = 65536
 # Flows into `--rand-batches` via commands.py. Note that the flag is currently
 # inert on the node side after the memory-reclaim merge: preprocessing batch
 # counts are semantic now, so this knob has nothing to subdivide.
-num_batches = 5
+num_batches = 15
 # NAMING-ONLY label kept so PathMaker / config.py / log filenames stay
 # consistent with earlier runs (`syncer-n_N_messages_BATCH_comp.log`).
 # Has no runtime effect.
@@ -67,10 +67,27 @@ def info(ctx):
 
 
 @task
-def install(ctx):
-    ''' Install the codebase on all machines '''
+def unlock_apt(ctx, timeout=0, stall=120):
+    ''' Kill whatever is holding the apt/dpkg locks on all machines
+
+    Runs as part of `fab install`; use it standalone to unblock a machine
+    whose apt is wedged. Reports what it killed on each host.
+    '''
     try:
-        Bench(ctx).install()
+        Bench(ctx).unlock_apt(step_timeout=int(timeout), stall_after=int(stall))
+    except BenchError as e:
+        Print.error(e)
+
+
+@task
+def install(ctx, timeout=0, stall=120):
+    ''' Install the codebase on all machines
+
+    timeout: abort a single step after this many seconds (0 = never).
+    stall:   flag a step as stalled after this many seconds without output.
+    '''
+    try:
+        Bench(ctx).install(step_timeout=int(timeout), stall_after=int(stall))
     except BenchError as e:
         Print.error(e)
 

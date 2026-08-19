@@ -6,6 +6,7 @@
     "port": 5000,
     "client_base_port": 9000,
     "client_run_port": 9500,
+    "use_private_ips": true,
     "repo": {
         "name": "velox",
         "url": "https://github.com/scalable-mpc/velox.git",
