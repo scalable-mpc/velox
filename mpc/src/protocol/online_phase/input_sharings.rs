@@ -1,13 +1,13 @@
 use application::Application;
 use std::collections::HashMap;
 
-use fields::ByteConversion;
-use fields::{LargeFieldSer, LargeField};
+use fields::{LargeFieldSer, ProtocolField, FieldSer};
 use types::Replica;
 
 use crate::Context;
+use lambdaworks_math::field::element::FieldElement;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     /// Ask the application what this party contributes to the circuit's input
     /// wires and deal it through ACSS-Ab.
     ///
@@ -30,7 +30,7 @@ impl<A: Application> Context<A>{
                 );
             }
             match secrets.into_iter().next(){
-                Some(secret) => inputs_ser.push(secret.to_bytes_be()),
+                Some(secret) => inputs_ser.push(secret.ser_be()),
                 None => log::warn!("Application proposed an empty input sharing; skipping it"),
             }
         }
@@ -58,8 +58,8 @@ impl<A: Application> Context<A>{
         }
 
         let input_sharing_state = self.mix_circuit_state.input_acss_shares.get_mut(&sender).unwrap();
-        let shares_deser: Vec<LargeField> = shares.into_iter()
-            .map(|el| LargeField::from_bytes_be(&el).unwrap())
+        let shares_deser: Vec<FieldElement<F>> = shares.into_iter()
+            .map(|el| F::from_bytes_be(&el).unwrap())
             .collect();
 
         input_sharing_state.insert(input_sharing_inst, shares_deser.clone());

@@ -1,18 +1,19 @@
 use lambdaworks_math::polynomial::Polynomial;
-use fields::LargeField;
+use lambdaworks_math::field::element::FieldElement;
+use fields::{ProtocolField};
 
-pub struct ExComprState{
+pub struct ExComprState<F: ProtocolField>{
     pub depth: usize,
 
-    pub x_sharings: Vec<Vec<LargeField>>,
-    pub y_sharings: Vec<Vec<LargeField>>,
-    pub mult_sharings: Vec<LargeField>,
+    pub x_sharings: Vec<Vec<FieldElement<F>>>,
+    pub y_sharings: Vec<Vec<FieldElement<F>>>,
+    pub mult_sharings: Vec<FieldElement<F>>,
     
-    pub rem_mult_tup: Option<(Vec<LargeField>, Vec<LargeField>, LargeField)>,
+    pub rem_mult_tup: Option<(Vec<FieldElement<F>>, Vec<FieldElement<F>>, FieldElement<F>)>,
 
-    pub x_polys: Option<Vec<Polynomial<LargeField>>>,
-    pub y_polys: Option<Vec<Polynomial<LargeField>>>,
-    pub h_poly: Option<Polynomial<LargeField>>,
+    pub x_polys: Option<Vec<Polynomial<FieldElement<F>>>>,
+    pub y_polys: Option<Vec<Polynomial<FieldElement<F>>>>,
+    pub h_poly: Option<Polynomial<FieldElement<F>>>,
 
     /// Whether the extended x/y evaluations have been produced and sent to
     /// multiplication.
@@ -23,16 +24,16 @@ pub struct ExComprState{
     /// second copy of them - the largest allocation of the first compression
     /// level - to answer a yes/no question is what this flag replaces.
     pub extended_sharings_generated: bool,
-    pub extended_mult_sharings: Vec<LargeField>,
+    pub extended_mult_sharings: Vec<FieldElement<F>>,
 
     // Tuple represents ordered evaluation indices as well as the shares
-    pub coin_toss_shares: (Vec<LargeField>, Vec<LargeField>),
-    pub coin_output: Option<LargeField>,
+    pub coin_toss_shares: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
+    pub coin_output: Option<FieldElement<F>>,
 
     pub ex_compr_terminated: bool,
 }
 
-impl ExComprState{
+impl<F: ProtocolField> ExComprState<F>{
     /// Frees this compression level's payload once the level has terminated.
     ///
     /// At that point `verify_level_termination` has already evaluated the x, y
@@ -57,7 +58,7 @@ impl ExComprState{
     }
 }
 
-impl ExComprState{
+impl<F: ProtocolField> ExComprState<F>{
     pub fn new(depth: usize) -> Self {
         ExComprState{
             depth,

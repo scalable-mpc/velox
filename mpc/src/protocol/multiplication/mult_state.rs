@@ -1,22 +1,23 @@
 use std::{collections::{HashMap, HashSet}};
 
 use crypto::hash::Hash;
-use fields::LargeField;
 use types::Replica;
+use lambdaworks_math::field::element::FieldElement;
+use fields::{ProtocolField};
 
-pub struct MultState{
-    pub depth_share_map: HashMap<usize, SingleDepthState>,
-    pub output_layer: OutputLayerState,
+pub struct MultState<F: ProtocolField>{
+    pub depth_share_map: HashMap<usize, SingleDepthState<F>>,
+    pub output_layer: OutputLayerState<F>,
 }
 
-pub struct SingleDepthState{
+pub struct SingleDepthState<F: ProtocolField>{
     // Each party sends one share from each group. This map is sorted group wise
-    pub l1_shares: (Vec<LargeField>,Vec<Vec<LargeField>>),
-    pub l1_shares_reconstructed: Vec<LargeField>,
-    pub l2_shares: (Vec<LargeField>,Vec<Vec<LargeField>>),
-    pub l2_shares_reconstructed: Vec<LargeField>,
+    pub l1_shares: (Vec<FieldElement<F>>,Vec<Vec<FieldElement<F>>>),
+    pub l1_shares_reconstructed: Vec<FieldElement<F>>,
+    pub l2_shares: (Vec<FieldElement<F>>,Vec<Vec<FieldElement<F>>>),
+    pub l2_shares_reconstructed: Vec<FieldElement<F>>,
 
-    pub util_rand_sharings: Vec<LargeField>,
+    pub util_rand_sharings: Vec<FieldElement<F>>,
     
     pub two_levels: bool,
     pub padding_shares: usize,
@@ -37,7 +38,7 @@ pub struct SingleDepthState{
     pub depth_terminated: bool,
 }
 
-impl SingleDepthState{
+impl<F: ProtocolField> SingleDepthState<F>{
     pub fn new(two_levels: bool) -> Self {
         SingleDepthState{
             l1_shares: (Vec::new(),Vec::new()),
@@ -68,7 +69,7 @@ impl SingleDepthState{
     ///
     /// By the time a depth terminates, the reconstructed secrets have already
     /// been cloned into the next depth's inputs, so the raw L1/L2 shares sent by
-    /// other parties (the bulk of this struct's memory, O(n) `LargeField`s per
+    /// other parties (the bulk of this struct's memory, O(n) `FieldElement<F>`s per
     /// group) are dead. The lightweight termination bookkeeping
     /// (`depth_terminated`, the receive counts, and the hash-vote sets) is kept
     /// so that any late-arriving share for this depth is still deduped and
@@ -125,20 +126,20 @@ impl SingleDepthState{
     }
 }
 
-pub struct OutputLayerState{
-    pub output_shares: Option<(LargeField, Vec<LargeField>)>,
+pub struct OutputLayerState<F: ProtocolField>{
+    pub output_shares: Option<(FieldElement<F>, Vec<FieldElement<F>>)>,
 
-    pub output_wire_shares: HashMap<usize, (LargeField,Vec<LargeField>)>,
-    pub reconstructed_masked_outputs: Option<Vec<LargeField>>,
+    pub output_wire_shares: HashMap<usize, (FieldElement<F>,Vec<FieldElement<F>>)>,
+    pub reconstructed_masked_outputs: Option<Vec<FieldElement<F>>>,
 
     // CTRBC outputs
     pub broadcasted_masked_outputs: HashMap<Replica,Vec<u8>>,
     pub acs_output: Vec<Replica>,
 
-    pub random_mask_shares: HashMap<usize, (LargeField,Vec<LargeField>)>,
+    pub random_mask_shares: HashMap<usize, (FieldElement<F>,Vec<FieldElement<F>>)>,
 }
 
-impl OutputLayerState{
+impl<F: ProtocolField> OutputLayerState<F>{
     pub fn new() -> Self {
         OutputLayerState{
             output_shares: None,
@@ -154,18 +155,18 @@ impl OutputLayerState{
     }
 }
 
-impl MultState{
+impl<F: ProtocolField> MultState<F>{
     pub fn new() -> Self {
         MultState{
             depth_share_map: HashMap::new(),
-            output_layer: OutputLayerState::new()   
+            output_layer: OutputLayerState::<F>::new()   
         }
     }
 
-    pub fn get_single_depth_state(&mut self, depth: usize, two_levels: bool, tot_groups_in_level: usize) -> &mut SingleDepthState {
+    pub fn get_single_depth_state(&mut self, depth: usize, two_levels: bool, tot_groups_in_level: usize) -> &mut SingleDepthState<F> {
         let state = self.depth_share_map
             .entry(depth)
-            .or_insert_with(|| SingleDepthState::new(two_levels));
+            .or_insert_with(|| SingleDepthState::<F>::new(two_levels));
         // For each group, we will have a vector of pairs (x,y) for each party.
         // Done through `ensure_groups` rather than at construction so an entry a
         // `HashZMsg` created ahead of us gets sized too.

@@ -1,15 +1,14 @@
-use fields::ByteConversion;
-use fields::{interpolate_shares, LargeFieldSer};
+use fields::{interpolate_shares, LargeFieldSer, ProtocolField, FieldSer};
 
 use crate::{Context, protocol::ACSSABState};
 
-impl Context{
+impl<F: ProtocolField> Context<F>{
     pub async fn handle_ctrbc_termination(&mut self, _inst_id: usize, sender_rep: usize, content: Vec<u8>){
         log::info!("Received CTRBC termination message from sender {}",sender_rep);
         // Deserialize message
         let (instance_id, comm_dzk_vals): (usize, (Vec<[u8;32]>,Vec<[u8;32]>,Vec<LargeFieldSer>,usize)) = bincode::deserialize(content.as_slice()).unwrap();
         if !self.acss_ab_state.contains_key(&instance_id) {
-            let acss_state = ACSSABState::new();
+            let acss_state = ACSSABState::<F>::new();
             self.acss_ab_state.insert(instance_id, acss_state);
         }
         let acss_state = self.acss_ab_state.get_mut(&instance_id).unwrap();
@@ -23,9 +22,9 @@ impl Context{
         if !self.use_fft && self.myid < self.num_faults{
             // Interpolate your shares in this case
             let secret_key = self.sec_key_map.get(&sender_rep).clone().unwrap().clone();
-            let shares = interpolate_shares(secret_key.clone(), comm_dzk_vals.3, false, 1).into_iter().map(|el| el.to_bytes_be()).collect();
-            let nonce_share = interpolate_shares(secret_key.clone(),1, true, 1u8)[0].to_bytes_be();
-            let blinding_nonce_share = interpolate_shares(secret_key, 1, true, 3u8)[0].to_bytes_be();
+            let shares = interpolate_shares::<F>(secret_key.clone(), comm_dzk_vals.3, false, 1).into_iter().map(|el| el.ser_be()).collect();
+            let nonce_share = interpolate_shares::<F>(secret_key.clone(),1, true, 1u8)[0].ser_be();
+            let blinding_nonce_share = interpolate_shares::<F>(secret_key, 1, true, 3u8)[0].ser_be();
             acss_state.shares.insert(sender_rep, (shares,nonce_share,blinding_nonce_share));
         }
 

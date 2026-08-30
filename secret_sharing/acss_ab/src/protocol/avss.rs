@@ -1,16 +1,16 @@
 use crypto::{hash::do_hash};
-use fields::ByteConversion;
-use fields::{LargeFieldSer, LargeField, AvssShare};
+use fields::{LargeFieldSer, AvssShare, ProtocolField};
 use types::Replica;
 
 use crate::Context;
+use lambdaworks_math::field::element::FieldElement;
 
-impl Context{
+impl<F: ProtocolField> Context<F>{
     pub async fn init_avss(&mut self, secrets: Vec<LargeFieldSer>){
         // Use the avss instance id for this
         log::info!("Initializing AVSS with instance id {}", self.acss_id+1);
 
-        let secrets_deser: Vec<LargeField> = secrets.into_iter().map(|x| LargeField::from_bytes_be(&x).unwrap()).collect::<Vec<LargeField>>();
+        let secrets_deser: Vec<FieldElement<F>> = secrets.into_iter().map(|x| F::from_bytes_be(&x).unwrap()).collect::<Vec<FieldElement<F>>>();
         self.init_acss_ab(secrets_deser, self.avss_inst_id).await;
     }
 
@@ -46,7 +46,7 @@ impl Context{
             return;
         }
 
-        let deser_shares = shares.iter().map(|x| LargeField::from_bytes_be(x).unwrap()).collect::<Vec<LargeField>>();
+        let deser_shares = shares.iter().map(|x| F::from_bytes_be(x).unwrap()).collect::<Vec<FieldElement<F>>>();
         
         let dzk_poly  = avss_state.dzk_poly.get(&origin).unwrap();
         let root_comm_fe = avss_state.commitment_root_fe.get(&origin).unwrap();

@@ -1,6 +1,7 @@
 use application::{Application, DepthInput};
-use fields::{LargeField};
+use fields::{ProtocolField};
 use crate::{Context};
+use lambdaworks_math::field::element::FieldElement;
 
 /// Application circuit depths are shifted by this offset before they reach the
 /// multiplication module, keeping them clear of the engine's own depths:
@@ -8,7 +9,7 @@ use crate::{Context};
 /// `delinearization_depth` (verification) above.
 pub const APPLICATION_DEPTH_OFFSET: usize = 100;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function will be used to run the online phase of the protocol
     pub async fn init_random_shared_bits_preparation(&mut self) {
         // Take two random sharings, and multiply them using a random double sharing
@@ -26,10 +27,10 @@ impl<A: Application> Context<A>{
 
     /// Act on what the application scheduled for the next circuit depth.
     ///
-    /// An empty `DepthInput` means the application has nothing to run yet — it
+    /// An empty `DepthInput<F>` means the application has nothing to run yet — it
     /// is waiting on preprocessing, on more input sharings, or on another
     /// depth's results — so the engine simply stops and waits to be called again.
-    pub async fn handle_application_depth_input(&mut self, depth_input: DepthInput){
+    pub async fn handle_application_depth_input(&mut self, depth_input: DepthInput<F>){
         if depth_input.network_routing.is_some(){
             log::warn!("Application scheduled network routing, but Velox has no network routing module; ignoring the request");
         }
@@ -50,7 +51,7 @@ impl<A: Application> Context<A>{
 
     /// The application's circuit has terminated. Record the output sharings and
     /// move on to verifying every multiplication the circuit performed.
-    async fn handle_application_output(&mut self, output_wires: Vec<LargeField>){
+    async fn handle_application_output(&mut self, output_wires: Vec<FieldElement<F>>){
         log::info!("Application circuit terminated with {} output wires, adding random masks to output wires", output_wires.len());
         self.mult_state.output_layer.output_shares = Some((
             Self::get_share_evaluation_point(self.myid, self.use_fft, self.roots_of_unity.clone()),
@@ -64,7 +65,7 @@ impl<A: Application> Context<A>{
     /// A multiplication batch at an application depth has terminated. Cede
     /// control back to the application with the resulting sharings, and run
     /// whatever it schedules next.
-    pub async fn verify_application_depth_termination(&mut self, depth: usize, shares: Vec<LargeField>){
+    pub async fn verify_application_depth_termination(&mut self, depth: usize, shares: Vec<FieldElement<F>>){
         let application_depth = depth - APPLICATION_DEPTH_OFFSET;
         log::info!("Multiplication terminated at application depth {}, handing {} sharings back to the application",
             application_depth, shares.len());

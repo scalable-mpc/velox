@@ -5,7 +5,7 @@ pub mod byte_conv;
 pub use byte_conv::ByteConversion;
 
 pub mod protocol_field;
-pub use protocol_field::ProtocolField;
+pub use protocol_field::{FieldSer, ProtocolField};
 
 pub mod mersenne_61;
 

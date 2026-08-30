@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 
-use fields::LargeField;
-
 use super::ex_compr_state::ExComprState;
+use lambdaworks_math::field::element::FieldElement;
+use fields::{ProtocolField};
 
-pub struct VerificationState{
+pub struct VerificationState<F: ProtocolField>{
     // A vector of multiplication tuples (a,b,a*b) to be verified at each depth
-    pub mult_tuples: HashMap<usize, (Vec<LargeField>, Vec<LargeField>, Vec<LargeField>)>,
-    pub ex_compr_state: HashMap<usize, ExComprState>,
+    pub mult_tuples: HashMap<usize, (Vec<FieldElement<F>>, Vec<FieldElement<F>>, Vec<FieldElement<F>>)>,
+    pub ex_compr_state: HashMap<usize, ExComprState<F>>,
     // Prepare a beaver triple as a random mask for verification
-    pub random_mask: (Option<LargeField>,Option<LargeField>,Option<LargeField>),
+    pub random_mask: (Option<FieldElement<F>>,Option<FieldElement<F>>,Option<FieldElement<F>>),
     // indices, x_shares, y_shares, z_shares
-    pub output_verf_reconstruction_shares: (Vec<LargeField>, Vec<LargeField>, Vec<LargeField>, Vec<LargeField>),
+    pub output_verf_reconstruction_shares: (Vec<FieldElement<F>>, Vec<FieldElement<F>>, Vec<FieldElement<F>>, Vec<FieldElement<F>>),
 
     /// Set once this party's own circuit has finished and `delinearize_mult_tuples`
     /// has drawn the verification mask. Until then `mult_tuples` is still being
@@ -22,7 +22,7 @@ pub struct VerificationState{
     pub delinearized: bool,
 }
 
-impl VerificationState{
+impl<F: ProtocolField> VerificationState<F>{
     pub fn new() -> Self {
         VerificationState{
             mult_tuples: HashMap::new(),
@@ -43,7 +43,7 @@ impl VerificationState{
     /// and `add_mult_output_shares` are both gated on `is_verified_depth`, and no
     /// verified depth is still running by the time this is called.
     pub fn take_verified_tuples(&mut self, is_verified: impl Fn(usize) -> bool)
-        -> (Vec<LargeField>, Vec<LargeField>, Vec<LargeField>)
+        -> (Vec<FieldElement<F>>, Vec<FieldElement<F>>, Vec<FieldElement<F>>)
     {
         let mut verified_depths: Vec<usize> = self.mult_tuples.keys()
             .copied()
@@ -65,13 +65,13 @@ impl VerificationState{
     }
 
     // Function to add a multiplication tuple for verification
-    pub fn add_mult_inputs(&mut self, depth: usize, a_shares: Vec<LargeField>, b_shares: Vec<LargeField>,) {
+    pub fn add_mult_inputs(&mut self, depth: usize, a_shares: Vec<FieldElement<F>>, b_shares: Vec<FieldElement<F>>,) {
         let entry = self.mult_tuples.entry(depth).or_insert_with(|| (Vec::new(), Vec::new(), Vec::new()));
         entry.0.extend(a_shares); // Add the shares of 'a' to the first vector
         entry.1.extend(b_shares); // Add the shares of 'b' to the second vector
     }
 
-    pub fn add_mult_output_shares(&mut self, depth: usize, output_shares: Vec<LargeField>) {
+    pub fn add_mult_output_shares(&mut self, depth: usize, output_shares: Vec<FieldElement<F>>) {
         // For each multiplication tuple at this depth, we will assign the output share
         let entry = self.mult_tuples.entry(depth).or_insert_with(|| (Vec::new(), Vec::new(), Vec::new()));
         entry.2.extend(output_shares); // Add the shares of the output to the third vector
@@ -79,11 +79,11 @@ impl VerificationState{
 
     pub fn add_compression_level_state(&mut self, 
         depth: usize, 
-        x_shares: Vec<Vec<LargeField>>, 
-        y_shares: Vec<Vec<LargeField>>, 
-        z_shares: Vec<LargeField>
+        x_shares: Vec<Vec<FieldElement<F>>>, 
+        y_shares: Vec<Vec<FieldElement<F>>>, 
+        z_shares: Vec<FieldElement<F>>
     ){
-        let entry = self.ex_compr_state.entry(depth).or_insert_with(|| ExComprState::new(depth) );
+        let entry = self.ex_compr_state.entry(depth).or_insert_with(|| ExComprState::<F>::new(depth) );
         // Add the shares of x
         entry.x_sharings.extend(x_shares);
         // Add the shares of y

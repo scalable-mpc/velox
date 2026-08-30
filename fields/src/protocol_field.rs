@@ -94,3 +94,27 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
         None
     }
 }
+
+/// Method-syntax sugar over [`ProtocolField`]'s serialization.
+///
+/// Generic code writes `elem.ser_be()` rather than `F::to_bytes_be(&elem)`,
+/// which keeps the call sites reading the way they did when they were pinned to
+/// a concrete element type. Deliberately *not* named `to_bytes_be`: the local
+/// [`ByteConversion`](crate::ByteConversion) trait already owns that name for
+/// the concrete Mersenne types, and a blanket impl under the same name would be
+/// ambiguous wherever both traits are in scope — and coherence rejects blanket-
+/// impling `ByteConversion` itself while the per-type impls exist.
+pub trait FieldSer {
+    fn ser_be(&self) -> Vec<u8>;
+    fn ser_le(&self) -> Vec<u8>;
+}
+
+impl<F: ProtocolField> FieldSer for FieldElement<F> {
+    fn ser_be(&self) -> Vec<u8> {
+        F::to_bytes_be(self)
+    }
+
+    fn ser_le(&self) -> Vec<u8> {
+        F::to_bytes_le(self)
+    }
+}

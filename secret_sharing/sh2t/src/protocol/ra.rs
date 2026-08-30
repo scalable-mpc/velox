@@ -1,8 +1,9 @@
 //use types::{RBCSyncMsg, SyncMsg, SyncState};
 
 use crate::Context;
+use fields::{ProtocolField};
 
-impl Context{
+impl<F: ProtocolField> Context<F>{
     pub async fn handle_ra_termination(&mut self, instance_id: usize, sender: usize, value: usize){
         log::info!("Received RA termination message from sender {} with value {}",sender, value);
         if !self.sh2t_state_map.contains_key(&instance_id){

@@ -1,20 +1,18 @@
 use application::Application;
 use lambdaworks_math::polynomial::Polynomial;
-use fields::ByteConversion;
-use fields::{
-    LargeField, LargeFieldSer, inverse_vandermonde, matrix_matrix_multiply, vandermonde_matrix,
-};
+use fields::{LargeFieldSer, inverse_vandermonde, matrix_matrix_multiply, vandermonde_matrix, ProtocolField, FieldSer};
 
 use crate::{Context, msg::ProtMsg, protocol::tuple_verification::ex_compr_state::ExComprState};
+use lambdaworks_math::field::element::FieldElement;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     pub async fn toss_common_coin(&mut self, depth: usize){
         if self.rand_sharings_state.rand_sharings_coin.is_empty() {
             log::warn!("toss_common_coin: No coins left to toss at depth {}. Cannot proceed.", depth);
             return;
         }
         let coin_share = self.rand_sharings_state.rand_sharings_coin.pop_front().unwrap();
-        let prot_msg = ProtMsg::ReconstructCoin(coin_share.to_bytes_be(), depth);
+        let prot_msg = ProtMsg::ReconstructCoin(coin_share.ser_be(), depth);
 
         self.broadcast(prot_msg).await;
         if depth == self.delinearization_depth{
@@ -27,13 +25,13 @@ impl<A: Application> Context<A>{
 
     pub async fn handle_common_coin_msg(&mut self, lf_share: LargeFieldSer, sender: usize, depth: usize){
         if !self.verf_state.ex_compr_state.contains_key(&depth){
-            self.verf_state.ex_compr_state.insert(depth, ExComprState::new(depth));
+            self.verf_state.ex_compr_state.insert(depth, ExComprState::<F>::new(depth));
         }
         let ex_compr_state = self.verf_state.ex_compr_state.get_mut(&depth).unwrap();
         
         let evaluation_point = Self::get_share_evaluation_point(sender, self.use_fft, self.roots_of_unity.clone());
         ex_compr_state.coin_toss_shares.0.push(evaluation_point);
-        ex_compr_state.coin_toss_shares.1.push(LargeField::from_bytes_be(&lf_share).unwrap());
+        ex_compr_state.coin_toss_shares.1.push(F::from_bytes_be(&lf_share).unwrap());
         
         log::info!("Received coin toss from sender {} at depth {}", 
             sender, depth);
@@ -47,7 +45,7 @@ impl<A: Application> Context<A>{
             let inv_vdm = inverse_vandermonde(vandermonde_matrix(xs));
             let coeffs_mat = matrix_matrix_multiply(&inv_vdm, &[ys], false);
             let polynomial = Polynomial::new(&coeffs_mat[0]);
-            let coin_value = polynomial.evaluate(&LargeField::zero());
+            let coin_value = polynomial.evaluate(&FieldElement::<F>::zero());
             ex_compr_state.coin_output = Some(coin_value.clone());
             if depth == self.delinearization_depth{
                 log::info!("Reconstructed common coin at delinearization depth {}: {:?}", depth, ex_compr_state.coin_output);

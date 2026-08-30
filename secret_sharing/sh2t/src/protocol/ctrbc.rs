@@ -1,9 +1,8 @@
-use fields::ByteConversion;
-use fields::{interpolate_shares};
+use fields::{interpolate_shares, ProtocolField, FieldSer};
 
 use crate::Context;
 
-impl Context{
+impl<F: ProtocolField> Context<F>{
     pub async fn handle_ctrbc_termination(&mut self, _instance_id: usize, sender_rep: usize, content: Vec<u8>){
         // Deserialize message
         let (instance_id,comm_dzk_vals): (usize,(Vec<[u8;32]>,usize)) = bincode::deserialize(content.as_slice()).unwrap();
@@ -25,8 +24,8 @@ impl Context{
         if !self.use_fft && self.myid < 2*self.num_faults{
             // Interpolate your shares in this case
             let secret_key = self.sec_key_map.get(&sender_rep).clone().unwrap().clone();
-            let shares = interpolate_shares(secret_key.clone(), comm_dzk_vals.1, false, 1).into_iter().map(|el| el.to_bytes_be()).collect();
-            let nonce_share = interpolate_shares(secret_key.clone(),1, true, 1u8)[0].to_bytes_be();
+            let shares = interpolate_shares::<F>(secret_key.clone(), comm_dzk_vals.1, false, 1).into_iter().map(|el| el.ser_be()).collect();
+            let nonce_share = interpolate_shares::<F>(secret_key.clone(),1, true, 1u8)[0].ser_be();
             sh2t_state.shares.insert(sender_rep, (shares,nonce_share));
         }
 

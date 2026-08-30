@@ -9,6 +9,15 @@ use signal_hook::{
 };
 use std::{net::{SocketAddr, SocketAddrV4}};
 
+/// The finite field this node runs the protocol over.
+///
+/// This is the **only** place the field is named. The engine, the application
+/// layer, and the ACSS/Sh2t modules are all generic over
+/// `F: fields::ProtocolField`; running over a different field means
+/// implementing that trait for it and changing this one line — no edits to the
+/// protocol and no recompiling it against a new static type.
+type ActiveField = fields::DefaultField;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     log::error!("{}", std::env::current_dir().unwrap().display());
@@ -107,7 +116,7 @@ async fn main() -> Result<()> {
         "mpc" => {
             // The circuit lives in the application; the engine only drives the
             // protocol phases around it.
-            let app = application::AnonymousBroadcast::new(
+            let app = application::AnonymousBroadcast::<ActiveField>::new(
                 config.num_nodes,
                 config.num_faults,
                 config.id,
@@ -118,7 +127,7 @@ async fn main() -> Result<()> {
             // input file is not fatal — the application pads with random values.
             let file_location_1 = format!("testdata/inputs/input_{}.txt", config.id);
             let file_location_2 = format!("input_{}.txt", config.id);
-            let inputs = mpc::input::read_input_from_files(
+            let inputs = mpc::input::read_input_from_files::<ActiveField>(
                 file_location_1.as_str(),
                 file_location_2.as_str(),
                 app.inputs_per_party(),

@@ -6,20 +6,20 @@ use crate::Context;
 use bincode::{Result};
 use crypto::hash::do_hash;
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::ByteConversion;
-use fields::{LargeField, LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply, matrix_matrix_multiply, powers_matrix};
+use fields::{LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply, matrix_matrix_multiply, powers_matrix, ProtocolField, FieldSer};
 use rayon::prelude::{ ParallelIterator, IntoParallelRefIterator};
 use types::{Replica, WrapperMsg};
 
 use crate::{msg::ProtMsg};
+use lambdaworks_math::field::element::FieldElement;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     pub async fn init_linear_multiplication_prot(&mut self,
-        mut a_vec_shares: Vec<Vec<LargeField>>,
-        mut b_vec_shares: Vec<Vec<LargeField>>,
+        mut a_vec_shares: Vec<Vec<FieldElement<F>>>,
+        mut b_vec_shares: Vec<Vec<FieldElement<F>>>,
         depth: usize,
-        mut rand_sharings: Vec<LargeField>,
-        mut zero_sharings: Vec<LargeField>
+        mut rand_sharings: Vec<FieldElement<F>>,
+        mut zero_sharings: Vec<FieldElement<F>>
     ) {
         // Pad shares until they become a multiple of 2t+1
         // Share inputs for later verification
@@ -27,8 +27,8 @@ impl<A: Application> Context<A>{
             // Only the first sharing of each gate is verified, so read it out by
             // reference: cloning `a_vec_shares` wholesale duplicated every
             // inner-product operand as well.
-            let first_a_shares: Vec<LargeField> = a_vec_shares.iter().map(|x| x[0].clone()).collect();
-            let first_b_shares: Vec<LargeField> = b_vec_shares.iter().map(|x| x[0].clone()).collect();
+            let first_a_shares: Vec<FieldElement<F>> = a_vec_shares.iter().map(|x| x[0].clone()).collect();
+            let first_b_shares: Vec<FieldElement<F>> = b_vec_shares.iter().map(|x| x[0].clone()).collect();
             log::info!("Adding shares to verification state with a:{} b:{} at depth {}", first_a_shares.len(), first_b_shares.len(), depth);
             self.verf_state.add_mult_inputs(depth, first_a_shares, first_b_shares);
         }
@@ -40,8 +40,8 @@ impl<A: Application> Context<A>{
         }
         // Pad the shares until it becomes a multiple of 2t+1
         for _ in 0..padding_length{
-            a_vec_shares.push(vec![LargeField::zero()]);
-            b_vec_shares.push(vec![LargeField::zero()]);
+            a_vec_shares.push(vec![FieldElement::<F>::zero()]);
+            b_vec_shares.push(vec![FieldElement::<F>::zero()]);
         }
         if a_vec_shares.len()%multiple_of_val != 0{
             
@@ -92,7 +92,7 @@ impl<A: Application> Context<A>{
 
         // Check that there are the correct number of groups
 
-        let vandermonde_points: Vec<LargeField> = (2..self.num_nodes+2).into_iter().map(|x| LargeField::from(x as u64)).collect();
+        let vandermonde_points: Vec<FieldElement<F>> = (2..self.num_nodes+2).into_iter().map(|x| FieldElement::<F>::from(x as u64)).collect();
         let vdm_matrix = Self::vandermonde_matrix(vandermonde_points, self.num_faults); // TODO: can initialize the vdm_matrix somewhere outside to not compute it each time this gets called
 
         // Build every chunk's z_vector and o_vec first, then do ONE GEMM across all
@@ -102,8 +102,8 @@ impl<A: Application> Context<A>{
         let z_vector_len = 2 * self.num_faults + 1;
         let party_powers = powers_matrix(&self.roots_of_unity, z_vector_len);
 
-        let mut z_vectors: Vec<Vec<LargeField>> = Vec::with_capacity(total_chunks);
-        let mut o_vecs: Vec<Vec<LargeField>> = Vec::with_capacity(total_chunks);
+        let mut z_vectors: Vec<Vec<FieldElement<F>>> = Vec::with_capacity(total_chunks);
+        let mut o_vecs: Vec<Vec<FieldElement<F>>> = Vec::with_capacity(total_chunks);
         for i in 0..total_chunks {
             o_vecs.push(Self::matrix_vector_multiply(
                 &vdm_matrix,
@@ -111,8 +111,8 @@ impl<A: Application> Context<A>{
             ));
             let mut z_vector = Vec::with_capacity(z_vector_len);
             for k in 0..=(2 * self.num_faults) {
-                let a: &Vec<LargeField> = &a_vec_shares[i*group_size + k];
-                let b: &Vec<LargeField> = &b_vec_shares[i*group_size + k];
+                let a: &Vec<FieldElement<F>> = &a_vec_shares[i*group_size + k];
+                let b: &Vec<FieldElement<F>> = &b_vec_shares[i*group_size + k];
                 z_vector.push(Self::dot_product(a, b).add(r_sharings[i*group_size + k].clone()));
             }
             z_vectors.push(z_vector);
@@ -132,7 +132,7 @@ impl<A: Application> Context<A>{
         // zero coefficients contribute zero to the GEMM dot product.
         let evals = matrix_matrix_multiply(&party_powers, &z_vectors, true);
 
-        let mut shares_party: HashMap<usize, Vec<LargeField>> = HashMap::default();
+        let mut shares_party: HashMap<usize, Vec<FieldElement<F>>> = HashMap::default();
         for party in 0..self.num_nodes {
             shares_party.insert(party, Vec::with_capacity(tot_shares));
         }
@@ -146,7 +146,7 @@ impl<A: Application> Context<A>{
         // Send shares for all groups to all parties
         for (party,shares) in shares_party.into_iter(){
             let ser_shares: Vec<LargeFieldSer> = shares.into_iter().map(|share| {
-                share.to_bytes_be()
+                share.ser_be()
             }).collect();
             // Encrypt shares before putting them in a message
             let ser_shares_bytes = bincode::serialize(&ser_shares).unwrap();
@@ -176,8 +176,8 @@ impl<A: Application> Context<A>{
         
         // Received message as L1 share so multiplication at this depth must be linear
         
-        let shares: Vec<LargeField> = shares_ser.into_iter().map(|share| {
-            return LargeField::from_bytes_be(&share).unwrap();
+        let shares: Vec<FieldElement<F>> = shares_ser.into_iter().map(|share| {
+            return F::from_bytes_be(&share).unwrap();
         }).collect();
 
         let depth_state = self.mult_state.get_single_depth_state(depth, true, shares.len());
@@ -211,10 +211,10 @@ impl<A: Application> Context<A>{
             let vdm_matrix = vandermonde_matrix(indices);
 
             let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
-            let secrets: Vec<LargeField> = depth_state.l1_shares.1.par_iter().map(|group_shares|{
+            let secrets: Vec<FieldElement<F>> = depth_state.l1_shares.1.par_iter().map(|group_shares|{
                 let coefficients = matrix_vector_multiply(&inv_vdm_matrix, &group_shares);
                 let poly = Polynomial::new(&coefficients);
-                let secret = poly.evaluate(&LargeField::zero()); // Evaluate at zero to get the secret
+                let secret = poly.evaluate(&FieldElement::<F>::zero()); // Evaluate at zero to get the secret
                 return secret;
             }).collect();
 
@@ -225,7 +225,7 @@ impl<A: Application> Context<A>{
             // live buffer of the depth - off the peak.
             depth_state.clear_l1_shares();
 
-            let shares_bytes: Vec<LargeFieldSer> = secrets.iter().map(|el| el.to_bytes_be()).collect();
+            let shares_bytes: Vec<LargeFieldSer> = secrets.iter().map(|el| el.ser_be()).collect();
             depth_state.l1_shares_reconstructed.extend(secrets);
             ser_shares = Some(bincode::serialize(&shares_bytes).unwrap());
         }
@@ -256,7 +256,7 @@ impl<A: Application> Context<A>{
         let evaluation_point = self.roots_of_unity.get(sender).clone().unwrap();
         depth_state.l2_shares.0.push(evaluation_point.clone());
         for (state,group_share) in depth_state.l2_shares.1.iter_mut().zip(group_shares.into_iter()){
-            let group_lf_share = LargeField::from_bytes_be(&group_share).unwrap();
+            let group_lf_share = F::from_bytes_be(&group_share).unwrap();
             state.push(group_lf_share); // Store the share itself
         }
 
@@ -273,7 +273,7 @@ impl<A: Application> Context<A>{
 
             let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
 
-            let reconstructed_secrets: Vec<LargeField> = depth_state.l2_shares.1.par_iter().map(|group_shares|{
+            let reconstructed_secrets: Vec<FieldElement<F>> = depth_state.l2_shares.1.par_iter().map(|group_shares|{
                 let coefficients = matrix_vector_multiply(&inv_vdm_matrix, &group_shares);
                 coefficients
             }).flatten().collect();
@@ -285,7 +285,7 @@ impl<A: Application> Context<A>{
 
             let mut appended_msg = Vec::new();
             for secret in reconstructed_secrets.iter(){
-                appended_msg.extend(secret.to_bytes_be());
+                appended_msg.extend(secret.ser_be());
             }
             depth_state.l2_shares_reconstructed.extend(reconstructed_secrets);
             let hash = do_hash(&appended_msg);

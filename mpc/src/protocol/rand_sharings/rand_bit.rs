@@ -3,15 +3,14 @@ use std::ops::Mul;
 
 use crypto::hash::{do_hash, Hash};
 use lambdaworks_math::polynomial::Polynomial;
-use fields::ByteConversion;
-use fields::mersenne_61::Sqrt;
-use fields::{LargeFieldSer, LargeField, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply, matrix_matrix_multiply, powers_matrix};
+use fields::{LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply, matrix_matrix_multiply, powers_matrix, ProtocolField, FieldSer};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator, IndexedParallelIterator, IntoParallelRefIterator};
 use types::{Replica, WrapperMsg};
 
 use crate::{Context, msg::ProtMsg};
+use lambdaworks_math::field::element::FieldElement;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     /// Publicly reconstruct the squared random sharings.
     ///
     /// Broadcasting every share costs O(n²) elements per value. Instead, mirror
@@ -38,7 +37,7 @@ impl<A: Application> Context<A>{
         // degree-t sharing of zero is the all-zero share vector, so every party
         // pads identically.
         let padding = (chunk_size - (my_shares.len() % chunk_size)) % chunk_size;
-        my_shares.extend(vec![LargeField::zero(); padding]);
+        my_shares.extend(vec![FieldElement::<F>::zero(); padding]);
         let num_chunks = my_shares.len()/chunk_size;
 
         log::info!("Initializing random bit reconstruction of {} sharings over {} chunks of {} ({} padded)",
@@ -50,12 +49,12 @@ impl<A: Application> Context<A>{
 
         // Evaluate every chunk polynomial at all n party points in one GEMM:
         // evals[p][chunk] is this party's share of Z_chunk(α_p).
-        let chunks: Vec<Vec<LargeField>> = my_shares.chunks(chunk_size).map(|chunk| chunk.to_vec()).collect();
+        let chunks: Vec<Vec<FieldElement<F>>> = my_shares.chunks(chunk_size).map(|chunk| chunk.to_vec()).collect();
         let party_powers = powers_matrix(&self.roots_of_unity, chunk_size);
         let evals = matrix_matrix_multiply(&party_powers, &chunks, true);
 
         for party in 0..self.num_nodes{
-            let shares_ser: Vec<LargeFieldSer> = evals[party].iter().map(|share| share.to_bytes_be()).collect();
+            let shares_ser: Vec<LargeFieldSer> = evals[party].iter().map(|share| share.ser_be()).collect();
             let ser_shares_bytes = bincode::serialize(&shares_ser).unwrap();
             let sec_key = self.sec_key_map.get(&party).clone().unwrap();
 
@@ -81,8 +80,8 @@ impl<A: Application> Context<A>{
                 return;
             }
         };
-        let shares: Vec<LargeField> = shares_ser.into_iter()
-            .map(|share| LargeField::from_bytes_be(&share).unwrap())
+        let shares: Vec<FieldElement<F>> = shares_ser.into_iter()
+            .map(|share| F::from_bytes_be(&share).unwrap())
             .collect();
 
         let evaluation_point = Self::get_share_evaluation_point(sender, self.use_fft, self.roots_of_unity.clone());
@@ -121,10 +120,10 @@ impl<A: Application> Context<A>{
 
         log::info!("Attempting L1 reconstruction of random bit sharings");
         let inv_vdm_matrix = inverse_vandermonde(vandermonde_matrix(recon_state.l1_shares.0.clone()));
-        let my_points: Vec<LargeField> = recon_state.l1_shares.1.par_iter()
+        let my_points: Vec<FieldElement<F>> = recon_state.l1_shares.1.par_iter()
             .map(|chunk_shares|{
                 let coefficients = matrix_vector_multiply(&inv_vdm_matrix, chunk_shares);
-                Polynomial::new(&coefficients).evaluate(&LargeField::zero())
+                Polynomial::new(&coefficients).evaluate(&FieldElement::<F>::zero())
             })
             .collect();
         // The per-party L1 shares are dead: this interpolation is their only
@@ -133,7 +132,7 @@ impl<A: Application> Context<A>{
         recon_state.l1_shares = (Vec::new(), Vec::new());
         recon_state.l1_reconstructed.extend(my_points.iter().cloned());
 
-        let points_ser: Vec<LargeFieldSer> = my_points.iter().map(|point| point.to_bytes_be()).collect();
+        let points_ser: Vec<LargeFieldSer> = my_points.iter().map(|point| point.ser_be()).collect();
         let ser_points = bincode::serialize(&points_ser).unwrap();
         self.broadcast(ProtMsg::RandBitReconL2(ser_points)).await;
         self.verify_rand_bit_recon_l2().await;
@@ -150,8 +149,8 @@ impl<A: Application> Context<A>{
                 return;
             }
         };
-        let points: Vec<LargeField> = points_ser.into_iter()
-            .map(|point| LargeField::from_bytes_be(&point).unwrap())
+        let points: Vec<FieldElement<F>> = points_ser.into_iter()
+            .map(|point| F::from_bytes_be(&point).unwrap())
             .collect();
 
         // L1 evaluated the chunk polynomials at these same points.
@@ -191,7 +190,7 @@ impl<A: Application> Context<A>{
         let inv_vdm_matrix = inverse_vandermonde(vandermonde_matrix(recon_state.l2_shares.0.clone()));
         // Interpolating 2t+1 points of a degree-2t polynomial gives back its
         // coefficients, which are the chunk's values.
-        let mut reconstructed_values: Vec<LargeField> = recon_state.l2_shares.1.par_iter()
+        let mut reconstructed_values: Vec<FieldElement<F>> = recon_state.l2_shares.1.par_iter()
             .map(|chunk_points| matrix_vector_multiply(&inv_vdm_matrix, chunk_points))
             .flatten()
             .collect();
@@ -205,7 +204,7 @@ impl<A: Application> Context<A>{
         // Pin down what everyone reconstructed before deriving random bits from it.
         let mut appended_msg = Vec::new();
         for value in reconstructed_values.iter(){
-            appended_msg.extend(value.to_bytes_be());
+            appended_msg.extend(value.ser_be());
         }
         let hash = do_hash(&appended_msg);
         log::info!("Reconstructed {} squared random sharings, broadcasting hash {:?}", reconstructed_values.len(), hash);
@@ -251,9 +250,9 @@ impl<A: Application> Context<A>{
         // async_mpc's pub_rec.rs:78 pattern — discard the sign-choice branch
         // (`let (sqrt, _) = ...`); the randomness comes from upstream `r`, not
         // from which root is picked.
-        let reconstructed_square_inverses: Vec<LargeField> = reconstructed_values.into_par_iter()
+        let reconstructed_square_inverses: Vec<FieldElement<F>> = reconstructed_values.into_par_iter()
             .map(|secret| {
-                let (sqrt_root, _) = Sqrt::sqrt(&secret).expect("Square root does not exist");
+                let (sqrt_root, _) = F::sqrt(&secret).expect("Square root does not exist");
                 sqrt_root.inv()
             })
             .filter(|x| x.is_ok())
@@ -268,8 +267,8 @@ impl<A: Application> Context<A>{
 
     pub async fn handle_reconstruct_rand_bits_verify(&mut self, shares: Vec<LargeFieldSer>, share_sender: Replica){
         log::info!("Handling reconstruction of random bit verify shares from sender {}", share_sender);
-        let shares: Vec<LargeField> = shares.into_iter()
-            .map(|x| LargeField::from_bytes_be(&x).unwrap())
+        let shares: Vec<FieldElement<F>> = shares.into_iter()
+            .map(|x| F::from_bytes_be(&x).unwrap())
             .collect();
 
         let shares_len = shares.len();
@@ -294,11 +293,11 @@ impl<A: Application> Context<A>{
             let vdm_matrix = vandermonde_matrix(indices);
             let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
             
-            let one = LargeField::one();
-            let mut reconstructed_square_inverses: Vec<LargeField> = shares_index_wise.into_par_iter()
+            let one = FieldElement::<F>::one();
+            let mut reconstructed_square_inverses: Vec<FieldElement<F>> = shares_index_wise.into_par_iter()
                 .map(|x| {
                     let coefficients = matrix_vector_multiply(&inv_vdm_matrix, &x);
-                    let secret = Polynomial::new(&coefficients).evaluate(&LargeField::from(0 as u64));
+                    let secret = Polynomial::new(&coefficients).evaluate(&FieldElement::<F>::from(0 as u64));
                     secret
                 }).collect();
             reconstructed_square_inverses.truncate(100);
@@ -327,7 +326,7 @@ impl<A: Application> Context<A>{
         let reconstructed_shares = std::mem::take(&mut self.mix_circuit_state.rand_bit_inverse_recon_values);
         let rand_bit_input_shares = std::mem::take(&mut self.mix_circuit_state.rand_bit_inp_shares);
 
-        let final_rand_bit_sharings: Vec<LargeField> = rand_bit_input_shares.into_par_iter().zip(reconstructed_shares.into_par_iter()).map(|(r,re)|{
+        let final_rand_bit_sharings: Vec<FieldElement<F>> = rand_bit_input_shares.into_par_iter().zip(reconstructed_shares.into_par_iter()).map(|(r,re)|{
             let mult_share = r.mul(re);
             return mult_share
         }).collect();
@@ -363,13 +362,13 @@ impl<A: Application> Context<A>{
                 rand_sharings_needed, zero_sharings_needed, available_rand, available_zero);
         }
 
-        let rand_sharings: Vec<LargeField> = self.rand_sharings_state.rand_sharings_mult
+        let rand_sharings: Vec<FieldElement<F>> = self.rand_sharings_state.rand_sharings_mult
             .drain(0..rand_sharings_needed.min(available_rand))
             .collect();
-        let zero_sharings: Vec<LargeField> = self.rand_sharings_state.rand_2t_sharings_mult
+        let zero_sharings: Vec<FieldElement<F>> = self.rand_sharings_state.rand_2t_sharings_mult
             .drain(0..zero_sharings_needed.min(available_zero))
             .collect();
-        let rand_bits: Vec<LargeField> = self.mix_circuit_state.rand_bit_sharings.drain(..).collect();
+        let rand_bits: Vec<FieldElement<F>> = self.mix_circuit_state.rand_bit_sharings.drain(..).collect();
 
         log::info!("Handing {} random sharings, {} zero sharings and {} random bits to the application; {} random and {} zero sharings held back for verification",
             rand_sharings.len(), zero_sharings.len(), rand_bits.len(),
