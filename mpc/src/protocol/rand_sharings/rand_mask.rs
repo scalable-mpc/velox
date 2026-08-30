@@ -1,7 +1,7 @@
 use application::Application;
 use std::collections::{HashMap, VecDeque, HashSet};
 
-use fields::{AvssShare, LargeFieldSer, inverse_vandermonde, matrix_matrix_multiply, vandermonde_matrix, ProtocolField, FieldSer};
+use fields::{AvssShare, LargeFieldSer, inverse_vandermonde, matrix_matrix_multiply, vandermonde_matrix, ProtocolField};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use types::Replica;
 
@@ -162,30 +162,10 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 let masked_outputs = masked_outputs.unwrap();
                 let unmasked_outputs: Vec<FieldElement<F>> = masked_outputs.into_iter().zip(rand_recon_values.into_iter()).map(|(output,mask)| output-mask).collect();
                 
-                let mut outputs = Vec::new();
-                for out in unmasked_outputs{
-                    // Mirrors `input.rs::convert_string_to_large_field` (7 payload bytes
-                    // per 8-byte limb, byte 0 of each limb is the unused high-zero that
-                    // keeps the limb value below 2^56 so Mersenne-61 reduction stays a
-                    // no-op). Concatenate the four 7-byte payloads and strip the
-                    // left-side zero padding inserted at encode time.
-                    let reverse_conversion = |fe: &FieldElement<F>| -> String {
-                        let bytes = fe.ser_be();
-                        let mut payload = Vec::with_capacity(28);
-                        for chunk in 0..4 {
-                            payload.extend_from_slice(&bytes[chunk * 8 + 1..chunk * 8 + 8]);
-                        }
-                        let first_nonzero = payload
-                            .iter()
-                            .position(|&b| b != 0)
-                            .unwrap_or(payload.len());
-                        payload[first_nonzero..]
-                            .iter()
-                            .map(|&b| b as char)
-                            .collect()
-                    };
-                    outputs.push(reverse_conversion(&out));
-                }
+                // The text layout is the field's own business — `decode_ascii` is
+                // the exact inverse of the `encode_ascii` that `mpc::input` used
+                // on the way in, whichever field that is.
+                let outputs: Vec<String> = unmasked_outputs.iter().map(F::decode_ascii).collect();
                 println!("Broadcast output: {:?}", outputs);
                 let ser_msg = bincode::serialize(&outputs).unwrap();
                 self.terminate("output".to_string(), ser_msg).await;

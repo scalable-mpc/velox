@@ -1,7 +1,7 @@
 //use types::{RBCSyncMsg, SyncMsg, SyncState};
 
 use crate::Context;
-use fields::{ProtocolField};
+use fields::ProtocolField;
 
 impl<F: ProtocolField> Context<F>{
     pub async fn handle_ra_termination(&mut self, instance_id: usize, sender: usize, value: usize){

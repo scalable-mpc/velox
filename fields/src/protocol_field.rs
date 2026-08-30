@@ -17,7 +17,7 @@
 //! | PRF-seeded sampling | `sample_polynomials_from_prf`, share interpolation |
 //! | square roots | `rand_bit` (random-bit generation squares and re-roots) |
 //! | byte serialization | every wire message (the wire format stays `Vec<u8>`) |
-//! | ASCII input encoding | `mpc::input` reading party inputs from a file |
+//! | ASCII input encoding/decoding | `mpc::input` reading party inputs, and the output layer printing them back |
 //! | GPU GEMM dispatch | the optional CUDA path, which is layout-specific |
 //!
 //! Serialization is exposed as trait methods rather than a
@@ -80,6 +80,14 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
     /// round-trip lossy — see the Mersenne-61 impl for how it dodges the
     /// reduction by leaving each limb's high byte clear.
     fn encode_ascii(input: &str) -> Option<FieldElement<Self>>;
+
+    /// Inverse of [`encode_ascii`](ProtocolField::encode_ascii): recover the
+    /// text an element carries, with the encode-time left padding stripped.
+    ///
+    /// This is the half the output layer runs, and it must mirror
+    /// `encode_ascii` exactly — the two live on the same trait so a new field
+    /// cannot implement one and inherit the other's byte layout by accident.
+    fn decode_ascii(elem: &FieldElement<Self>) -> String;
 
     /// Optional GPU-accelerated batched GEMM.
     ///

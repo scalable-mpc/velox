@@ -3,7 +3,7 @@ use std::ops::Mul;
 
 use crypto::{hash::{Hash}};
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::{ProtocolField};
+use fields::ProtocolField;
 use types::{Replica};
 
 use crate::{Context, msg::ProtMsg, protocol::online_phase::APPLICATION_DEPTH_OFFSET};

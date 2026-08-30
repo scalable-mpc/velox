@@ -2,7 +2,7 @@ use application::Application;
 
 use crate::{Context, protocol::online_phase::APPLICATION_DEPTH_OFFSET};
 use lambdaworks_math::field::element::FieldElement;
-use fields::{ProtocolField};
+use fields::ProtocolField;
 
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function will be used to compress the multiplication tuples

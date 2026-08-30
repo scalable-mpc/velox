@@ -1,5 +1,5 @@
 use application::{Application, DepthInput};
-use fields::{ProtocolField};
+use fields::ProtocolField;
 use crate::{Context};
 use lambdaworks_math::field::element::FieldElement;
 

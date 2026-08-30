@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crypto::hash::Hash;
 use types::Replica;
 use lambdaworks_math::field::element::FieldElement;
-use fields::{ProtocolField};
+use fields::ProtocolField;
 
 /// State for the public reconstruction of the squared random sharings, run as a
 /// two-level linear protocol so each party sends O(1) field elements per value

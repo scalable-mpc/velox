@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::{context::Context, msg::ProtMsg};
 use crypto::{hash::verf_mac};
 use types::{WrapperMsg};
-use fields::{ProtocolField};
+use fields::ProtocolField;
 
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function verifies the Message Authentication Code (MAC) of a sent message

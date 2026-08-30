@@ -3,7 +3,7 @@ use std::{collections::{HashMap, HashSet}};
 use crypto::hash::Hash;
 use types::Replica;
 use lambdaworks_math::field::element::FieldElement;
-use fields::{ProtocolField};
+use fields::ProtocolField;
 
 pub struct MultState<F: ProtocolField>{
     pub depth_share_map: HashMap<usize, SingleDepthState<F>>,
@@ -69,7 +69,7 @@ impl<F: ProtocolField> SingleDepthState<F>{
     ///
     /// By the time a depth terminates, the reconstructed secrets have already
     /// been cloned into the next depth's inputs, so the raw L1/L2 shares sent by
-    /// other parties (the bulk of this struct's memory, O(n) `FieldElement<F>`s per
+    /// other parties (the bulk of this struct's memory, O(n) field elements per
     /// group) are dead. The lightweight termination bookkeeping
     /// (`depth_terminated`, the receive counts, and the hash-vote sets) is kept
     /// so that any late-arriving share for this depth is still deduped and

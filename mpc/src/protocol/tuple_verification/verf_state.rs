@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::ex_compr_state::ExComprState;
 use lambdaworks_math::field::element::FieldElement;
-use fields::{ProtocolField};
+use fields::ProtocolField;
 
 pub struct VerificationState<F: ProtocolField>{
     // A vector of multiplication tuples (a,b,a*b) to be verified at each depth

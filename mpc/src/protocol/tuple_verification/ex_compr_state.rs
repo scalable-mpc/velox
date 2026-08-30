@@ -1,6 +1,6 @@
 use lambdaworks_math::polynomial::Polynomial;
 use lambdaworks_math::field::element::FieldElement;
-use fields::{ProtocolField};
+use fields::ProtocolField;
 
 pub struct ExComprState<F: ProtocolField>{
     pub depth: usize,
