@@ -9,6 +9,9 @@ pub use protocol_field::{FieldSer, ProtocolField};
 
 pub mod mersenne_61;
 
+pub mod prime_fields;
+pub use prime_fields::{BN254Field, Stark252Field};
+
 pub mod poly;
 pub use poly::*;
 

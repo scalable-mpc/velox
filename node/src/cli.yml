@@ -48,6 +48,11 @@ args:
     #     long: bfile
     #     help: The location of a file containing the list of all messages to be reliably broadcasted
     #     takes_value: true
+    - field:
+        short: f
+        long: field
+        help: "Finite field to run the protocol over: m61 (default), stark252, or bn254"
+        takes_value: true
     - byz:
         short: b
         long: byzantine
