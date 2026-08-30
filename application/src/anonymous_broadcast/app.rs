@@ -28,14 +28,15 @@
 use std::collections::{HashMap, VecDeque};
 
 use async_trait::async_trait;
-use fields::rand_field_element;
+use fields::ProtocolField;
+use lambdaworks_math::field::element::FieldElement;
 
 use crate::{
     Application, DepthInput, MultInput, Multiplication, NetworkRoutingPreprocessing,
-    PreprocessingCounts, SmallField,
+    PreprocessingCounts,
 };
 
-pub struct AnonymousBroadcast {
+pub struct AnonymousBroadcast<F: ProtocolField> {
     pub num_nodes: usize,
     pub num_faults: usize,
     pub my_id: usize,
@@ -51,9 +52,9 @@ pub struct AnonymousBroadcast {
 
     /// Values this party secret-shares into the mixing network. Populated by
     /// [`AnonymousBroadcast::with_inputs`]; random values are generated when unset.
-    my_inputs: Option<Vec<SmallField>>,
+    my_inputs: Option<Vec<FieldElement<F>>>,
     /// Input sharings received from each dealer, keyed by dealer.
-    input_wire_sharings: HashMap<usize, Vec<SmallField>>,
+    input_wire_sharings: HashMap<usize, Vec<FieldElement<F>>>,
     /// Dealers whose input sharings make up the circuit's input wires. `None`
     /// until the engine reports the agreed-upon set (see
     /// [`AnonymousBroadcast::set_input_party_set`]), in which case every party
@@ -66,29 +67,29 @@ pub struct AnonymousBroadcast {
 
     /// Random sharings and random zero sharings the multiplication protocol
     /// consumes, split per depth.
-    random_sharings: HashMap<usize, Vec<SmallField>>,
-    zero_sharings: HashMap<usize, Vec<SmallField>>,
+    random_sharings: HashMap<usize, Vec<FieldElement<F>>>,
+    zero_sharings: HashMap<usize, Vec<FieldElement<F>>>,
     /// Random bit sharings, consumed one per wire pair per depth.
-    rand_bits: VecDeque<SmallField>,
+    rand_bits: VecDeque<FieldElement<F>>,
     /// Set once preprocessing has been handed over.
     preprocessing_done: bool,
 
     /// Wire sharings per depth: `wire_sharings[d]` are the `k` wires entering depth `d`.
-    wire_sharings: HashMap<usize, Vec<SmallField>>,
+    wire_sharings: HashMap<usize, Vec<FieldElement<F>>>,
     /// Wire-pair sums `(w1 + w2)` saved per depth, needed once the
     /// multiplication result for that depth arrives to finish the switch.
-    wire_pair_sums: HashMap<usize, Vec<SmallField>>,
+    wire_pair_sums: HashMap<usize, Vec<FieldElement<F>>>,
 
     /// Precomputed multiplicative inverse of 2 in the field.
-    two_inverse: SmallField,
+    two_inverse: FieldElement<F>,
 }
 
-impl AnonymousBroadcast {
+impl<F: ProtocolField> AnonymousBroadcast<F> {
     pub fn new(num_nodes: usize, num_faults: usize, my_id: usize, k_value: usize) -> Self {
         assert!(k_value.is_power_of_two(), "k_value must be a power of two");
         assert!(k_value >= 2, "k_value must be at least 2");
         let log_k = k_value.trailing_zeros() as usize;
-        AnonymousBroadcast {
+        Self {
             num_nodes,
             num_faults,
             my_id,
@@ -107,14 +108,14 @@ impl AnonymousBroadcast {
             preprocessing_done: false,
             wire_sharings: HashMap::new(),
             wire_pair_sums: HashMap::new(),
-            two_inverse: SmallField::from(2u64).inv().unwrap(),
+            two_inverse: FieldElement::<F>::from(2u64).inv().unwrap(),
         }
     }
 
     /// Supply the values this party feeds into the mixing network. Without this
     /// the application shares random field elements, which is enough to exercise
     /// the circuit but carries no message.
-    pub fn with_inputs(mut self, inputs: Vec<SmallField>) -> Self {
+    pub fn with_inputs(mut self, inputs: Vec<FieldElement<F>>) -> Self {
         self.my_inputs = Some(inputs);
         // party set with inputs
         let parties:Vec<usize> = (0..self.num_nodes).into_iter().collect();
@@ -141,7 +142,7 @@ impl AnonymousBroadcast {
 
     /// One sharing per input value: Velox sharings are unpacked, so every inner
     /// `Vec` holds exactly one secret.
-    pub fn generate_input_sharings(&self) -> Vec<Vec<SmallField>> {
+    pub fn generate_input_sharings(&self) -> Vec<Vec<FieldElement<F>>> {
         let num_inputs = self.inputs_per_party();
         let mut values = match self.my_inputs.as_ref() {
             Some(inputs) => inputs.clone(),
@@ -153,7 +154,7 @@ impl AnonymousBroadcast {
                 values.len(),
                 num_inputs - values.len()
             );
-            values.extend((values.len()..num_inputs).map(|_| rand_field_element()));
+            values.extend((values.len()..num_inputs).map(|_| F::rand()));
         }
         values.truncate(num_inputs);
         values.into_iter().map(|value| vec![value]).collect()
@@ -177,7 +178,7 @@ impl AnonymousBroadcast {
             return;
         }
 
-        let mut input_sharings: Vec<SmallField> = Vec::new();
+        let mut input_sharings: Vec<FieldElement<F>> = Vec::new();
         for party in parties.iter() {
             input_sharings.extend(self.input_wire_sharings[party].iter().cloned());
         }
@@ -208,7 +209,7 @@ impl AnonymousBroadcast {
 
     /// Schedule depth 1 as soon as both the input wires and the preprocessing
     /// material are in hand — the two arrive in either order.
-    async fn try_start_circuit(&mut self) -> DepthInput {
+    async fn try_start_circuit(&mut self) -> DepthInput<F> {
         if self.circuit_started || !self.inputs_assembled || !self.preprocessing_done {
             return DepthInput::empty();
         }
@@ -220,7 +221,7 @@ impl AnonymousBroadcast {
     /// batch it needs: wire differences × random bits.
     ///
     /// Mirrors the engine's `init_butterfly_mixing_level`.
-    async fn init_butterfly_level(&mut self, depth: usize) -> DepthInput {
+    async fn init_butterfly_level(&mut self, depth: usize) -> DepthInput<F> {
         let Some(wires) = self.wire_sharings.get(&depth) else {
             log::warn!(
                 "AnonymousBroadcast: wire sharings for depth {} not available yet",
@@ -233,7 +234,7 @@ impl AnonymousBroadcast {
         let switch_index = usize::pow(2, log_switch_index);
 
         // Butterfly pairing read straight off the wire vector. The previous
-        // version copied every wire into a `HashMap<usize, SmallField>` and
+        // version copied every wire into a `HashMap<usize, FieldElement<F>>` and
         // drained it with `remove` purely to answer "is this wire still
         // unpaired"; a bitmap answers that in one byte per wire instead of a
         // hash-map entry per wire, and drops the copy of the wires entirely.
@@ -300,7 +301,7 @@ impl AnonymousBroadcast {
             return DepthInput::empty();
         }
 
-        let bits: Vec<SmallField> = (0..num_switches)
+        let bits: Vec<FieldElement<F>> = (0..num_switches)
             .map(|_| self.rand_bits.pop_front().unwrap())
             .collect();
 
@@ -343,7 +344,7 @@ impl AnonymousBroadcast {
     /// depth — the output sharings.
     ///
     /// Mirrors the engine's `verify_mixing_level_termination`.
-    async fn handle_mult_results(&mut self, depth: usize, results: Vec<SmallField>) -> DepthInput {
+    async fn handle_mult_results(&mut self, depth: usize, results: Vec<FieldElement<F>>) -> DepthInput<F> {
         if self.wire_sharings.contains_key(&(depth + 1)) {
             // Already processed — the engine may replay a depth's termination.
             return DepthInput::empty();
@@ -366,7 +367,7 @@ impl AnonymousBroadcast {
         }
 
         let two_inverse = &self.two_inverse;
-        let next_depth_wires: Vec<SmallField> = sums
+        let next_depth_wires: Vec<FieldElement<F>> = sums
             .into_iter()
             .zip(results.into_iter())
             .flat_map(|(sum, product)| {
@@ -401,7 +402,7 @@ impl AnonymousBroadcast {
 }
 
 #[async_trait]
-impl Application for AnonymousBroadcast {
+impl<F: ProtocolField> Application<F> for AnonymousBroadcast<F> {
     fn preprocessing_count(&mut self) -> PreprocessingCounts {
         // Round each raw count up to the next multiple of (t + 1): preprocessing
         // extracts t + 1 random sharings out of every group of party sharings it
@@ -430,15 +431,15 @@ impl Application for AnonymousBroadcast {
         counts
     }
 
-    async fn inputs(&mut self) -> Vec<Vec<SmallField>> {
+    async fn inputs(&mut self) -> Vec<Vec<FieldElement<F>>> {
         self.generate_input_sharings()
     }
 
     async fn input_sharing_termination(
         &mut self,
         party: usize,
-        shares: Vec<SmallField>,
-    ) -> DepthInput {
+        shares: Vec<FieldElement<F>>,
+    ) -> DepthInput<F> {
         if self.inputs_assembled {
             log::debug!(
                 "AnonymousBroadcast: ignoring input sharing from party {}, wires already assembled",
@@ -458,11 +459,11 @@ impl Application for AnonymousBroadcast {
 
     async fn on_preprocessing_complete(
         &mut self,
-        rand_sharings_mult: Vec<SmallField>,
-        rand_sharings_3t: Vec<SmallField>,
-        rand_bit_sharings: Vec<SmallField>,
-        network_routing_preprocessing: Option<NetworkRoutingPreprocessing>,
-    ) -> DepthInput {
+        rand_sharings_mult: Vec<FieldElement<F>>,
+        rand_sharings_3t: Vec<FieldElement<F>>,
+        rand_bit_sharings: Vec<FieldElement<F>>,
+        network_routing_preprocessing: Option<NetworkRoutingPreprocessing<F>>,
+    ) -> DepthInput<F> {
         log::info!(
             "AnonymousBroadcast: preprocessing complete — {} random sharings, {} zero sharings, \
              {} random bits; circuit: k={}, log_k={}, max_depth={}",
@@ -483,7 +484,7 @@ impl Application for AnonymousBroadcast {
 
         // Split the multiplication preprocessing evenly across the depths, keyed
         // by depth (1-indexed) so each depth picks up its own batch.
-        let distribute = |pool: Vec<SmallField>, target: &mut HashMap<usize, Vec<SmallField>>| {
+        let distribute = |pool: Vec<FieldElement<F>>, target: &mut HashMap<usize, Vec<FieldElement<F>>>| {
             let chunk_size = pool.len() / self.max_depth;
             if chunk_size == 0 {
                 log::error!(
@@ -511,8 +512,8 @@ impl Application for AnonymousBroadcast {
     async fn on_multiplication_complete(
         &mut self,
         depth: usize,
-        results: (Vec<SmallField>, Vec<SmallField>),
-    ) -> DepthInput {
+        results: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
+    ) -> DepthInput<F> {
         log::info!(
             "AnonymousBroadcast: multiplication at depth {} complete — {} results",
             depth,
@@ -525,8 +526,8 @@ impl Application for AnonymousBroadcast {
     async fn on_network_routing_complete(
         &mut self,
         depth: usize,
-        _results: (Vec<SmallField>, Vec<SmallField>),
-    ) -> DepthInput {
+        _results: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
+    ) -> DepthInput<F> {
         // Velox has no network-routing module; this application never schedules
         // routing, so this hook should not fire.
         log::warn!(
@@ -541,7 +542,11 @@ impl Application for AnonymousBroadcast {
 mod tests {
     use super::*;
 
-    fn app(k: usize) -> AnonymousBroadcast {
+    /// The tests exercise the application at one concrete field; the generic
+    /// parameter is what the engine binds, not something the tests vary.
+    type F = fields::DefaultField;
+
+    fn app(k: usize) -> AnonymousBroadcast<F> {
         AnonymousBroadcast::new(9, 2, 0, k)
     }
 
@@ -573,12 +578,12 @@ mod tests {
     #[tokio::test]
     async fn butterfly_switch_is_identity_on_one_bits() {
         let mut app = app(4);
-        let wires: Vec<SmallField> = (1..=4u64).map(|x| SmallField::from(x * 10)).collect();
+        let wires: Vec<FieldElement<F>> = (1..=4u64).map(|x| FieldElement::<F>::from(x * 10)).collect();
         app.wire_sharings.insert(1, wires.clone());
-        app.rand_bits = (0..16).map(|_| SmallField::one()).collect();
+        app.rand_bits = (0..16).map(|_| FieldElement::<F>::one()).collect();
         app.random_sharings
-            .insert(1, vec![SmallField::zero(); 8]);
-        app.zero_sharings.insert(1, vec![SmallField::zero(); 8]);
+            .insert(1, vec![FieldElement::<F>::zero(); 8]);
+        app.zero_sharings.insert(1, vec![FieldElement::<F>::zero(); 8]);
 
         let depth_input = app.init_butterfly_level(1).await;
         let mult = depth_input.mult().expect("depth 1 must schedule a multiplication");
@@ -604,10 +609,10 @@ mod tests {
         // k=4, log_k=2, max_depth=4.
         app.current_depth = app.max_depth;
         app.wire_pair_sums
-            .insert(app.max_depth, vec![SmallField::from(2u64), SmallField::from(4u64)]);
+            .insert(app.max_depth, vec![FieldElement::<F>::from(2u64), FieldElement::<F>::from(4u64)]);
 
         let depth_input = app
-            .handle_mult_results(app.max_depth, vec![SmallField::zero(), SmallField::zero()])
+            .handle_mult_results(app.max_depth, vec![FieldElement::<F>::zero(), FieldElement::<F>::zero()])
             .await;
         let mult = depth_input.mult().expect("last depth must return outputs");
         let output = mult.output.expect("output sharings");
