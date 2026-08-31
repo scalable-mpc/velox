@@ -51,7 +51,7 @@ args:
     - field:
         short: f
         long: field
-        help: "Finite field to run the protocol over: m61 (default), stark252, or bn254"
+        help: "Finite field to run the protocol over: m61 (default), m61base, stark252, or bn254"
         takes_value: true
     - byz:
         short: b

@@ -69,6 +69,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             log::error!("Invalid number of shares for delinearization {} {} {}, abandoning process", x_values.len(), y_values.len(), mult_values.len());
             return;
         }
+        // The delinearization challenge stays in `F`, not `F::Ext`: it is a
+        // reconstructed sharing rather than a hash, and the values it weights
+        // flow straight into the compression multiplications. This phase
+        // assumes `F` is large enough for statistical security by itself — see
+        // `ProtocolField::Ext`, whose lift covers the ACSS DZK only.
         let mut r_iter = FieldElement::<F>::one();
         for (x,mult) in x_values.iter_mut().zip(mult_values.iter_mut()){
             *x *= r_iter.clone();

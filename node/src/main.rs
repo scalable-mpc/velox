@@ -31,8 +31,13 @@ fn spawn_mpc_over_field(
             config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
         "bn254" => spawn_mpc::<fields::BN254Field>(
             config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+        // Shares over the 61-bit base field, DZK proofs lifted into its
+        // degree-4 extension. One share carries 7 bytes of text rather than 28,
+        // so longer input lines fall back to random values.
+        "m61base" => spawn_mpc::<fields::Mersenne61Field>(
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
         other => Err(anyhow!(
-            "unknown field {:?}; expected one of m61, stark252, bn254", other)),
+            "unknown field {:?}; expected one of m61, m61base, stark252, bn254", other)),
     }
 }
 
