@@ -26,9 +26,17 @@ fnv = "1"
 async-recursion = "1.0.0"
 anyhow = "1"
 sha2 = "0.10.8"
-reed-solomon-erasure = "4.0"
+
+# Erasure coding: commonware's SIMD Reed-Solomon (Leopard-RS over GF(2^16))
+# with Merkle commitments and per-shard inclusion proofs. See src/rs.rs.
+commonware-coding = "2026.7.0"
+commonware-cryptography = "2026.7.0"
+commonware-parallel = "2026.7.0"
+commonware-codec = "2026.7.0"
+
+# The dealer codes one message per recipient; those n encodings run in parallel.
+rayon = "1.10"
 
 network = { package = "network", git = "https://github.com/akhilsb/libnet-rs.git" }
 async-trait = "0"
 futures-util = "0"
-reed_solomon_rs = "0.1.2"
