@@ -46,27 +46,31 @@ pub async fn generate_evaluation_points<F: ProtocolField>(
     // under `--features gpu`. Mirrors `generate_evaluation_points_opt` — see that
     // function for the layout commentary.
 
-    let mut evaluation_points = Vec::new();
-    evaluation_points.push(FieldElement::<F>::from(0u64));
-    for i in 0..degree {
-        evaluation_points.push(FieldElement::<F>::from((i + 1) as u64));
-    }
+    // Yielded to rayon: this runs on the ACSS/Sh2t dealer's own tokio task, and
+    // an inline `par_iter` would park that task for the whole batch.
+    crate::rayon_async(move || {
+        let mut evaluation_points = Vec::new();
+        evaluation_points.push(FieldElement::<F>::from(0u64));
+        for i in 0..degree {
+            evaluation_points.push(FieldElement::<F>::from((i + 1) as u64));
+        }
 
-    let inverse_vandermonde_mat = inverse_vandermonde(vandermonde_matrix(evaluation_points.clone()));
-    let coeffs_mat = matrix_matrix_multiply(&inverse_vandermonde_mat, &evaluations_prf, false);
+        let inverse_vandermonde_mat = inverse_vandermonde_from_points(&evaluation_points);
+        let coeffs_mat = matrix_matrix_multiply(&inverse_vandermonde_mat, &evaluations_prf, false);
 
-    let share_points: Vec<FieldElement<F>> = (1..=shares_total)
-        .map(|i| FieldElement::<F>::from(i as u64))
-        .collect();
-    let share_powers = powers_matrix(&share_points, degree + 1);
-    let evaluations_full = matrix_matrix_multiply(&share_powers, &coeffs_mat, false);
+        let share_points: Vec<FieldElement<F>> = (1..=shares_total)
+            .map(|i| FieldElement::<F>::from(i as u64))
+            .collect();
+        let share_powers = powers_matrix(&share_points, degree + 1);
+        let evaluations_full = matrix_matrix_multiply(&share_powers, &coeffs_mat, false);
 
-    let coefficients: Vec<Polynomial<FieldElement<F>>> = coeffs_mat
-        .par_iter()
-        .map(|row| Polynomial::new(row))
-        .collect();
+        let coefficients: Vec<Polynomial<FieldElement<F>>> = coeffs_mat
+            .par_iter()
+            .map(|row| Polynomial::new(row))
+            .collect();
 
-    (evaluations_full, coefficients)
+        (evaluations_full, coefficients)
+    }).await
 }
 
 pub async fn generate_evaluation_points_opt<F: ProtocolField>(
@@ -77,6 +81,8 @@ pub async fn generate_evaluation_points_opt<F: ProtocolField>(
     Vec<Polynomial<FieldElement<F>>>
 ){
 
+    // Yielded to rayon: see `generate_evaluation_points`.
+    crate::rayon_async(move || {
     // The first evaluation is always at 0
     let mut evaluation_points = Vec::new();
     evaluation_points.push(FieldElement::<F>::from(0u64));
@@ -84,9 +90,9 @@ pub async fn generate_evaluation_points_opt<F: ProtocolField>(
         evaluation_points.push(FieldElement::<F>::from((i + 1) as u64));
     }
 
-    // Generate vandermonde matrix
-    let vandermonde = vandermonde_matrix(evaluation_points.clone());
-    let inverse_vandermonde_mat = inverse_vandermonde(vandermonde);
+    // Generate the inverse directly from the points; see
+    // `inverse_vandermonde_from_points`.
+    let inverse_vandermonde_mat = inverse_vandermonde_from_points(&evaluation_points);
 
     // Two-GEMM Lagrange (mirrors async_mpc/mpc/protocol/verification/compress_tup.rs:191):
     //   Step 1: coeffs_mat = inv_vandermonde · evaluations_prf  →  num_polys × (degree+1).
@@ -110,6 +116,7 @@ pub async fn generate_evaluation_points_opt<F: ProtocolField>(
         .collect();
 
     (evaluations_full, coefficients)
+    }).await
 }
 
 pub async fn generate_evaluation_points_fft<F: ProtocolField>(
@@ -120,14 +127,16 @@ pub async fn generate_evaluation_points_fft<F: ProtocolField>(
     Vec<Polynomial<FieldElement<F>>>
 ){
     // For FFT evaluations, first sample coefficients of polynomial and then interpolate all n points
-    let coefficients: Vec<Vec<FieldElement<F>>> = secrets.into_par_iter().map(|secret| {
-        let mut coeffs_single_poly = Vec::new();
-        coeffs_single_poly.push(secret);
-        for _ in 0..degree_poly{
-            coeffs_single_poly.push(rand_field_element());
-        }
-        return Polynomial::new(&coeffs_single_poly).coefficients;
-    }).collect();
+    let coefficients: Vec<Vec<FieldElement<F>>> = crate::rayon_async(move || {
+        secrets.into_par_iter().map(|secret| {
+            let mut coeffs_single_poly = Vec::new();
+            coeffs_single_poly.push(secret);
+            for _ in 0..degree_poly{
+                coeffs_single_poly.push(rand_field_element());
+            }
+            Polynomial::new(&coeffs_single_poly).coefficients
+        }).collect()
+    }).await;
 
     return generate_evaluation_points_opt(coefficients, degree_poly, shares_total).await;
 }
@@ -180,7 +189,7 @@ pub fn interpolate_shares<F: ProtocolField>( mut secret_key: Vec<u8>, num_shares
 
 pub fn check_if_all_points_lie_on_degree_x_polynomial<F: ProtocolField>(eval_points: Vec<FieldElement<F>>, polys_vector: Vec<Vec<FieldElement<F>>>, degree: usize) -> (bool,Option<Vec<Polynomial<FieldElement<F>>>>){
     //log::info!("Checking evaluations on points :{:?}, eval_points: {:?}", eval_points, polys_vector);
-    let inverse_vandermonde_mat = inverse_vandermonde(vandermonde_matrix(eval_points[0..degree].to_vec()));
+    let inverse_vandermonde_mat = inverse_vandermonde_from_points(&eval_points[0..degree]);
 
     // Two-GEMM Lagrange: recover coefficients from the first `degree` evaluations, then
     // batch-evaluate every recovered polynomial at the remaining `eval_points[degree..]`
@@ -220,7 +229,9 @@ pub fn check_if_all_points_lie_on_degree_x_polynomial<F: ProtocolField>(eval_poi
         })
         .collect();
 
-    let all_polys_positive = polys.par_iter().all(|poly| poly.is_some());
+    // Sequential: this is an `Option` discriminant check per element, so rayon's
+    // dispatch cost exceeded the work it was dispatching.
+    let all_polys_positive = polys.iter().all(|poly| poly.is_some());
     if all_polys_positive {
         let polys_vec = polys.into_iter().map(|x| x.unwrap()).collect();
         (true, Some(polys_vec))
@@ -247,6 +258,11 @@ pub fn vandermonde_matrix<F: ProtocolField>(x_values: Vec<FieldElement<F>>) -> V
 }
 
 /// Computes the inverse of a Vandermonde matrix modulo prime using Gaussian elimination.
+///
+/// O(n^3) and single-threaded. No protocol code calls this any more - every site
+/// moved to [`inverse_vandermonde_from_points`] (O(n^2)) or, where only the
+/// secret is wanted, to [`lagrange_coefficients_at_zero`]. It is kept as the
+/// reference implementation the closed form is tested against.
 pub fn inverse_vandermonde<F: ProtocolField>(matrix: Vec<Vec<FieldElement<F>>>) -> Vec<Vec<FieldElement<F>>> {
     let n = matrix.len();
     let mut augmented = matrix.clone();
@@ -280,6 +296,160 @@ pub fn inverse_vandermonde<F: ProtocolField>(matrix: Vec<Vec<FieldElement<F>>>) 
         .into_iter()
         .map(|row| row[n..2 * n].to_vec())
         .collect()
+}
+
+/// One field inversion for a whole slice (Montgomery's trick): build the
+/// running prefix products, invert the total once, then walk back down.
+///
+/// Every element must be non-zero. Callers here derive them from differences of
+/// distinct evaluation points, so a zero means duplicate points were supplied -
+/// which would have made the interpolation ill-posed anyway.
+pub fn batch_inverse<F: ProtocolField>(xs: &[FieldElement<F>]) -> Vec<FieldElement<F>> {
+    let one = FieldElement::<F>::one();
+    let mut prefix = Vec::with_capacity(xs.len());
+    let mut acc = one.clone();
+    for x in xs {
+        prefix.push(acc.clone());
+        acc = &acc * x;
+    }
+    let mut running = acc
+        .inv()
+        .expect("batch_inverse: a zero element, i.e. duplicate evaluation points");
+    let mut out = vec![one; xs.len()];
+    for k in (0..xs.len()).rev() {
+        out[k] = &running * &prefix[k];
+        running = &running * &xs[k];
+    }
+    out
+}
+
+/// Inverse of the Vandermonde matrix on `points`, in O(n^2), without Gaussian
+/// elimination and without materialising the forward matrix.
+///
+/// A Vandermonde matrix is not a general matrix: its inverse has a closed form.
+/// With row `r` of `V` being `[1, x_r, x_r^2, ..]`, interpolation is
+/// `a = V^-1 y`, and matching that against the Lagrange form
+/// `p(X) = sum_i y_i L_i(X)` gives
+///
+/// ```text
+///     V^-1[c][i] = coefficient of X^c in L_i(X)
+/// ```
+///
+/// so **column** `i` of the inverse is the `i`-th Lagrange basis polynomial's
+/// coefficient vector. (Row, not column, is the easy mistake here: it compiles
+/// and silently produces the transpose.)
+///
+/// Built in three passes:
+///   1. `master(X) = prod_j (X - x_j)`, folded one root at a time - O(n^2).
+///   2. `N_i(X) = master(X) / (X - x_i)` by synthetic division. Exact, since
+///      `x_i` is a root - O(n) each, O(n^2) total. This is what replaces the
+///      O(n^3) elimination.
+///   3. Scale each by `1 / N_i(x_i) = 1 / prod_{j != i} (x_i - x_j)`, with all
+///      `n` inversions batched into one.
+///
+/// Bit-identical to `inverse_vandermonde(vandermonde_matrix(points))`; see
+/// `fields/tests/vandermonde_closed_form.rs`.
+pub fn inverse_vandermonde_from_points<F: ProtocolField>(
+    points: &[FieldElement<F>],
+) -> Vec<Vec<FieldElement<F>>> {
+    let n = points.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let zero = FieldElement::<F>::zero();
+    let one = FieldElement::<F>::one();
+
+    // 1. master(X) = prod_j (X - x_j).
+    let mut master = vec![zero.clone(); n + 1];
+    master[0] = one.clone();
+    for (deg, x) in points.iter().enumerate() {
+        for k in (1..=deg + 1).rev() {
+            let lower = master[k - 1].clone();
+            master[k] = &lower - &(&master[k] * x);
+        }
+        master[0] = &zero - &(&master[0] * x);
+    }
+
+    // 2. denominators d_i = prod_{j != i} (x_i - x_j), inverted in one batch.
+    let denominators: Vec<FieldElement<F>> = points
+        .iter()
+        .enumerate()
+        .map(|(i, xi)| {
+            points
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .fold(one.clone(), |acc, (_, xj)| &acc * &(xi - xj))
+        })
+        .collect();
+    let inv_denominators = batch_inverse(&denominators);
+
+    // 3. synthetic division per point, written into the matching column.
+    let mut inverse = vec![vec![zero.clone(); n]; n];
+    for (i, xi) in points.iter().enumerate() {
+        let mut q = vec![zero.clone(); n];
+        q[n - 1] = master[n].clone();
+        for k in (1..n).rev() {
+            q[k - 1] = &master[k] + &(xi * &q[k]);
+        }
+        for c in 0..n {
+            inverse[c][i] = &q[c] * &inv_denominators[i];
+        }
+    }
+    inverse
+}
+
+/// Lagrange coefficients for evaluating the interpolant at zero:
+/// `p(0) = sum_i lambda_i * y_i` with
+/// `lambda_i = prod_{j != i} x_j / (x_j - x_i)`.
+///
+/// For the many call sites that interpolate only to read the secret, this is the
+/// whole job: an O(n^2) vector built once per reconstruction, after which each
+/// group costs one length-`n` dot product instead of an `n x n` matrix-vector
+/// product against a matrix that took O(n^3) to build.
+pub fn lagrange_coefficients_at_zero<F: ProtocolField>(
+    points: &[FieldElement<F>],
+) -> Vec<FieldElement<F>> {
+    let one = FieldElement::<F>::one();
+    let numerators: Vec<FieldElement<F>> = points
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            points
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .fold(one.clone(), |acc, (_, xj)| &acc * xj)
+        })
+        .collect();
+    let denominators: Vec<FieldElement<F>> = points
+        .iter()
+        .enumerate()
+        .map(|(i, xi)| {
+            points
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .fold(one.clone(), |acc, (_, xj)| &acc * &(xj - xi))
+        })
+        .collect();
+    batch_inverse(&denominators)
+        .into_iter()
+        .zip(numerators)
+        .map(|(inv_den, num)| &num * &inv_den)
+        .collect()
+}
+
+/// `sum_i coefficients[i] * values[i]`. Paired with
+/// [`lagrange_coefficients_at_zero`] this reconstructs one secret.
+pub fn interpolate_at_zero<F: ProtocolField>(
+    coefficients: &[FieldElement<F>],
+    values: &[FieldElement<F>],
+) -> FieldElement<F> {
+    coefficients
+        .iter()
+        .zip(values.iter())
+        .fold(FieldElement::<F>::zero(), |acc, (c, v)| &acc + &(c * v))
 }
 
 pub fn matrix_vector_multiply<F: ProtocolField>(
