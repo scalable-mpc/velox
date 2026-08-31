@@ -18,8 +18,9 @@ pub struct ACSSABState<F: ProtocolField>{
     pub verification_status: HashMap<Replica, bool>,
     pub acss_status: HashSet<Replica>,
 
-    pub dzk_poly: HashMap<Replica,Polynomial<FieldElement<F>>>,
-    pub commitment_root_fe: HashMap<Replica, FieldElement<F>>,
+    // The DZK proof lives in the extension field, not the sharing field.
+    pub dzk_poly: HashMap<Replica,Polynomial<FieldElement<F::Ext>>>,
+    pub commitment_root_fe: HashMap<Replica, FieldElement<F::Ext>>,
 }
 
 impl<F: ProtocolField> ACSSABState<F>{

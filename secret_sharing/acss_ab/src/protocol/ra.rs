@@ -45,11 +45,12 @@ impl<F: ProtocolField> Context<F>{
                     let share_root = MerkleTree::new(comm, &self.hash_context).root();
                     let blinding_root = MerkleTree::new(b_comm, &self.hash_context).root();
                     let root_comm = self.hash_context.hash_two(share_root, blinding_root);
-                    let root_comm_fe = F::from_bytes_be(&root_comm).unwrap();
+                    let root_comm_fe = <F::Ext as ProtocolField>::from_bytes_be(&root_comm).unwrap();
                     acss_state.commitment_root_fe.insert(sender, root_comm_fe);
 
                     // Compute DZK polynomial
-                    let dzk_poly_coeffs: Vec<FieldElement<F>> = dzk_poly.into_iter().map(|el| F::from_bytes_be(el.as_slice()).unwrap()).collect();
+                    let dzk_poly_coeffs: Vec<FieldElement<F::Ext>> = dzk_poly.into_iter()
+                        .map(|el| <F::Ext as ProtocolField>::from_bytes_be(el.as_slice()).unwrap()).collect();
                     let dzk_poly = Polynomial::new(dzk_poly_coeffs.as_slice());
                     acss_state.dzk_poly.insert(sender, dzk_poly);
 

@@ -24,7 +24,11 @@ impl<F: ProtocolField> Context<F>{
             let secret_key = self.sec_key_map.get(&sender_rep).clone().unwrap().clone();
             let shares = interpolate_shares::<F>(secret_key.clone(), comm_dzk_vals.3, false, 1).into_iter().map(|el| el.ser_be()).collect();
             let nonce_share = interpolate_shares::<F>(secret_key.clone(),1, true, 1u8)[0].ser_be();
-            let blinding_nonce_share = interpolate_shares::<F>(secret_key, 1, true, 3u8)[0].ser_be();
+            // Derived over F::Ext, not F: the dealer's blinding nonce polynomial
+            // lives in the extension alongside the rest of the DZK material, so
+            // re-deriving it here from the same PRF label has to use the same
+            // field or the two disagree on width and value.
+            let blinding_nonce_share = interpolate_shares::<F::Ext>(secret_key, 1, true, 3u8)[0].ser_be();
             acss_state.shares.insert(sender_rep, (shares,nonce_share,blinding_nonce_share));
         }
 
