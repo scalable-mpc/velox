@@ -8,6 +8,83 @@ use signal_hook::{
     iterator::Signals,
 };
 use std::{net::{SocketAddr, SocketAddrV4}};
+use tokio::sync::oneshot;
+
+/// Field the node runs the protocol over, chosen by `--field` at startup.
+///
+/// The engine, the application layer and the ACSS/Sh2t modules are all generic
+/// over `F: fields::ProtocolField`, so each arm below is the *same* protocol
+/// instantiated at a different field — adding a fourth is one `impl` plus one
+/// line here, with nothing in the protocol touched.
+fn spawn_mpc_over_field(
+    field: &str,
+    config: Node,
+    mixing_batch_size: usize,
+    compression_factor: usize,
+    num_rand_batches: usize,
+    node_normal: bool,
+) -> Result<oneshot::Sender<()>> {
+    match field {
+        "m61" | "mersenne61" => spawn_mpc::<fields::DefaultField>(
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+        "stark252" => spawn_mpc::<fields::Stark252Field>(
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+        "bn254" => spawn_mpc::<fields::BN254Field>(
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+        // Shares over the 61-bit base field, DZK proofs lifted into its
+        // degree-4 extension. One share carries 7 bytes of text rather than 28,
+        // so longer input lines fall back to random values.
+        "m61base" => spawn_mpc::<fields::Mersenne61Field>(
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+        other => Err(anyhow!(
+            "unknown field {:?}; expected one of m61, m61base, stark252, bn254", other)),
+    }
+}
+
+/// Start anonymous broadcast over field `F`.
+///
+/// Nothing in this body names a concrete field: the inputs are read through
+/// `F::encode_ascii`, the circuit is `AnonymousBroadcast<F>`, and the engine is
+/// `mpc::Context<F, _>`.
+fn spawn_mpc<F: fields::ProtocolField>(
+    config: Node,
+    mixing_batch_size: usize,
+    compression_factor: usize,
+    num_rand_batches: usize,
+    node_normal: bool,
+) -> Result<oneshot::Sender<()>> {
+    let app = application::AnonymousBroadcast::<F>::new(
+        config.num_nodes,
+        config.num_faults,
+        config.id,
+        mixing_batch_size,
+    );
+
+    // This party's messages into the mixing network. A short or missing input
+    // file is not fatal — the application pads with random values.
+    let file_location_1 = format!("testdata/inputs/input_{}.txt", config.id);
+    let file_location_2 = format!("input_{}.txt", config.id);
+    let inputs = mpc::input::read_input_from_files::<F>(
+        file_location_1.as_str(),
+        file_location_2.as_str(),
+        app.inputs_per_party(),
+    ).unwrap_or_else(|e| {
+        log::error!("Error reading input files: {}, falling back to random inputs", e);
+        Vec::new()
+    });
+    let app = app.with_inputs(inputs);
+
+    mpc::Context::spawn(
+        config,
+        app,
+        compression_factor,
+        num_rand_batches,
+        node_normal,
+    ).or_else(|e| {
+        log::error!("Error starting MPC protocol: {}", e);
+        Err(e)
+    })
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,6 +117,8 @@ async fn main() -> Result<()> {
     // let broadcast_msgs_file = m
     //     .value_of("bfile")
     //     .expect("Unable to parse broadcast messages file");
+    // Optional; the Mersenne-61 Fp4 field the protocol has always used.
+    let field_name = m.value_of("field").unwrap_or("m61");
     let byz_flag = m.value_of("byz").expect("Unable to parse Byzantine flag");
     let node_normal: bool = match byz_flag {
         "true" => true,
@@ -106,39 +185,16 @@ async fn main() -> Result<()> {
         // }
         "mpc" => {
             // The circuit lives in the application; the engine only drives the
-            // protocol phases around it.
-            let app = application::AnonymousBroadcast::new(
-                config.num_nodes,
-                config.num_faults,
-                config.id,
+            // protocol phases around it. `--field` picks which finite field
+            // both of them run over.
+            exit_tx = spawn_mpc_over_field(
+                field_name,
+                config,
                 mixing_batch_size,
-            );
-
-            // This party's messages into the mixing network. A short or missing
-            // input file is not fatal — the application pads with random values.
-            let file_location_1 = format!("testdata/inputs/input_{}.txt", config.id);
-            let file_location_2 = format!("input_{}.txt", config.id);
-            let inputs = mpc::input::read_input_from_files(
-                file_location_1.as_str(),
-                file_location_2.as_str(),
-                app.inputs_per_party(),
-            ).unwrap_or_else(|e| {
-                log::error!("Error reading input files: {}, falling back to random inputs", e);
-                Vec::new()
-            });
-            let app = app.with_inputs(inputs);
-
-            exit_tx =
-                mpc::Context::spawn(
-                    config,
-                    app,
-                    compression_factor,
-                    num_rand_batches,
-                    node_normal
-                ).or_else(|e| {
-                    log::error!("Error starting MPC protocol: {}", e);
-                    Err(e)
-                })?;
+                compression_factor,
+                num_rand_batches,
+                node_normal,
+            )?;
         }
         // "sh2t" => {
         //     let (_req_sender,req_receiver) = channel(10000);

@@ -166,14 +166,14 @@ Similar libraries include networking library from the narwhal (https://github.co
 
 3. The protocol directory contains code that implements the building blocks of the codebase. 
 The protocol employs ACSS, AVID, and Sh2t protocols, which build on smaller building blocks like Reliable Broadcast, Reliable Agreement, and Asynchronous consensus. 
-These building blocks have been implemented in the Secure Distributed Computing repository (https://github.com/akhilsb/Secure-Distributed-Computing-Protocols). 
+These building blocks have been implemented in the Secure Distributed Computing repository (https://github.com/scalable-mpc/secure-distributed-computing-protocols). 
 
 # Architecture
 The following architecture diagram describes the components of Velox and their dependencies. 
 The diagram can be interpreted as a Directed Graph with source vertices.
-Each source vertex has been implemented using the composing building blocks from the Secure Distributed Computing Repository (https://github.com/akhilsb/Secure-Distributed-Computing-Protocols).
+Each source vertex has been implemented using the composing building blocks from the Secure Distributed Computing Repository (https://github.com/scalable-mpc/secure-distributed-computing-protocols).
 
 <img src="images/MPC_component_flow_updated.png"/>
 
-The components Reliable Broadcast, Asynchronous Verifiable Information Dispersal, and Asynchronous Common Subset have been implemented in Secure Distributed Computing Protocols repository (https://github.com/akhilsb/Secure-Distributed-Computing-Protocols).
+The components Reliable Broadcast, Asynchronous Verifiable Information Dispersal, and Asynchronous Common Subset have been implemented in Secure Distributed Computing Protocols repository (https://github.com/scalable-mpc/secure-distributed-computing-protocols).
 The remaining components have been implemented in this repository. 

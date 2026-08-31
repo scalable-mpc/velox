@@ -1,20 +1,20 @@
 use application::Application;
 use crypto::hash::do_hash;
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::ByteConversion;
-use fields::{LargeField, LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply};
+use fields::{LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply, ProtocolField, FieldSer};
 use rayon::prelude::{IntoParallelIterator, IndexedParallelIterator, ParallelIterator, IntoParallelRefIterator};
 use types::Replica;
 
 use crate::{Context, msg::ProtMsg};
+use lambdaworks_math::field::element::FieldElement;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     pub async fn init_quadratic_multiplication_prot(&mut self,
-        a_shares: Vec<Vec<LargeField>>,
-        b_shares: Vec<Vec<LargeField>>,
+        a_shares: Vec<Vec<FieldElement<F>>>,
+        b_shares: Vec<Vec<FieldElement<F>>>,
         depth: usize,
-        mut rand_sharings: Vec<LargeField>,
-        mut zero_sharings: Vec<LargeField>
+        mut rand_sharings: Vec<FieldElement<F>>,
+        mut zero_sharings: Vec<FieldElement<F>>
     ){
         log::info!("Starting quadratic multiplication protocol");
         if a_shares.len() != b_shares.len() {
@@ -53,7 +53,7 @@ impl<A: Application> Context<A>{
                 .zip(b_shares.into_par_iter()))
             .zip(rand_sharings.into_par_iter()
                 .zip(zero_sharings.into_par_iter()))
-            .map(|((a,b),(r,o))| (Self::dot_product(&a,&b)+r+o).to_bytes_be())
+            .map(|((a,b),(r,o))| (Self::dot_product(&a,&b)+r+o).ser_be())
             .collect::<Vec<LargeFieldSer>>(); // Perform dot product and add random shares
 
         let ser_shares = bincode::serialize(&mult_shares).unwrap();
@@ -65,7 +65,7 @@ impl<A: Application> Context<A>{
         log::info!("Handling quadratic multiplication shares for depth {} from sender {}", depth, sender);
         // Deserialize shares
         let shares_deser = bincode::deserialize::<Vec<LargeFieldSer>>(&shares).unwrap();
-        let shares_lf: Vec<LargeField> = shares_deser.into_iter().map(|x| LargeField::from_bytes_be(&x).unwrap()).collect();
+        let shares_lf: Vec<FieldElement<F>> = shares_deser.into_iter().map(|x| F::from_bytes_be(&x).unwrap()).collect();
 
         let evaluation_point = Self::get_share_evaluation_point(sender,self.use_fft, self.roots_of_unity.clone());
 
@@ -98,12 +98,12 @@ impl<A: Application> Context<A>{
             let vdm_matrix = vandermonde_matrix(indices);
             let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
 
-            let reconstructed_secrets: Vec<LargeField> 
+            let reconstructed_secrets: Vec<FieldElement<F>> 
                 = depth_state.l1_shares.1.par_iter()
                 .map(|evaluations|{
                     let coefficients = matrix_vector_multiply(&inv_vdm_matrix, evaluations);
                     let polynomial = Polynomial::new(&coefficients);
-                    return polynomial.evaluate(&LargeField::zero());
+                    return polynomial.evaluate(&FieldElement::<F>::zero());
                 }).collect();
             
             // The raw per-party shares are dead: this interpolation is their only
@@ -113,7 +113,7 @@ impl<A: Application> Context<A>{
             // Broadcast hash of this reconstructed value.
             let mut appended_msg = Vec::new();
             for secret in reconstructed_secrets.iter(){
-                appended_msg.extend(secret.to_bytes_be());
+                appended_msg.extend(secret.ser_be());
             }
             depth_state.l1_shares_reconstructed.extend(reconstructed_secrets);
             let hash = do_hash(&appended_msg);

@@ -1,15 +1,15 @@
 use crypto::aes_hash::MerkleTree;
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::ByteConversion;
-use fields::LargeField;
+use fields::ProtocolField;
 
 use crate::{Context, protocol::ACSSABState};
+use lambdaworks_math::field::element::FieldElement;
 
-impl Context{
+impl<F: ProtocolField> Context<F>{
     pub async fn handle_ra_termination(&mut self, instance_id: usize, sender: usize, value: usize){
         log::info!("Received RA termination message from sender {} with value {}",sender, value);
         if !self.acss_ab_state.contains_key(&instance_id) {
-            let acss_state = ACSSABState::new();
+            let acss_state = ACSSABState::<F>::new();
             self.acss_ab_state.insert(instance_id, acss_state);
         }
         let acss_state = self.acss_ab_state.get_mut(&instance_id).unwrap();
@@ -45,11 +45,12 @@ impl Context{
                     let share_root = MerkleTree::new(comm, &self.hash_context).root();
                     let blinding_root = MerkleTree::new(b_comm, &self.hash_context).root();
                     let root_comm = self.hash_context.hash_two(share_root, blinding_root);
-                    let root_comm_fe = LargeField::from_bytes_be(&root_comm).unwrap();
+                    let root_comm_fe = <F::Ext as ProtocolField>::from_bytes_be(&root_comm).unwrap();
                     acss_state.commitment_root_fe.insert(sender, root_comm_fe);
 
                     // Compute DZK polynomial
-                    let dzk_poly_coeffs: Vec<LargeField> = dzk_poly.into_iter().map(|el| LargeField::from_bytes_be(el.as_slice()).unwrap()).collect();
+                    let dzk_poly_coeffs: Vec<FieldElement<F::Ext>> = dzk_poly.into_iter()
+                        .map(|el| <F::Ext as ProtocolField>::from_bytes_be(el.as_slice()).unwrap()).collect();
                     let dzk_poly = Polynomial::new(dzk_poly_coeffs.as_slice());
                     acss_state.dzk_poly.insert(sender, dzk_poly);
 

@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crypto::hash::Hash;
-use fields::LargeField;
 use types::Replica;
+use lambdaworks_math::field::element::FieldElement;
+use fields::ProtocolField;
 
 /// State for the public reconstruction of the squared random sharings, run as a
 /// two-level linear protocol so each party sends O(1) field elements per value
 /// instead of broadcasting every share.
-pub struct RandBitReconState{
+pub struct RandBitReconState<F: ProtocolField>{
     /// Zero shares appended to round the batch up to a multiple of 2t+1; the
     /// same number of reconstructed values is trimmed at the end.
     pub padding: Option<usize>,
@@ -16,22 +17,22 @@ pub struct RandBitReconState{
 
     /// L1: evaluation points of the senders, and per chunk their shares of this
     /// party's point on the chunk polynomial.
-    pub l1_shares: (Vec<LargeField>, Vec<Vec<LargeField>>),
+    pub l1_shares: (Vec<FieldElement<F>>, Vec<Vec<FieldElement<F>>>),
     pub recv_share_count_l1: usize,
     /// Claimed by whoever crosses the L1 threshold first, so a later message
     /// arriving while the interpolation is in flight does not redo it.
     pub l1_reconstruction_started: bool,
     /// This party's point on each chunk polynomial, recovered from L1.
-    pub l1_reconstructed: Vec<LargeField>,
+    pub l1_reconstructed: Vec<FieldElement<F>>,
 
     /// L2: evaluation points of the senders, and per chunk the points they
     /// reconstructed at L1.
-    pub l2_shares: (Vec<LargeField>, Vec<Vec<LargeField>>),
+    pub l2_shares: (Vec<FieldElement<F>>, Vec<Vec<FieldElement<F>>>),
     pub recv_share_count_l2: usize,
     /// Same claim flag for the L2 interpolation.
     pub l2_reconstruction_started: bool,
     /// The publicly reconstructed values, recovered from L2.
-    pub l2_reconstructed: Vec<LargeField>,
+    pub l2_reconstructed: Vec<FieldElement<F>>,
 
     /// Hash agreement over the reconstructed values.
     pub recv_hash_set: HashSet<Hash>,
@@ -40,7 +41,7 @@ pub struct RandBitReconState{
     pub terminated: bool,
 }
 
-impl RandBitReconState{
+impl<F: ProtocolField> RandBitReconState<F>{
     pub fn new() -> Self{
         RandBitReconState{
             padding: None,
@@ -75,23 +76,23 @@ impl RandBitReconState{
 /// Engine-side state for the two phases that feed the application: random bit
 /// generation and input sharing. The circuit itself — wires, wire pairs and the
 /// per-depth multiplication results — belongs to the application now.
-pub struct MixCircuitState{
-    pub rand_bit_inp_shares: Vec<LargeField>,
-    pub rand_bit_recon_shares: HashMap<usize, Vec<LargeField>>,
+pub struct MixCircuitState<F: ProtocolField>{
+    pub rand_bit_inp_shares: Vec<FieldElement<F>>,
+    pub rand_bit_recon_shares: HashMap<usize, Vec<FieldElement<F>>>,
 
-    pub rand_bit_inverse_recon_values: Vec<LargeField>,
-    pub rand_bit_sharings: VecDeque<LargeField>,
-    pub rand_bit_reconstruction: HashMap<usize, Vec<LargeField>>,
+    pub rand_bit_inverse_recon_values: Vec<FieldElement<F>>,
+    pub rand_bit_sharings: VecDeque<FieldElement<F>>,
+    pub rand_bit_reconstruction: HashMap<usize, Vec<FieldElement<F>>>,
     /// Public reconstruction of the squared sharings, run as a linear protocol.
-    pub rand_bit_recon_state: RandBitReconState,
+    pub rand_bit_recon_state: RandBitReconState<F>,
 
-    pub input_acss_shares: HashMap<Replica, HashMap<usize,Vec<LargeField>>>,
+    pub input_acss_shares: HashMap<Replica, HashMap<usize,Vec<FieldElement<F>>>>,
     /// Set once the input sharings have been handed to the application, so the
     /// handover happens exactly once.
     pub input_sharings_forwarded: bool,
 }
 
-impl MixCircuitState{
+impl<F: ProtocolField> MixCircuitState<F>{
     pub fn new() -> Self {
         MixCircuitState{
             rand_bit_inp_shares: Vec::new(),
@@ -100,7 +101,7 @@ impl MixCircuitState{
             rand_bit_inverse_recon_values: Vec::new(),
             rand_bit_sharings: VecDeque::new(),
             rand_bit_reconstruction: HashMap::default(),
-            rand_bit_recon_state: RandBitReconState::new(),
+            rand_bit_recon_state: RandBitReconState::<F>::new(),
 
             input_acss_shares: HashMap::default(),
             input_sharings_forwarded: false,

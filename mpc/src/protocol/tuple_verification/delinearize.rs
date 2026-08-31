@@ -1,9 +1,10 @@
 use application::Application;
-use fields::LargeField;
 
 use crate::{Context, protocol::online_phase::APPLICATION_DEPTH_OFFSET};
+use lambdaworks_math::field::element::FieldElement;
+use fields::ProtocolField;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function will be used to compress the multiplication tuples
     // It will take the shares of a, b, and the output and compress them into a single representation
     pub async fn delinearize_mult_tuples(&mut self){
@@ -68,7 +69,12 @@ impl<A: Application> Context<A>{
             log::error!("Invalid number of shares for delinearization {} {} {}, abandoning process", x_values.len(), y_values.len(), mult_values.len());
             return;
         }
-        let mut r_iter = LargeField::one();
+        // The delinearization challenge stays in `F`, not `F::Ext`: it is a
+        // reconstructed sharing rather than a hash, and the values it weights
+        // flow straight into the compression multiplications. This phase
+        // assumes `F` is large enough for statistical security by itself — see
+        // `ProtocolField::Ext`, whose lift covers the ACSS DZK only.
+        let mut r_iter = FieldElement::<F>::one();
         for (x,mult) in x_values.iter_mut().zip(mult_values.iter_mut()){
             *x *= r_iter.clone();
             *mult *= r_iter.clone();
@@ -76,7 +82,7 @@ impl<A: Application> Context<A>{
         }
         log::info!("Multiplication tuples after coin toss: x: {}, y: {}, mult: {}",x_values.len(), y_values.len(), mult_values.len());
         // Compress shares with dimension reduction factor k
-        let summed_mult_value: LargeField = mult_values.into_iter().sum();
+        let summed_mult_value: FieldElement<F> = mult_values.into_iter().sum();
         self.init_compression_level(x_values, y_values, summed_mult_value, self.delinearization_depth +2).await;
     }
 }

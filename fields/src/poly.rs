@@ -1,22 +1,22 @@
 use std::{collections::HashMap, ops::{Mul, Sub, Add}};
 
 use crypto::hash::do_hash;
+use lambdaworks_math::field::element::FieldElement;
 use lambdaworks_math::polynomial::Polynomial;
-use rand::random;
 use rand_chacha::ChaCha20Rng;
-use rand_core::{SeedableRng, RngCore};
+use rand_core::SeedableRng;
 use rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use types::Replica;
 
-use crate::LargeField;
+use crate::ProtocolField;
 
-pub fn sample_polynomials_from_prf(
-    secrets: Vec<LargeField>, 
+pub fn sample_polynomials_from_prf<F: ProtocolField>(
+    secrets: Vec<FieldElement<F>>, 
     sec_key_map: HashMap<Replica, Vec<u8>>, 
     degree: usize,
     is_nonce: bool,
     nonce: u8
-)-> Vec<Vec<LargeField>>{
+)-> Vec<Vec<FieldElement<F>>>{
     let tot_evaluations = secrets.len();
     let mut evaluations = Vec::new();
     for secret in secrets{
@@ -35,33 +35,33 @@ pub fn sample_polynomials_from_prf(
     evaluations
 }
 
-pub async fn generate_evaluation_points(
-    evaluations_prf: Vec<Vec<LargeField>>,
+pub async fn generate_evaluation_points<F: ProtocolField>(
+    evaluations_prf: Vec<Vec<FieldElement<F>>>,
     degree: usize,
     shares_total: usize,
-) -> (Vec<Vec<LargeField>>,
-    Vec<Polynomial<LargeField>>
+) -> (Vec<Vec<FieldElement<F>>>,
+    Vec<Polynomial<FieldElement<F>>>
 ){
     // Routed through `matrix_matrix_multiply` so the GPU dispatcher picks it up
     // under `--features gpu`. Mirrors `generate_evaluation_points_opt` — see that
     // function for the layout commentary.
 
     let mut evaluation_points = Vec::new();
-    evaluation_points.push(LargeField::from(0u64));
+    evaluation_points.push(FieldElement::<F>::from(0u64));
     for i in 0..degree {
-        evaluation_points.push(LargeField::from((i + 1) as u64));
+        evaluation_points.push(FieldElement::<F>::from((i + 1) as u64));
     }
 
     let inverse_vandermonde_mat = inverse_vandermonde(vandermonde_matrix(evaluation_points.clone()));
     let coeffs_mat = matrix_matrix_multiply(&inverse_vandermonde_mat, &evaluations_prf, false);
 
-    let share_points: Vec<LargeField> = (1..=shares_total)
-        .map(|i| LargeField::from(i as u64))
+    let share_points: Vec<FieldElement<F>> = (1..=shares_total)
+        .map(|i| FieldElement::<F>::from(i as u64))
         .collect();
     let share_powers = powers_matrix(&share_points, degree + 1);
     let evaluations_full = matrix_matrix_multiply(&share_powers, &coeffs_mat, false);
 
-    let coefficients: Vec<Polynomial<LargeField>> = coeffs_mat
+    let coefficients: Vec<Polynomial<FieldElement<F>>> = coeffs_mat
         .par_iter()
         .map(|row| Polynomial::new(row))
         .collect();
@@ -69,19 +69,19 @@ pub async fn generate_evaluation_points(
     (evaluations_full, coefficients)
 }
 
-pub async fn generate_evaluation_points_opt(
-    evaluations_prf: Vec<Vec<LargeField>>,
+pub async fn generate_evaluation_points_opt<F: ProtocolField>(
+    evaluations_prf: Vec<Vec<FieldElement<F>>>,
     degree: usize,
     shares_total: usize,
-) -> (Vec<Vec<LargeField>>,
-    Vec<Polynomial<LargeField>>
+) -> (Vec<Vec<FieldElement<F>>>,
+    Vec<Polynomial<FieldElement<F>>>
 ){
 
     // The first evaluation is always at 0
     let mut evaluation_points = Vec::new();
-    evaluation_points.push(LargeField::from(0u64));
+    evaluation_points.push(FieldElement::<F>::from(0u64));
     for i in 0..degree{
-        evaluation_points.push(LargeField::from((i + 1) as u64));
+        evaluation_points.push(FieldElement::<F>::from((i + 1) as u64));
     }
 
     // Generate vandermonde matrix
@@ -96,15 +96,15 @@ pub async fn generate_evaluation_points_opt(
     // than the prior per-poly mat-vec + per-point Horner once num_polys ≥ 1024.
     let coeffs_mat = matrix_matrix_multiply(&inverse_vandermonde_mat, &evaluations_prf, false);
 
-    let share_points: Vec<LargeField> = (1..=shares_total)
-        .map(|i| LargeField::from(i as u64))
+    let share_points: Vec<FieldElement<F>> = (1..=shares_total)
+        .map(|i| FieldElement::<F>::from(i as u64))
         .collect();
     let share_powers = powers_matrix(&share_points, degree + 1);
     let evaluations_full = matrix_matrix_multiply(&share_powers, &coeffs_mat, false);
 
-    // The return type wants `Vec<Polynomial<LargeField>>`; reconstruct via Polynomial::new
+    // The return type wants `Vec<Polynomial<FieldElement<F>>>`; reconstruct via Polynomial::new
     // (which trims trailing zeros — semantically identical to the prior path).
-    let coefficients: Vec<Polynomial<LargeField>> = coeffs_mat
+    let coefficients: Vec<Polynomial<FieldElement<F>>> = coeffs_mat
         .par_iter()
         .map(|row| Polynomial::new(row))
         .collect();
@@ -112,15 +112,15 @@ pub async fn generate_evaluation_points_opt(
     (evaluations_full, coefficients)
 }
 
-pub async fn generate_evaluation_points_fft(
-    secrets: Vec<LargeField>,
+pub async fn generate_evaluation_points_fft<F: ProtocolField>(
+    secrets: Vec<FieldElement<F>>,
     degree_poly: usize,
     shares_total: usize,
-)-> (Vec<Vec<LargeField>>, 
-    Vec<Polynomial<LargeField>>
+)-> (Vec<Vec<FieldElement<F>>>, 
+    Vec<Polynomial<FieldElement<F>>>
 ){
     // For FFT evaluations, first sample coefficients of polynomial and then interpolate all n points
-    let coefficients: Vec<Vec<LargeField>> = secrets.into_par_iter().map(|secret| {
+    let coefficients: Vec<Vec<FieldElement<F>>> = secrets.into_par_iter().map(|secret| {
         let mut coeffs_single_poly = Vec::new();
         coeffs_single_poly.push(secret);
         for _ in 0..degree_poly{
@@ -132,15 +132,15 @@ pub async fn generate_evaluation_points_fft(
     return generate_evaluation_points_opt(coefficients, degree_poly, shares_total).await;
 }
 
-// pub async fn generate_evaluation_points_fft(
-//     secrets: Vec<LargeField>,
+// pub async fn generate_evaluation_points_fft<F: ProtocolField>(
+//     secrets: Vec<FieldElement<F>>,
 //     degree_poly: usize,
 //     shares_total: usize,
-// )-> (Vec<Vec<LargeField>>, 
-//     Vec<Polynomial<LargeField>>
+// )-> (Vec<Vec<FieldElement<F>>>, 
+//     Vec<Polynomial<FieldElement<F>>>
 // ){
 //     // For FFT evaluations, first sample coefficients of polynomial and then interpolate all n points
-//     let coefficients: Vec<Polynomial<LargeField>> = secrets.into_par_iter().map(|secret| {
+//     let coefficients: Vec<Polynomial<FieldElement<F>>> = secrets.into_par_iter().map(|secret| {
 //         let mut coeffs_single_poly = Vec::new();
 //         coeffs_single_poly.push(secret);
 //         for _ in 0..degree_poly{
@@ -156,53 +156,21 @@ pub async fn generate_evaluation_points_fft(
 //     (evaluations, coefficients)
 // }
 
-pub fn pseudorandom_lf(rng_seed: &[u8], num: usize) -> Vec<LargeField> {
+pub fn pseudorandom_lf<F: ProtocolField>(rng_seed: &[u8], num: usize) -> Vec<FieldElement<F>> {
     let mut rng = ChaCha20Rng::from_seed(do_hash(rng_seed));
-    let mut random_numbers: Vec<LargeField> = Vec::with_capacity(num);
-    for _ in 0..num {
-        // Fp4_61 element = 4 base-field (Mersenne-61) elements packed as two Fp2 components.
-        // Each base element accepts a u64; values ≥ p are folded via `from_u64`.
-        let c0 = lambdaworks_math::field::element::FieldElement::<
-            crate::mersenne_61::Mersenne61Field,
-        >::from(rng.next_u64());
-        let c1 = lambdaworks_math::field::element::FieldElement::<
-            crate::mersenne_61::Mersenne61Field,
-        >::from(rng.next_u64());
-        let c2 = lambdaworks_math::field::element::FieldElement::<
-            crate::mersenne_61::Mersenne61Field,
-        >::from(rng.next_u64());
-        let c3 = lambdaworks_math::field::element::FieldElement::<
-            crate::mersenne_61::Mersenne61Field,
-        >::from(rng.next_u64());
-        let lo = crate::mersenne_61::Fp2E::new([c0, c1]);
-        let hi = crate::mersenne_61::Fp2E::new([c2, c3]);
-        random_numbers.push(LargeField::new([lo, hi]));
-    }
-    random_numbers
+    // Deterministic in `rng_seed`: two parties holding the same seed derive the
+    // same elements, which is what the PRF-based sharing scheme relies on.
+    (0..num).map(|_| F::from_rng(&mut rng)).collect()
 }
 
-pub fn rand_field_element() -> LargeField {
-    // Sample 4 independent u64 limbs and fold each into the Mersenne-61 base field.
-    let r: [u64; 4] = random();
-    let c0 = lambdaworks_math::field::element::FieldElement::<
-        crate::mersenne_61::Mersenne61Field,
-    >::from(r[0]);
-    let c1 = lambdaworks_math::field::element::FieldElement::<
-        crate::mersenne_61::Mersenne61Field,
-    >::from(r[1]);
-    let c2 = lambdaworks_math::field::element::FieldElement::<
-        crate::mersenne_61::Mersenne61Field,
-    >::from(r[2]);
-    let c3 = lambdaworks_math::field::element::FieldElement::<
-        crate::mersenne_61::Mersenne61Field,
-    >::from(r[3]);
-    let lo = crate::mersenne_61::Fp2E::new([c0, c1]);
-    let hi = crate::mersenne_61::Fp2E::new([c2, c3]);
-    LargeField::new([lo, hi])
+/// Uniformly random element. Thin alias for `F::rand()`, kept as a free
+/// function because it reads better at the call sites that deal polynomials.
+pub fn rand_field_element<F: ProtocolField>() -> FieldElement<F> {
+    F::rand()
 }
 
 
-pub fn interpolate_shares( mut secret_key: Vec<u8>, num_shares: usize, is_nonce: bool, padding: u8) -> Vec<LargeField>{
+pub fn interpolate_shares<F: ProtocolField>( mut secret_key: Vec<u8>, num_shares: usize, is_nonce: bool, padding: u8) -> Vec<FieldElement<F>>{
     if is_nonce{
         secret_key.push(padding);
     }
@@ -210,7 +178,7 @@ pub fn interpolate_shares( mut secret_key: Vec<u8>, num_shares: usize, is_nonce:
     prf_values
 }
 
-pub fn check_if_all_points_lie_on_degree_x_polynomial(eval_points: Vec<LargeField>, polys_vector: Vec<Vec<LargeField>>, degree: usize) -> (bool,Option<Vec<Polynomial<LargeField>>>){
+pub fn check_if_all_points_lie_on_degree_x_polynomial<F: ProtocolField>(eval_points: Vec<FieldElement<F>>, polys_vector: Vec<Vec<FieldElement<F>>>, degree: usize) -> (bool,Option<Vec<Polynomial<FieldElement<F>>>>){
     //log::info!("Checking evaluations on points :{:?}, eval_points: {:?}", eval_points, polys_vector);
     let inverse_vandermonde_mat = inverse_vandermonde(vandermonde_matrix(eval_points[0..degree].to_vec()));
 
@@ -218,13 +186,13 @@ pub fn check_if_all_points_lie_on_degree_x_polynomial(eval_points: Vec<LargeFiel
     // batch-evaluate every recovered polynomial at the remaining `eval_points[degree..]`
     // for consistency-check against the supplied shares. Same idiom as
     // async_mpc/degree_verification/interpolation.rs:645 + 488/509.
-    let prefix_vecs: Vec<Vec<LargeField>> = polys_vector
+    let prefix_vecs: Vec<Vec<FieldElement<F>>> = polys_vector
         .par_iter()
         .map(|points| points[0..degree].to_vec())
         .collect();
     let coeffs_mat = matrix_matrix_multiply(&inverse_vandermonde_mat, &prefix_vecs, false);
 
-    let verify_points: Vec<LargeField> = eval_points[degree..].to_vec();
+    let verify_points: Vec<FieldElement<F>> = eval_points[degree..].to_vec();
     let verify_evals = if verify_points.is_empty() {
         // Nothing to check past the first `degree` points — every poly passes by definition.
         vec![Vec::new(); coeffs_mat.len()]
@@ -234,7 +202,7 @@ pub fn check_if_all_points_lie_on_degree_x_polynomial(eval_points: Vec<LargeFiel
     };
 
     // For each polynomial: does its recovered form match the supplied `points[degree..]`?
-    let polys: Vec<Option<Polynomial<LargeField>>> = coeffs_mat
+    let polys: Vec<Option<Polynomial<FieldElement<F>>>> = coeffs_mat
         .par_iter()
         .zip(polys_vector.par_iter())
         .zip(verify_evals.par_iter())
@@ -263,12 +231,12 @@ pub fn check_if_all_points_lie_on_degree_x_polynomial(eval_points: Vec<LargeFiel
 
 
 /// Constructs the Vandermonde matrix for a given set of x-values.
-pub fn vandermonde_matrix(x_values: Vec<LargeField>) -> Vec<Vec<LargeField>> {
+pub fn vandermonde_matrix<F: ProtocolField>(x_values: Vec<FieldElement<F>>) -> Vec<Vec<FieldElement<F>>> {
     let n = x_values.len();
-    let mut matrix = vec![vec![LargeField::zero(); n]; n];
+    let mut matrix = vec![vec![FieldElement::<F>::zero(); n]; n];
 
     for (row, x) in x_values.iter().enumerate() {
-        let mut value = LargeField::one();
+        let mut value = FieldElement::<F>::one();
         for col in 0..n {
             matrix[row][col] = value.clone();
             value = value.mul(x);
@@ -279,13 +247,13 @@ pub fn vandermonde_matrix(x_values: Vec<LargeField>) -> Vec<Vec<LargeField>> {
 }
 
 /// Computes the inverse of a Vandermonde matrix modulo prime using Gaussian elimination.
-pub fn inverse_vandermonde(matrix: Vec<Vec<LargeField>>) -> Vec<Vec<LargeField>> {
+pub fn inverse_vandermonde<F: ProtocolField>(matrix: Vec<Vec<FieldElement<F>>>) -> Vec<Vec<FieldElement<F>>> {
     let n = matrix.len();
     let mut augmented = matrix.clone();
 
     // Extend the matrix with an identity matrix on the right
     for i in 0..n {
-        augmented[i].extend((0..n).map(|j| if i == j { LargeField::one() } else { LargeField::zero() }));
+        augmented[i].extend((0..n).map(|j| if i == j { FieldElement::<F>::one() } else { FieldElement::<F>::zero() }));
     }
 
     // Perform Gaussian elimination
@@ -314,21 +282,21 @@ pub fn inverse_vandermonde(matrix: Vec<Vec<LargeField>>) -> Vec<Vec<LargeField>>
         .collect()
 }
 
-pub fn matrix_vector_multiply(
-    matrix: &Vec<Vec<LargeField>>,
-    vector: &Vec<LargeField>,
-) -> Vec<LargeField> {
+pub fn matrix_vector_multiply<F: ProtocolField>(
+    matrix: &Vec<Vec<FieldElement<F>>>,
+    vector: &Vec<FieldElement<F>>,
+) -> Vec<FieldElement<F>> {
     matrix
         .par_iter()
         .map(|row| {
             row.iter()
                 .zip(vector)
-                .fold(LargeField::zero(), |sum, (a, b)| sum.add(a.mul(b)))
+                .fold(FieldElement::<F>::zero(), |sum, (a, b)| sum.add(a.mul(b)))
         })
         .collect()
 }
 
-/// CPU-only batched matrix-matrix multiply over `LargeField` (Rayon-parallel).
+/// CPU-only batched matrix-matrix multiply over `FieldElement<F>` (Rayon-parallel).
 ///
 /// `matrix` is treated as an (R × C) matrix (R = `matrix.len()`, C = `matrix[0].len()`).
 /// `vectors` is a slice of K vectors each of length C — i.e. the right operand viewed as
@@ -345,22 +313,22 @@ pub fn matrix_vector_multiply(
 /// (see `gpu_ffi::gpu_matrix_matrix_multiply`); otherwise (or for small inputs that
 /// would be dominated by PCIe upload overhead) calls `matrix_matrix_multiply_cpu`
 /// directly. The CPU path stays the canonical reference and is always callable.
-pub fn matrix_matrix_multiply(
-    matrix: &[Vec<LargeField>],
-    vectors: &[Vec<LargeField>],
+pub fn matrix_matrix_multiply<F: ProtocolField>(
+    matrix: &[Vec<FieldElement<F>>],
+    vectors: &[Vec<FieldElement<F>>],
     row_major: bool,
-) -> Vec<Vec<LargeField>> {
-    #[cfg(feature = "gpu")]
-    {
-        // Mirrors async_mpc's small-input bailout. Below this work threshold the
-        // device upload cost dominates the actual arithmetic. Tune once the kernel
-        // exists.
-        const GPU_THRESHOLD: usize = 50_000;
-        let rows = matrix.len();
-        let cols = matrix.first().map(|r| r.len()).unwrap_or(0);
-        let work = rows.saturating_mul(cols).saturating_mul(vectors.len());
-        if work >= GPU_THRESHOLD {
-            return crate::gpu_ffi::gpu_matrix_matrix_multiply(matrix, vectors, row_major);
+) -> Vec<Vec<FieldElement<F>>> {
+    // Mirrors async_mpc's small-input bailout. Below this work threshold the
+    // device upload cost dominates the actual arithmetic.
+    const GPU_THRESHOLD: usize = 50_000;
+    let rows = matrix.len();
+    let cols = matrix.first().map(|r| r.len()).unwrap_or(0);
+    let work = rows.saturating_mul(cols).saturating_mul(vectors.len());
+    if work >= GPU_THRESHOLD {
+        // `None` for every field without a compiled kernel, and for the one
+        // that has it when the `gpu` feature is off — both fall through to CPU.
+        if let Some(out) = F::try_gpu_gemm(matrix, vectors, row_major) {
+            return out;
         }
     }
     matrix_matrix_multiply_cpu(matrix, vectors, row_major)
@@ -369,11 +337,11 @@ pub fn matrix_matrix_multiply(
 /// CPU implementation — Rayon-parallel over rows. Always available regardless of
 /// the `gpu` feature; callers needing to force CPU (e.g. the bench's reference
 /// path) should call this directly.
-pub fn matrix_matrix_multiply_cpu(
-    matrix: &[Vec<LargeField>],
-    vectors: &[Vec<LargeField>],
+pub fn matrix_matrix_multiply_cpu<F: ProtocolField>(
+    matrix: &[Vec<FieldElement<F>>],
+    vectors: &[Vec<FieldElement<F>>],
     row_major: bool,
-) -> Vec<Vec<LargeField>> {
+) -> Vec<Vec<FieldElement<F>>> {
     let k = vectors.len();
     if k == 0 || matrix.is_empty() {
         return Vec::new();
@@ -389,13 +357,13 @@ pub fn matrix_matrix_multiply_cpu(
         return Vec::new();
     }
 
-    let results: Vec<Vec<LargeField>> = matrix
+    let results: Vec<Vec<FieldElement<F>>> = matrix
         .par_iter()
         .map(|m_row| {
-            let mut row_results = vec![LargeField::zero(); k];
+            let mut row_results = vec![FieldElement::<F>::zero(); k];
             for i in 0..k {
                 let m_col = &vectors[i];
-                let mut sum = LargeField::zero();
+                let mut sum = FieldElement::<F>::zero();
                 for l in 0..m_row.len() {
                     // Reference-reference multiply — matches async_mpc verbatim and avoids
                     // the 32-byte per-iteration clone of m_row[l] the previous form did.
@@ -421,12 +389,12 @@ pub fn matrix_matrix_multiply_cpu(
 /// `C` (degree × num_polys, column-major over polys), `powers_matrix · C` yields all
 /// evaluations in a single GEMM. This is the Vandermonde restricted to the first `degree`
 /// columns, mirroring the async_mpc pattern at `fields/src/poly.rs::lagrange_interpolate_par`.
-pub fn powers_matrix(points: &[LargeField], degree: usize) -> Vec<Vec<LargeField>> {
+pub fn powers_matrix<F: ProtocolField>(points: &[FieldElement<F>], degree: usize) -> Vec<Vec<FieldElement<F>>> {
     points
         .par_iter()
         .map(|p| {
             let mut row = Vec::with_capacity(degree);
-            let mut power = LargeField::one();
+            let mut power = FieldElement::<F>::one();
             for _ in 0..degree {
                 row.push(power.clone());
                 power = power.mul(p);
@@ -436,8 +404,8 @@ pub fn powers_matrix(points: &[LargeField], degree: usize) -> Vec<Vec<LargeField
         .collect()
 }
 
-/// Transpose a rectangular matrix stored as `Vec<Vec<LargeField>>`.
-pub fn transpose(matrix: Vec<Vec<LargeField>>) -> Vec<Vec<LargeField>> {
+/// Transpose a rectangular matrix stored as `Vec<Vec<FieldElement<F>>>`.
+pub fn transpose<F: ProtocolField>(matrix: Vec<Vec<FieldElement<F>>>) -> Vec<Vec<FieldElement<F>>> {
     if matrix.is_empty() {
         return Vec::new();
     }
@@ -447,4 +415,59 @@ pub fn transpose(matrix: Vec<Vec<LargeField>>) -> Vec<Vec<LargeField>> {
         .into_par_iter()
         .map(|j| (0..rows).map(|i| matrix[i][j].clone()).collect())
         .collect()
+}
+/// Pack polynomials over `F` into polynomials over `F::Ext`, `CONV_RATIO` at a
+/// time, by lifting them coefficient-wise.
+///
+/// Used by the DZK proof, which has to run its random linear combination over
+/// the wider field for soundness while the shares stay over `F`. Packing rather
+/// than embedding each polynomial separately is what makes the combination
+/// `CONV_RATIO` times cheaper.
+///
+/// Degree is preserved: coefficient `k` of the packed polynomial is
+/// `F::lift` of coefficient `k` of each input, so a group of degree-`t`
+/// polynomials packs into a single degree-`t` polynomial over `F::Ext`. When
+/// `F::Ext = F` and `CONV_RATIO = 1` this is the identity.
+pub fn lift_polynomials<F: ProtocolField>(
+    polys: &[Polynomial<FieldElement<F>>],
+) -> Vec<Polynomial<FieldElement<F::Ext>>> {
+    polys
+        .chunks(F::CONV_RATIO)
+        .map(|chunk| {
+            let width = chunk
+                .iter()
+                .map(|p| p.coefficients.len())
+                .max()
+                .unwrap_or(0);
+            let coeffs: Vec<FieldElement<F::Ext>> = (0..width)
+                .map(|k| {
+                    // A shorter polynomial contributes zero at this degree.
+                    let column: Vec<FieldElement<F>> = chunk
+                        .iter()
+                        .map(|p| {
+                            p.coefficients
+                                .get(k)
+                                .cloned()
+                                .unwrap_or_else(FieldElement::<F>::zero)
+                        })
+                        .collect();
+                    F::lift(&column)
+                })
+                .collect();
+            Polynomial::new(&coeffs)
+        })
+        .collect()
+}
+
+/// Pack a party's shares into `F::Ext` elements, `CONV_RATIO` at a time.
+///
+/// The evaluation-side counterpart of [`lift_polynomials`]: if `shares[j]` is
+/// `poly_j` evaluated at this party's point, then the `i`-th packed share is
+/// the `i`-th packed polynomial evaluated at that same point. That
+/// correspondence is what lets a verifier check the dealer's combination
+/// without ever leaving the wide field.
+pub fn lift_shares<F: ProtocolField>(
+    shares: &[FieldElement<F>],
+) -> Vec<FieldElement<F::Ext>> {
+    shares.chunks(F::CONV_RATIO).map(F::lift).collect()
 }

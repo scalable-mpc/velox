@@ -1,27 +1,24 @@
 use application::Application;
 use std::collections::{HashMap, VecDeque, HashSet};
 
-use fields::ByteConversion;
-use fields::{
-    AvssShare, LargeField, LargeFieldSer, inverse_vandermonde, matrix_matrix_multiply,
-    vandermonde_matrix,
-};
+use fields::{AvssShare, LargeFieldSer, inverse_vandermonde, matrix_matrix_multiply, vandermonde_matrix, ProtocolField};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use types::Replica;
 
 use crate::{Context, msg::ProtMsg};
+use lambdaworks_math::field::element::FieldElement;
 
-pub struct RandomOutputMaskStruct{
+pub struct RandomOutputMaskStruct<F: ProtocolField>{
     pub avss_shares: HashMap<Replica, AvssShare>,
 
-    pub rand_sharings: VecDeque<LargeField>,
+    pub rand_sharings: VecDeque<FieldElement<F>>,
     
     pub acs_recon_set: HashSet<Replica>,
-    pub recon_shares: HashMap<Replica, HashMap<Replica, Vec<LargeField>>>,
-    pub public_reconstruction_outputs: HashMap<Replica, Vec<LargeField>>
+    pub recon_shares: HashMap<Replica, HashMap<Replica, Vec<FieldElement<F>>>>,
+    pub public_reconstruction_outputs: HashMap<Replica, Vec<FieldElement<F>>>
 }
 
-impl RandomOutputMaskStruct{
+impl<F: ProtocolField> RandomOutputMaskStruct<F>{
     pub fn new() -> Self{
         Self{
             avss_shares: HashMap::default(),
@@ -35,30 +32,29 @@ impl RandomOutputMaskStruct{
     }
 }
 
-
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     pub async fn handle_avss_share_output(&mut self, origin: Replica, avss_share: AvssShare){
         log::info!("Handling AVSS share from sender {}", origin);
         self.output_mask_state.avss_shares.insert(origin, avss_share);
         self.verify_sender_termination(origin).await;
     }
 
-    pub async fn generate_random_mask_shares(&mut self, acs_recon_set: HashSet<Replica>, vdm_matrix: Vec<Vec<LargeField>>){
+    pub async fn generate_random_mask_shares(&mut self, acs_recon_set: HashSet<Replica>, vdm_matrix: Vec<Vec<FieldElement<F>>>){
         if self.rand_sharings_state.acs_output.len() == 0{
             return;
         }
         self.output_mask_state.acs_recon_set.extend(acs_recon_set);
-        let mut shares_accumulated: Vec<Vec<LargeField>> = vec![vec![];self.output_mask_size];
+        let mut shares_accumulated: Vec<Vec<FieldElement<F>>> = vec![vec![];self.output_mask_size];
         for rep in 0..self.num_nodes{
             if self.rand_sharings_state.acs_output.contains(&rep){
                 let shares = self.output_mask_state.avss_shares.get(&rep).unwrap().clone();
                 for (index, share) in shares.0.iter().enumerate(){
-                    shares_accumulated[index].push(LargeField::from_bytes_be(share).unwrap());
+                    shares_accumulated[index].push(F::from_bytes_be(share).unwrap());
                 }
             }
         }
         // Vandermonde matrix
-        let random_mask_shares: Vec<LargeField> = shares_accumulated.into_par_iter().map(|x| {
+        let random_mask_shares: Vec<FieldElement<F>> = shares_accumulated.into_par_iter().map(|x| {
             let res = Self::matrix_vector_multiply(&vdm_matrix, &x);
             res
         }).flatten().collect();
@@ -97,7 +93,7 @@ impl<A: Application> Context<A>{
         }
 
         let share_map= self.output_mask_state.recon_shares.get_mut(&origin).unwrap();
-        share_map.insert(share_sender, avss_share.0.into_iter().map(|x| LargeField::from_bytes_be(&x).unwrap()).collect::<Vec<LargeField>>());
+        share_map.insert(share_sender, avss_share.0.into_iter().map(|x| F::from_bytes_be(&x).unwrap()).collect::<Vec<FieldElement<F>>>());
         if share_map.len() == self.num_faults+1{
             // Reconstruct sharings
             // While reconstructing, remove elements one by one from the acs_recon_set map
@@ -113,13 +109,13 @@ impl<A: Application> Context<A>{
             }
             // Batched Lagrange interpolation routed through `matrix_matrix_multiply`
             // so the dispatcher picks the GPU path under `--features gpu`. We only
-            // need the polynomials at `LargeField::zero()`, which is row 0 of the
+            // need the polynomials at `FieldElement::<F>::zero()`, which is row 0 of the
             // recovered coefficient matrix (the constant term).
             let inv_vdm = inverse_vandermonde(vandermonde_matrix(evaluation_indices.clone()));
             let coeffs_mat = matrix_matrix_multiply(&inv_vdm, &evaluations, false);
-            let reconstructed_secrets: Vec<LargeField> = coeffs_mat
+            let reconstructed_secrets: Vec<FieldElement<F>> = coeffs_mat
                 .into_par_iter()
-                .map(|coeffs| coeffs.into_iter().next().unwrap_or_else(LargeField::zero))
+                .map(|coeffs| coeffs.into_iter().next().unwrap_or_else(FieldElement::<F>::zero))
                 .collect();
             log::info!("Reconstructed AVSS contributions of the output mask from origin {}", origin);
             self.output_mask_state.public_reconstruction_outputs.insert(origin, reconstructed_secrets);
@@ -132,10 +128,10 @@ impl<A: Application> Context<A>{
     pub async fn verify_protocol_termination(&mut self){
         if self.output_mask_state.acs_recon_set.len() == 0{
             // Reconstruct random sharings as given by the VDM matrix
-            let x_values: Vec<LargeField> = (2..self.num_faults+3).into_iter().map(|x| LargeField::from(x as u64)).collect();
+            let x_values: Vec<FieldElement<F>> = (2..self.num_faults+3).into_iter().map(|x| FieldElement::<F>::from(x as u64)).collect();
             let vandermonde_matrix = Self::vandermonde_matrix(x_values, 2*self.num_faults+1);
             
-            let mut rand_combined_secrets: Vec<Vec<LargeField>> = Vec::new();
+            let mut rand_combined_secrets: Vec<Vec<FieldElement<F>>> = Vec::new();
             for party in 0..self.num_nodes{
                 if self.rand_sharings_state.acs_output.contains(&party){
                     let avss_secrets = self.output_mask_state.public_reconstruction_outputs.get(&party).unwrap();
@@ -154,7 +150,7 @@ impl<A: Application> Context<A>{
             let rand_recon_values = rand_combined_secrets.into_par_iter().map(|x| {
                 let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
                 res
-            }).flatten().collect::<Vec<LargeField>>();
+            }).flatten().collect::<Vec<FieldElement<F>>>();
 
             // Use these reconstructed random masks to denoise the output. 
             let masked_outputs = self.mult_state.output_layer.reconstructed_masked_outputs.clone();
@@ -164,32 +160,12 @@ impl<A: Application> Context<A>{
             }
             else{
                 let masked_outputs = masked_outputs.unwrap();
-                let unmasked_outputs: Vec<LargeField> = masked_outputs.into_iter().zip(rand_recon_values.into_iter()).map(|(output,mask)| output-mask).collect();
+                let unmasked_outputs: Vec<FieldElement<F>> = masked_outputs.into_iter().zip(rand_recon_values.into_iter()).map(|(output,mask)| output-mask).collect();
                 
-                let mut outputs = Vec::new();
-                for out in unmasked_outputs{
-                    // Mirrors `input.rs::convert_string_to_large_field` (7 payload bytes
-                    // per 8-byte limb, byte 0 of each limb is the unused high-zero that
-                    // keeps the limb value below 2^56 so Mersenne-61 reduction stays a
-                    // no-op). Concatenate the four 7-byte payloads and strip the
-                    // left-side zero padding inserted at encode time.
-                    let reverse_conversion = |fe: &LargeField| -> String {
-                        let bytes = fe.to_bytes_be();
-                        let mut payload = Vec::with_capacity(28);
-                        for chunk in 0..4 {
-                            payload.extend_from_slice(&bytes[chunk * 8 + 1..chunk * 8 + 8]);
-                        }
-                        let first_nonzero = payload
-                            .iter()
-                            .position(|&b| b != 0)
-                            .unwrap_or(payload.len());
-                        payload[first_nonzero..]
-                            .iter()
-                            .map(|&b| b as char)
-                            .collect()
-                    };
-                    outputs.push(reverse_conversion(&out));
-                }
+                // The text layout is the field's own business — `decode_ascii` is
+                // the exact inverse of the `encode_ascii` that `mpc::input` used
+                // on the way in, whichever field that is.
+                let outputs: Vec<String> = unmasked_outputs.iter().map(F::decode_ascii).collect();
                 println!("Broadcast output: {:?}", outputs);
                 let ser_msg = bincode::serialize(&outputs).unwrap();
                 self.terminate("output".to_string(), ser_msg).await;

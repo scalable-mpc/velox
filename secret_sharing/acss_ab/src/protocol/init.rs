@@ -3,26 +3,26 @@ use std::{ops::{Mul, Add, Sub}};
 use crate::Context;
 use crypto::{hash::{do_hash, Hash}, aes_hash::MerkleTree};
 use lambdaworks_math::polynomial::Polynomial;
-use fields::ByteConversion;
-use fields::{LargeField, LargeFieldSer, generate_evaluation_points_fft, generate_evaluation_points, generate_evaluation_points_opt, sample_polynomials_from_prf, rand_field_element};
+use fields::{LargeFieldSer, generate_evaluation_points_fft, generate_evaluation_points, generate_evaluation_points_opt, sample_polynomials_from_prf, rand_field_element, lift_polynomials, lift_shares, ProtocolField, FieldSer};
 
 use types::Replica;
 
 use super::ACSSABState;
+use lambdaworks_math::field::element::FieldElement;
 
-impl Context{
-    pub async fn init_acss_ab(&mut self, secrets: Vec<LargeField>, instance_id: usize){
+impl<F: ProtocolField> Context<F>{
+    pub async fn init_acss_ab(&mut self, secrets: Vec<FieldElement<F>>, instance_id: usize){
         if !self.acss_ab_state.contains_key(&instance_id){
-            let acss_ab_state = ACSSABState::new();
+            let acss_ab_state = ACSSABState::<F>::new();
             self.acss_ab_state.insert(instance_id, acss_ab_state);
         }
 
         let tot_sharings = secrets.len();
 
         let mut _indices;
-        let mut evaluations: Vec<Vec<LargeField>>;
+        let mut evaluations: Vec<Vec<FieldElement<F>>>;
         let nonce_evaluations;
-        let mut coefficients: Vec<Polynomial<LargeField>>;
+        let mut coefficients: Vec<Polynomial<FieldElement<F>>>;
         
         let blinding_poly_evaluations;
         let blinding_poly_coefficients;
@@ -37,7 +37,7 @@ impl Context{
                 false, 
                 1u8
             );
-            let (evaluations_batch,coefficients_batch): (Vec<Vec<LargeField>>, Vec<Polynomial<LargeField>>) = generate_evaluation_points_opt(
+            let (evaluations_batch,coefficients_batch): (Vec<Vec<FieldElement<F>>>, Vec<Polynomial<FieldElement<F>>>) = generate_evaluation_points_opt(
                 evaluations_prf,
                 self.num_faults,
                 self.num_nodes,
@@ -51,12 +51,12 @@ impl Context{
 
             _indices = Vec::new();
             for party in 0..self.num_nodes{
-                _indices.push(LargeField::from((party+1) as u64));
+                _indices.push(FieldElement::<F>::from((party+1) as u64));
             }
 
             // Generate nonce evaluations
             let evaluations_nonce_prf = sample_polynomials_from_prf(
-                vec![rand_field_element()], 
+                vec![rand_field_element::<F>()], 
                 self.sec_key_map.clone(), 
                 self.num_faults, 
                 true, 
@@ -71,14 +71,14 @@ impl Context{
 
             // Generate the DZK proofs and commitments and utilize RBC to broadcast these proofs
             // Sample blinding polynomial
-            let blinding_prf = sample_polynomials_from_prf(
-                vec![rand_field_element()], 
+            let blinding_prf = sample_polynomials_from_prf::<F::Ext>(
+                vec![rand_field_element::<F::Ext>()], 
                 self.sec_key_map.clone(), 
                 self.num_faults, 
                 true, 
                 2u8
             );
-            let (blinding_poly_evaluations_vec, blinding_poly_coefficients_vec) = generate_evaluation_points(
+            let (blinding_poly_evaluations_vec, blinding_poly_coefficients_vec) = generate_evaluation_points::<F::Ext>(
                 blinding_prf,
                 self.num_faults,
                 self.num_nodes
@@ -87,15 +87,15 @@ impl Context{
             blinding_poly_evaluations = blinding_poly_evaluations_vec[0].clone();
             blinding_poly_coefficients = blinding_poly_coefficients_vec[0].clone();
 
-            let blinding_nonce_prf = sample_polynomials_from_prf(
-                vec![rand_field_element()], 
+            let blinding_nonce_prf = sample_polynomials_from_prf::<F::Ext>(
+                vec![rand_field_element::<F::Ext>()], 
                 self.sec_key_map.clone(), 
                 self.num_faults, 
                 true, 
                 3u8
             );
 
-            let (nonce_blinding_poly_evaluations_vec, _nonce_blinding_poly_coefficients_vec) = generate_evaluation_points(
+            let (nonce_blinding_poly_evaluations_vec, _nonce_blinding_poly_coefficients_vec) = generate_evaluation_points::<F::Ext>(
                 blinding_nonce_prf,
                 self.num_faults,
                 self.num_nodes,
@@ -117,20 +117,20 @@ impl Context{
             
             // Generate nonce evaluations
             let (nonce_evaluations_ret,_nonce_coefficients) = generate_evaluation_points_fft(
-                vec![rand_field_element()],
+                vec![rand_field_element::<F>()],
                 self.num_faults-1,
                 self.num_nodes,
             ).await;
             nonce_evaluations = nonce_evaluations_ret[0].clone();
 
-            let (blinding_poly_evaluations_vec, blinding_poly_coefficients_vec) = generate_evaluation_points_fft(vec![rand_field_element()], 
+            let (blinding_poly_evaluations_vec, blinding_poly_coefficients_vec) = generate_evaluation_points_fft::<F::Ext>(vec![rand_field_element::<F::Ext>()], 
                 self.num_faults-1, 
                 self.num_nodes
             ).await;
             blinding_poly_evaluations = blinding_poly_evaluations_vec[0].clone();
             blinding_poly_coefficients = blinding_poly_coefficients_vec[0].clone();
 
-            let (nonce_blinding_evaluations_vec, _nonce_coefficients_vec) = generate_evaluation_points_fft(vec![rand_field_element()]
+            let (nonce_blinding_evaluations_vec, _nonce_coefficients_vec) = generate_evaluation_points_fft::<F::Ext>(vec![rand_field_element::<F::Ext>()]
                 , 
                 self.num_faults-1, 
                 self.num_nodes
@@ -146,13 +146,13 @@ impl Context{
             let mut party_shares = Vec::new();
             let mut appended_share = Vec::new();
             for j in 0..evaluations.len(){
-                party_shares.push(evaluations[j][i].clone().to_bytes_be());
-                appended_share.extend(evaluations[j][i].clone().to_bytes_be());
+                party_shares.push(evaluations[j][i].clone().ser_be());
+                appended_share.extend(evaluations[j][i].clone().ser_be());
             }
             party_wise_shares.push(party_shares);
 
             // Append nonce shares to shares for generating commitment
-            appended_share.extend(nonce_evaluations[i].clone().to_bytes_be());
+            appended_share.extend(nonce_evaluations[i].clone().ser_be());
             party_appended_shares.push(appended_share);
         }
 
@@ -168,28 +168,35 @@ impl Context{
         let mut blinding_commitments = Vec::new();
         for i in 0..self.num_nodes{
             blinding_commitments.push(self.hash_context.hash_two( 
-                blinding_poly_evaluations[i].clone().to_bytes_be().try_into().unwrap(), 
-                nonce_blinding_poly_evaluations[i].clone().to_bytes_be().try_into().unwrap()));
+                blinding_poly_evaluations[i].clone().ser_be().try_into().unwrap(), 
+                nonce_blinding_poly_evaluations[i].clone().ser_be().try_into().unwrap()));
         }
 
         let blinding_mt_root = MerkleTree::new(blinding_commitments.clone(), &self.hash_context).root();
         // Generate DZK coefficients
         
         let root_comm = self.hash_context.hash_two(share_root_comm, blinding_mt_root);
-        // Convert root commitment to field element
-        let root_comm_fe = LargeField::from_bytes_be(&root_comm).unwrap();
+        // The Fiat-Shamir challenge is drawn in F::Ext, not F: the soundness of
+        // the combination below is bounded by the size of the field the
+        // challenge lives in, and F may be far too small for that (61 bits).
+        // When F is already wide enough, F::Ext is F and this is unchanged.
+        let root_comm_fe = <F::Ext as ProtocolField>::from_bytes_be(&root_comm).unwrap();
         log::info!("Root_comm_fe: {:?} for sender {} instance_id {}",root_comm_fe, self.myid, instance_id);
 
+        // Pack the sharing polynomials CONV_RATIO at a time. Packing is
+        // coefficient-wise, so each group stays a degree-t polynomial and the
+        // proof is still about the same degree — see `lift_polynomials`.
+        let lifted_polys = lift_polynomials::<F>(&coefficients);
 
         let mut root_comm_fe_mul = root_comm_fe.clone();
         let mut dzk_coeffs = blinding_poly_coefficients.clone();
-        for poly in coefficients.into_iter(){
+        for poly in lifted_polys.into_iter(){
             dzk_coeffs = dzk_coeffs.add(poly.mul(root_comm_fe_mul.clone()));
             root_comm_fe_mul = root_comm_fe_mul.mul(root_comm_fe.clone());
         }
 
         // Serialize shares,commitments, and DZK polynomials
-        let ser_dzk_coeffs: Vec<LargeFieldSer> = dzk_coeffs.coefficients.into_iter().map(|el| el.to_bytes_be()).collect();
+        let ser_dzk_coeffs: Vec<LargeFieldSer> = dzk_coeffs.coefficients.into_iter().map(|el| el.ser_be()).collect();
         let broadcast_vec = (commitments, blinding_commitments, ser_dzk_coeffs, tot_sharings);
         let serialized_broadcase_vec = (instance_id, broadcast_vec);
         let ser_vec = bincode::serialize(&serialized_broadcase_vec).unwrap();
@@ -200,8 +207,8 @@ impl Context{
             // even need to encrypt shares
             if (self.use_fft) || (!self.use_fft && rep >= self.num_faults){
                 let shares_party = party_wise_shares[rep].clone();
-                let nonce_share = nonce_evaluations[rep].clone().to_bytes_be();
-                let blinding_nonce_share = nonce_blinding_poly_evaluations[rep].clone().to_bytes_be();
+                let nonce_share = nonce_evaluations[rep].clone().ser_be();
+                let blinding_nonce_share = nonce_blinding_poly_evaluations[rep].clone().ser_be();
                 
                 let shares_full = (shares_party, nonce_share, blinding_nonce_share);
                 let serialized_shares = (instance_id, shares_full);
@@ -222,7 +229,7 @@ impl Context{
     pub async fn verify_shares(&mut self, sender: Replica, instance_id: usize){
         log::info!("Verifying shares from sender: {} for instance: {}", sender, instance_id);
         if !self.acss_ab_state.contains_key(&instance_id){
-            let acss_state = ACSSABState::new();
+            let acss_state = ACSSABState::<F>::new();
             self.acss_ab_state.insert(instance_id, acss_state);
         }
 
@@ -266,16 +273,19 @@ impl Context{
             return;
         }
 
-        // Second, verify DZK proof
-        let shares_ff: Vec<LargeField> = shares.into_iter().map(|el| LargeField::from_bytes_be(el.as_slice()).unwrap()).collect();
-        let dzk_poly_coeffs: Vec<LargeField> = dzk_coeffs.into_iter().map(|el| LargeField::from_bytes_be(el.as_slice()).unwrap()).collect();
+        // Second, verify DZK proof. The proof lives in F::Ext — see the dealer
+        // side for why — so the challenge, the polynomial and the packed shares
+        // are all read there.
+        let shares_ff: Vec<FieldElement<F>> = shares.into_iter().map(|el| F::from_bytes_be(el.as_slice()).unwrap()).collect();
+        let dzk_poly_coeffs: Vec<FieldElement<F::Ext>> = dzk_coeffs.into_iter()
+            .map(|el| <F::Ext as ProtocolField>::from_bytes_be(el.as_slice()).unwrap()).collect();
         let dzk_poly = Polynomial::new(dzk_poly_coeffs.as_slice());
         // Change this to be root of unity
 
         let share_root = MerkleTree::new(share_commitments, &self.hash_context).root();
         let blinding_root = MerkleTree::new(blinding_commitments, &self.hash_context).root();
         let root_comm = self.hash_context.hash_two(share_root, blinding_root);
-        let root_comm_fe = LargeField::from_bytes_be(&root_comm).unwrap();
+        let root_comm_fe = <F::Ext as ProtocolField>::from_bytes_be(&root_comm).unwrap();
 
         log::info!("Root_comm_fe: {:?} for sender {} instance_id {}",root_comm_fe, sender, instance_id);
         let verf_status = self.evaluate_dzk_poly(
@@ -305,31 +315,41 @@ impl Context{
 
     pub fn evaluate_dzk_poly(
         &self,
-        root_comm_fe: LargeField,
+        root_comm_fe: FieldElement<F::Ext>,
         share_sender: Replica,
-        dzk_poly: &Polynomial<LargeField>, 
-        shares: &Vec<LargeField>, 
+        dzk_poly: &Polynomial<FieldElement<F::Ext>>, 
+        shares: &Vec<FieldElement<F>>, 
         blinding_comm: Hash,
         blinding_nonce: LargeFieldSer,
     )-> bool{
-        // Change this to be root of unity
+        // The evaluation point has to be the *same* point in F::Ext that the
+        // share sits at in F. `from(u64)` agrees with the embedding for the
+        // integer points, but the roots-of-unity path carries genuine F
+        // elements, so those go through `embed_ext` — which is a homomorphism,
+        // unlike the packing used for the shares below.
         let dzk_point;
         if !self.use_fft{
-            dzk_point = dzk_poly.evaluate(&LargeField::from((share_sender+1) as u64));
+            dzk_point = dzk_poly.evaluate(&FieldElement::<F::Ext>::from((share_sender+1) as u64));
         }
         else{
-            // get point of evaluation
-            let eval_point = self.roots_of_unity[share_sender].clone();
+            let eval_point = F::embed_ext(&self.roots_of_unity[share_sender]);
             dzk_point = dzk_poly.evaluate(&eval_point);
         }
-        let mut agg_shares_point = LargeField::zero();
+
+        // Pack this party's shares exactly as the dealer packed the
+        // polynomials, so the j-th packed share is the j-th packed polynomial
+        // evaluated at this party's point and the powers of the challenge line
+        // up on both sides.
+        let lifted_shares = lift_shares::<F>(shares);
+
+        let mut agg_shares_point = FieldElement::<F::Ext>::zero();
         let mut root_comm_fe_mul = root_comm_fe.clone();
-        for share in shares{
+        for share in lifted_shares.iter(){
             agg_shares_point = agg_shares_point.add(share.mul(root_comm_fe_mul.clone()));
             root_comm_fe_mul = root_comm_fe_mul.mul(root_comm_fe.clone());
         }
 
-        let blinding_poly_share_bytes = dzk_point.sub(agg_shares_point).to_bytes_be();
+        let blinding_poly_share_bytes = dzk_point.sub(agg_shares_point).ser_be();
         let blinding_hash = self.hash_context.hash_two(
             blinding_poly_share_bytes.try_into().unwrap(),
             blinding_nonce.try_into().unwrap()

@@ -6,6 +6,7 @@
     "port": 5000,
     "client_base_port": 7500,
     "client_run_port": 8000,
+    "use_private_ips": false,
     "repo": {
         "name": "fair-async-mpc-rs",
         "url": "https://github.com/akhilsb/fair-async-mpc-rs.git",

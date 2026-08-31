@@ -1,11 +1,11 @@
 use crate::Context;
 use crypto::{hash::{do_hash, Hash}};
-use fields::ByteConversion;
-use fields::{LargeField, LargeFieldSer, generate_evaluation_points_fft, generate_evaluation_points, generate_evaluation_points_opt, sample_polynomials_from_prf, rand_field_element};
+use fields::{LargeFieldSer, generate_evaluation_points_fft, generate_evaluation_points, generate_evaluation_points_opt, sample_polynomials_from_prf, rand_field_element, ProtocolField, FieldSer};
 use types::Replica;
+use lambdaworks_math::field::element::FieldElement;
 
-impl Context{
-    pub async fn init_sh2t(&mut self, secrets: Vec<LargeField>, instance_id: usize){
+impl<F: ProtocolField> Context<F>{
+    pub async fn init_sh2t(&mut self, secrets: Vec<FieldElement<F>>, instance_id: usize){
         if !self.sh2t_state_map.contains_key(&instance_id){
             let sh2t_state = crate::Sh2tState::new();
             self.sh2t_state_map.insert(instance_id, sh2t_state);
@@ -41,12 +41,12 @@ impl Context{
             coefficients.extend(coefficients_batch);
             _indices = Vec::new();
             for party in 0..self.num_nodes{
-                _indices.push(LargeField::from((party+1) as u64));
+                _indices.push(FieldElement::<F>::from((party+1) as u64));
             }
 
             // Generate nonce evaluations
             let evaluations_nonce_prf = sample_polynomials_from_prf(
-                vec![rand_field_element()], 
+                vec![rand_field_element::<F>()], 
                 self.sec_key_map.clone(), 
                 2*self.num_faults, 
                 true, 
@@ -75,7 +75,7 @@ impl Context{
             
             // Generate nonce evaluations
             let (nonce_evaluations_ret,_nonce_coefficients) = generate_evaluation_points_fft(
-                vec![rand_field_element()],
+                vec![rand_field_element::<F>()],
                 2*self.num_faults-1,
                 self.num_nodes,
             ).await;
@@ -88,13 +88,13 @@ impl Context{
             let mut party_shares = Vec::new();
             let mut appended_share = Vec::new();
             for j in 0..evaluations.len(){
-                party_shares.push(evaluations[j][i].clone().to_bytes_be());
-                appended_share.extend(evaluations[j][i].clone().to_bytes_be());
+                party_shares.push(evaluations[j][i].clone().ser_be());
+                appended_share.extend(evaluations[j][i].clone().ser_be());
             }
             party_wise_shares.push(party_shares);
 
             // Append nonce shares to shares for generating commitment
-            appended_share.extend(nonce_evaluations[i].clone().to_bytes_be());
+            appended_share.extend(nonce_evaluations[i].clone().ser_be());
             party_appended_shares.push(appended_share);
         }
 
@@ -113,7 +113,7 @@ impl Context{
             // prepare shares
             if (self.use_fft) || (!self.use_fft && rep >= 2*self.num_faults){
                 let shares_party = party_wise_shares[rep].clone();
-                let nonce_share = nonce_evaluations[rep].clone().to_bytes_be();
+                let nonce_share = nonce_evaluations[rep].clone().ser_be();
                 
                 let shares_full = (shares_party, nonce_share);
                 let inst_shares_full = (instance_id, shares_full);

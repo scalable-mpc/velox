@@ -3,17 +3,18 @@ use std::ops::Mul;
 
 use crypto::{hash::{Hash}};
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::{LargeField};
+use fields::ProtocolField;
 use types::{Replica};
 
 use crate::{Context, msg::ProtMsg, protocol::online_phase::APPLICATION_DEPTH_OFFSET};
 
 use super::mult_state::SingleDepthState;
+use lambdaworks_math::field::element::FieldElement;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     /// Multiplication driven by the engine itself — random bit squaring and
     /// tuple verification — which draws its preprocessing from the engine's pool.
-    pub async fn choose_multiplication_protocol(&mut self,a_shares: Vec<Vec<LargeField>>, b_shares: Vec<Vec<LargeField>>, depth: usize){
+    pub async fn choose_multiplication_protocol(&mut self,a_shares: Vec<Vec<FieldElement<F>>>, b_shares: Vec<Vec<FieldElement<F>>>, depth: usize){
         let (rand_needed, zero_needed) = self.multiplication_preprocessing_requirement(a_shares.len());
         let Some((rand_sharings, zero_sharings)) = self.take_multiplication_preprocessing(rand_needed, zero_needed) else {
             log::error!("Not enough preprocessed sharings for the multiplication at depth {}: need {} random and {} zero sharings, {} and {} left",
@@ -29,7 +30,7 @@ impl<A: Application> Context<A>{
     /// preprocessing it consumes — the engine's pool is reserved for random bit
     /// generation and verification — and its depth is shifted into the
     /// application range before it reaches the multiplication protocol.
-    pub async fn multiply_application_batch(&mut self, mult: Multiplication<LargeField>){
+    pub async fn multiply_application_batch(&mut self, mult: Multiplication<FieldElement<F>>){
         let input = &mult.input;
         if !input.x.1.is_empty() || !input.y.1.is_empty() || !input.x_ip.1.is_empty() || !input.y_ip.1.is_empty(){
             log::warn!("Application supplied second-half sharings at depth {}, but Velox sharings are unpacked; ignoring them", input.depth);
@@ -37,8 +38,8 @@ impl<A: Application> Context<A>{
 
         // Element-wise gates multiply one sharing by one sharing; inner-product
         // gates multiply two vectors of sharings into a single output.
-        let mut a_shares: Vec<Vec<LargeField>> = input.x.0.iter().map(|x| vec![x.clone()]).collect();
-        let mut b_shares: Vec<Vec<LargeField>> = input.y.0.iter().map(|y| vec![y.clone()]).collect();
+        let mut a_shares: Vec<Vec<FieldElement<F>>> = input.x.0.iter().map(|x| vec![x.clone()]).collect();
+        let mut b_shares: Vec<Vec<FieldElement<F>>> = input.y.0.iter().map(|y| vec![y.clone()]).collect();
         a_shares.extend(input.x_ip.0.iter().cloned());
         b_shares.extend(input.y_ip.0.iter().cloned());
 
@@ -67,11 +68,11 @@ impl<A: Application> Context<A>{
 
     /// Run a multiplication batch against preprocessing the caller supplies.
     pub async fn multiply_with_preprocessing(&mut self,
-        a_shares: Vec<Vec<LargeField>>,
-        b_shares: Vec<Vec<LargeField>>,
+        a_shares: Vec<Vec<FieldElement<F>>>,
+        b_shares: Vec<Vec<FieldElement<F>>>,
         depth: usize,
-        rand_sharings: Vec<LargeField>,
-        zero_sharings: Vec<LargeField>
+        rand_sharings: Vec<FieldElement<F>>,
+        zero_sharings: Vec<FieldElement<F>>
     ){
         // Padding necessary to make sure each group has the same number of elements
         let num_multiplications = a_shares.len();
@@ -110,7 +111,7 @@ impl<A: Application> Context<A>{
     }
 
     /// Draw multiplication preprocessing from the engine's own pool.
-    fn take_multiplication_preprocessing(&mut self, num_rand: usize, num_zero: usize) -> Option<(Vec<LargeField>, Vec<LargeField>)>{
+    fn take_multiplication_preprocessing(&mut self, num_rand: usize, num_zero: usize) -> Option<(Vec<FieldElement<F>>, Vec<FieldElement<F>>)>{
         let pool = &mut self.rand_sharings_state;
         if pool.rand_sharings_mult.len() < num_rand || pool.rand_2t_sharings_mult.len() < num_zero{
             return None;
@@ -127,7 +128,7 @@ impl<A: Application> Context<A>{
 
     pub async fn handle_hash_broadcast(&mut self, hash: Hash, depth: usize, lin_or_quad: bool, sender: Replica){
         if !self.mult_state.depth_share_map.contains_key(&depth){
-            let single_depth_state = SingleDepthState::new(lin_or_quad);
+            let single_depth_state = SingleDepthState::<F>::new(lin_or_quad);
             self.mult_state.depth_share_map.insert(depth, single_depth_state);
         }
         
@@ -182,7 +183,7 @@ impl<A: Application> Context<A>{
                 std::mem::take(&mut mult_state.l1_shares_reconstructed)
             };
             // Par iter from rayon not needed here because we are not doing heavy computation
-            let mut shares_next_depth: Vec<LargeField>
+            let mut shares_next_depth: Vec<FieldElement<F>>
                     = std::mem::take(&mut mult_state.util_rand_sharings).into_iter()
                         .zip(reconstructed_blinded_secrets.into_iter())
                             .map(|(sharing, recon_secret)|recon_secret-sharing)
@@ -238,9 +239,9 @@ impl<A: Application> Context<A>{
     }
 
     pub(crate) fn dot_product(
-        a: &Vec<LargeField>,
-        b: &Vec<LargeField>,
-    ) -> LargeField {
+        a: &Vec<FieldElement<F>>,
+        b: &Vec<FieldElement<F>>,
+    ) -> FieldElement<F> {
         // Assert that the vectors have the same length
         assert_eq!(a.len(), b.len(), "Vectors must have the same length");
     
@@ -254,18 +255,18 @@ impl<A: Application> Context<A>{
     #[allow(dead_code)] // Preserved as fallback API; the hot caller in lin_mult.rs
     // now uses the batched GEMM path via `matrix_matrix_multiply(&party_powers, …)`.
     pub(crate) fn evaluate_polynomial_from_coefficients_at_position(
-        coefficients: Vec<LargeField>,
-        evaluation_point: LargeField,
-    ) -> LargeField {
+        coefficients: Vec<FieldElement<F>>,
+        evaluation_point: FieldElement<F>,
+    ) -> FieldElement<F> {
         Polynomial::new(&coefficients).evaluate(&evaluation_point)
     }
 
-    pub fn get_share_evaluation_point(party: usize, use_fft:bool, roots_of_unity: Vec<LargeField>)-> LargeField{
+    pub fn get_share_evaluation_point(party: usize, use_fft:bool, roots_of_unity: Vec<FieldElement<F>>)-> FieldElement<F>{
         if use_fft{
             roots_of_unity.get(party).clone().unwrap().clone()
         }
         else{
-            LargeField::from((party+1) as u64)
+            FieldElement::<F>::from((party+1) as u64)
         }
     }
 }

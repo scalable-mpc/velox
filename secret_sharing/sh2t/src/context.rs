@@ -9,12 +9,11 @@ use anyhow::{anyhow, Result};
 use config::Node;
 
 use fnv::FnvHashMap;
-use fields::ByteConversion;
 use network::{
     plaintcp::{CancelHandler},
     Acknowledgement,
 };
-use fields::{LargeFieldSer, LargeField, gen_roots_of_unity};
+use fields::{LargeFieldSer, gen_roots_of_unity, ProtocolField};
 //use signal_hook::{iterator::Signals, consts::{SIGINT, SIGTERM}};
 use tokio::{sync::{
     mpsc::{Receiver, Sender, channel},
@@ -26,8 +25,9 @@ use types::{Replica};
 use crypto::aes_hash::HashState;
 
 use crate::Sh2tState;
+use lambdaworks_math::field::element::FieldElement;
 
-pub struct Context {
+pub struct Context<F: ProtocolField> {
     /// Data context
     pub num_nodes: usize,
     pub myid: usize,
@@ -69,13 +69,13 @@ pub struct Context {
     pub recv_out_ra: Receiver<(usize,Replica,usize)>,
 
     pub use_fft: bool,
-    pub roots_of_unity: Vec<LargeField>,
+    pub roots_of_unity: Vec<FieldElement<F>>,
 
     // pub sync_send: TcpReliableSender<Replica, SyncMsg, Acknowledgement>,
     // pub sync_recv: UnboundedReceiver<SyncMsg>,
 }
 
-impl Context {
+impl<F: ProtocolField> Context<F>{
     pub fn spawn(
         config: Node,
         input_msgs: Receiver<(usize,Vec<LargeFieldSer>)>, 
@@ -164,7 +164,7 @@ impl Context {
                 inp_acss: input_msgs,
                 out_acss: output_msgs,
 
-                roots_of_unity: gen_roots_of_unity(config.num_nodes),
+                roots_of_unity: gen_roots_of_unity::<F>(config.num_nodes),
 
                 inp_ctrbc: ctrbc_req_send_channel,
                 recv_out_ctrbc: ctrbc_out_recv_channel,
@@ -258,7 +258,7 @@ impl Context {
                                 .unwrap()
                                 .as_millis());
                     
-                    let secrets_field: Vec<LargeField> = secrets.into_iter().map(|secret| LargeField::from_bytes_be(&secret).unwrap()).collect();
+                    let secrets_field: Vec<FieldElement<F>> = secrets.into_iter().map(|secret| F::from_bytes_be(&secret).unwrap()).collect();
                     self.init_sh2t(secrets_field, id).await;
                 },
                 ctrbc_msg = self.recv_out_ctrbc.recv() =>{
@@ -317,7 +317,7 @@ impl Context {
                 //             // Dealer sends message to everybody. <M, init>
                 //             let mut vec_secrets = Vec::new();
                 //             for i in 0..100000{
-                //                 vec_secrets.push(LargeField::from(i as u64));
+                //                 vec_secrets.push(FieldElement::<F>::from(i as u64));
                 //             }
                 //             self.init_sh2t(vec_secrets,1).await;
                 //         },

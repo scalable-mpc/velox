@@ -8,12 +8,11 @@ use anyhow::{anyhow, Result};
 use config::Node;
 
 use fnv::FnvHashMap;
-use fields::ByteConversion;
 use network::{
     plaintcp::{CancelHandler},
     Acknowledgement,
 };
-use fields::{LargeFieldSer, LargeField, AvssShare, gen_roots_of_unity};
+use fields::{LargeFieldSer, AvssShare, gen_roots_of_unity, ProtocolField};
 //use signal_hook::{iterator::Signals, consts::{SIGINT, SIGTERM}};
 use tokio::{sync::{
     mpsc::{Receiver, Sender, channel},
@@ -25,8 +24,9 @@ use types::{Replica};
 use crypto::aes_hash::HashState;
 
 use crate::protocol::{ACSSABState};
+use lambdaworks_math::field::element::FieldElement;
 
-pub struct Context {
+pub struct Context<F: ProtocolField> {
     /// Data context
     pub num_nodes: usize,
     pub myid: usize,
@@ -42,8 +42,8 @@ pub struct Context {
     pub cancel_handlers: HashMap<u64, Vec<CancelHandler<Acknowledgement>>>,
     exit_rx: oneshot::Receiver<()>,
     
-    pub acss_ab_state: HashMap<usize,ACSSABState>,
-    pub avss_state: ACSSABState,
+    pub acss_ab_state: HashMap<usize,ACSSABState<F>>,
+    pub avss_state: ACSSABState<F>,
 
     // Maximum number of RBCs that can be initiated by a node. Keep this as an identifier for RBC service. 
     pub threshold: usize,
@@ -73,7 +73,7 @@ pub struct Context {
     pub recv_out_ra: Receiver<(usize,Replica,usize)>,
 
     pub use_fft: bool,
-    pub roots_of_unity: Vec<LargeField>,
+    pub roots_of_unity: Vec<FieldElement<F>>,
 
     pub avss_inst_id: usize, 
 
@@ -81,7 +81,7 @@ pub struct Context {
     // pub sync_recv: UnboundedReceiver<SyncMsg>,
 }
 
-impl Context {
+impl<F: ProtocolField> Context<F>{
     pub fn spawn(
         config: Node,
         input_acss: Receiver<(usize,Vec<LargeFieldSer>)>, 
@@ -164,7 +164,7 @@ impl Context {
                 exit_rx: exit_rx,
                 
                 acss_ab_state: HashMap::default(),
-                avss_state: ACSSABState::new(),
+                avss_state: ACSSABState::<F>::new(),
 
                 threshold: 10000,
 
@@ -178,7 +178,7 @@ impl Context {
                 inp_avss: input_avss,
                 out_avss: output_avss,
 
-                roots_of_unity: gen_roots_of_unity(config.num_nodes),
+                roots_of_unity: gen_roots_of_unity::<F>(config.num_nodes),
 
                 inp_ctrbc: ctrbc_req_send_channel,
                 recv_out_ctrbc: ctrbc_out_recv_channel,
@@ -257,7 +257,7 @@ impl Context {
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap()
                                 .as_millis());
-                    let secrets_field: Vec<LargeField> = secrets.into_iter().map(|secret| LargeField::from_bytes_be(&secret).unwrap()).collect();
+                    let secrets_field: Vec<FieldElement<F>> = secrets.into_iter().map(|secret| F::from_bytes_be(&secret).unwrap()).collect();
                     self.acss_id = id;
                     self.init_acss_ab(secrets_field, id).await;
                 },
@@ -338,7 +338,7 @@ impl Context {
                 //             self.max_id += 1;
                 //             let mut vec_secrets = Vec::new();
                 //             for i in 0..100000{
-                //                 vec_secrets.push(LargeField::from(i as u64));
+                //                 vec_secrets.push(FieldElement::<F>::from(i as u64));
                 //             }
                 //             self.init_acss_ab(vec_secrets, acss_id).await;
                 //         },

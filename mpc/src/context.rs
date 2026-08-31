@@ -13,7 +13,7 @@ use network::{
     plaintcp::{CancelHandler, TcpReceiver, TcpReliableSender},
     Acknowledgement,
 };
-use fields::{LargeFieldSer, LargeField, AvssShare, gen_roots_of_unity};
+use fields::{LargeFieldSer, AvssShare, gen_roots_of_unity, ProtocolField};
 use signal_hook::{iterator::Signals, consts::{SIGINT, SIGTERM}};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, Receiver, Sender, channel},
@@ -25,6 +25,7 @@ use types::{Replica, WrapperMsg, SyncMsg, SyncState};
 use crypto::{aes_hash::HashState, hash::Hash};
 
 use crate::{handlers::{handler::Handler, sync_handler::SyncHandler}, msg::ProtMsg, protocol::{online_phase::mix_circuit_state::MixCircuitState, rand_sharings::rand_mask::RandomOutputMaskStruct, MultState, RandSharings, VerificationState}};
+use lambdaworks_math::field::element::FieldElement;
 
 /// Number of coins sent to the MVBA/ACS instances to facilitate consensus.
 pub const NUM_CONSENSUS_COINS: usize = 500;
@@ -35,7 +36,7 @@ pub const NUM_CONSENSUS_COINS: usize = 500;
 /// ACSS/Sh2t instances (dealt one at a time) bounds peak memory at large batch sizes.
 pub const NUM_RAND_BATCHES: usize = 16;
 
-pub struct Context<A: Application> {
+pub struct Context<F: ProtocolField, A: Application<F>> {
     /// Application-specific logic. The engine drives the protocol phases and
     /// hands control back to the application at each phase boundary.
     pub app: A,
@@ -94,21 +95,20 @@ pub struct Context<A: Application> {
 
     /// State structures for keeping track of the state of the protocol
     // Preparation phase: Random sharings and 2t sharings of zero
-    pub rand_sharings_state: RandSharings,
+    pub rand_sharings_state: RandSharings<F>,
     // Multiplication state
-    pub mult_state: MultState,
+    pub mult_state: MultState<F>,
     // Verification state for multiplication triples
-    pub verf_state: VerificationState,
+    pub verf_state: VerificationState<F>,
     // Random masks for the output
-    pub output_mask_state: RandomOutputMaskStruct,
+    pub output_mask_state: RandomOutputMaskStruct<F>,
     // Mix circuit state for mixing circuit implementation
-    pub mix_circuit_state: MixCircuitState,
+    pub mix_circuit_state: MixCircuitState<F>,
 
-    pub field_div_2: LargeField,
 
     /// Fast fourier transforms utility
     pub use_fft: bool,
-    pub roots_of_unity: Vec<LargeField>,
+    pub roots_of_unity: Vec<FieldElement<F>>,
 
     // Protocol parameters
     /// Preprocessing batch sizes, in raw values dealt per party. Each raw value
@@ -129,7 +129,7 @@ pub struct Context<A: Application> {
     pub multiplication_switch_threshold: usize,
 }
 
-impl<A: Application> Context<A> {
+impl<F: ProtocolField, A: Application<F>> Context<F, A> {
     pub fn spawn(
         config: Node,
         app: A,
@@ -246,7 +246,6 @@ impl<A: Application> Context<A> {
         // the protocol's field is now Mersenne61 Fp4 (an extension field with no
         // canonical p/2). Reworking rand_bit for extension fields is out of scope
         // for the GPU/field-switch slice; placeholder zero keeps the build green.
-        let sqrt_power = LargeField::zero();
 
         // Preprocessing volumes are no longer derived from a circuit baked into
         // the engine: `init_rand_sh` queries the application for them once the
@@ -296,16 +295,15 @@ impl<A: Application> Context<A> {
                 sync_send: sync_net,
                 sync_recv: rx_net_from_client,
 
-                rand_sharings_state: RandSharings::new(),
-                mult_state: MultState::new(),
-                verf_state: VerificationState::new(),
-                output_mask_state: RandomOutputMaskStruct::new(),
-                mix_circuit_state: MixCircuitState::new(),
+                rand_sharings_state: RandSharings::<F>::new(),
+                mult_state: MultState::<F>::new(),
+                verf_state: VerificationState::<F>::new(),
+                output_mask_state: RandomOutputMaskStruct::<F>::new(),
+                mix_circuit_state: MixCircuitState::<F>::new(),
 
-                field_div_2: sqrt_power,
 
                 use_fft: use_fft,
-                roots_of_unity: gen_roots_of_unity(config.num_nodes),
+                roots_of_unity: gen_roots_of_unity::<F>(config.num_nodes),
 
                 // Sized from the application's preprocessing counts in `init_rand_sh`.
                 rand_bit_batch_size: 0,
@@ -330,7 +328,7 @@ impl<A: Application> Context<A> {
             }
         });
 
-        let status = acss_ab::Context::spawn(
+        let status = acss_ab::Context::<F>::spawn(
             acss_ab_config,
             acss_ab_recv,
             acss_ab_out_send,
@@ -343,7 +341,7 @@ impl<A: Application> Context<A> {
             log::error!("Error spawning acss_ab because of {:?}", status.err().unwrap());
         }
 
-        let status_sh2t = sh2t::Context::spawn(
+        let status_sh2t = sh2t::Context::<F>::spawn(
             sh2t_config,
             sh2t_recv,
             sh2t_out_send,
@@ -423,6 +421,10 @@ impl<A: Application> Context<A> {
         self.add_cancel_handler(cancel_handler);
     }
 
+    // TODO: the handlers dispatched from this loop call rayon `par_iter` inline
+    // (quad_mult, lin_mult, compress_tup, rand_sh, ...). Those block the tokio
+    // worker running this task rather than yielding, so the loop stops draining
+    // while the unbounded `net_recv` inbox keeps growing. See TODO.md.
     pub async fn run(&mut self) -> Result<()> {
         // The process starts listening to messages in this process.
         // First, the node sends an alive message

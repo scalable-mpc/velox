@@ -1,8 +1,8 @@
-use fields::{LargeFieldSer};
+use fields::{LargeFieldSer, ProtocolField};
 
 use crate::{Context,  Sh2tState};
 
-impl Context{
+impl<F: ProtocolField> Context<F>{
     pub async fn handle_avid_termination(&mut self, _inst_id: usize, sender: usize, content: Option<Vec<u8>>){
         if content.is_some(){
             let (instance_id,shares) : (usize,(Vec<LargeFieldSer>,LargeFieldSer)) = bincode::deserialize(content.unwrap().as_slice()).unwrap();

@@ -38,6 +38,11 @@ class InstanceManager:
         # Possible states are: 'pending', 'running', 'shutting-down',
         # 'terminated', 'stopping', and 'stopped'.
         ids, ips = defaultdict(list), defaultdict(list)
+        # Public ip -> private ip. Keyed by the public address rather than
+        # returned as a parallel list because callers reorder and slice the ip
+        # lists (see Bench._select_hosts), which a positional pairing would not
+        # survive.
+        private = {}
         for region, client in self.clients.items():
             r = client.describe_instances(
                 Filters=[
@@ -56,14 +61,16 @@ class InstanceManager:
                 ids[region] += [x['InstanceId']]
                 if 'PublicIpAddress' in x:
                     ips[region] += [x['PublicIpAddress']]
-        return ids, ips
+                    if 'PrivateIpAddress' in x:
+                        private[x['PublicIpAddress']] = x['PrivateIpAddress']
+        return ids, ips, private
 
     def _wait(self, state):
         # Possible states are: 'pending', 'running', 'shutting-down',
         # 'terminated', 'stopping', and 'stopped'.
         while True:
             sleep(1)
-            ids, _ = self._get(state)
+            ids, _, _ = self._get(state)
             if sum(len(x) for x in ids.values()) == 0:
                 break
 
@@ -168,7 +175,7 @@ class InstanceManager:
 
     def terminate_instances(self):
         try:
-            ids, _ = self._get(['pending', 'running', 'stopping', 'stopped'])
+            ids, _, _ = self._get(['pending', 'running', 'stopping', 'stopped'])
             size = sum(len(x) for x in ids.values())
             if size == 0:
                 Print.heading(f'All instances are shut down')
@@ -194,7 +201,7 @@ class InstanceManager:
     def start_instances(self, max):
         size = 0
         try:
-            ids, _ = self._get(['stopping', 'stopped'])
+            ids, _, _ = self._get(['stopping', 'stopped'])
             for region, client in self.clients.items():
                 if ids[region]:
                     target = ids[region]
@@ -207,7 +214,7 @@ class InstanceManager:
 
     def stop_instances(self):
         try:
-            ids, _ = self._get(['pending', 'running'])
+            ids, _, _ = self._get(['pending', 'running'])
             for region, client in self.clients.items():
                 if ids[region]:
                     client.stop_instances(InstanceIds=ids[region])
@@ -226,10 +233,24 @@ class InstanceManager:
         #     else:
         #         return json_data
         try:
-           _, ips = self._get(['pending', 'running'])
+           _, ips, _ = self._get(['pending', 'running'])
            return [x for y in ips.values() for x in y] if flat else ips
         except ClientError as e:
            raise BenchError('Failed to gather instances IPs', AWSError(e))
+
+    def private_ips(self):
+        ''' Map each instance's public ip to its private one.
+
+        `hosts()` returns public ips, which is what ssh needs. The protocol
+        itself should not leave the VPC: node-to-node traffic addressed to a
+        public ip is routed out and back through the internet gateway, which
+        costs bandwidth and adds latency to every one of the n^2 links.
+        '''
+        try:
+            _, _, private = self._get(['pending', 'running'])
+            return private
+        except ClientError as e:
+            raise BenchError('Failed to gather instances IPs', AWSError(e))
 
     def print_info(self):
         hosts = self.hosts()

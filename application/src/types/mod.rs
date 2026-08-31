@@ -1,7 +1,8 @@
 //! Protocol data-model types exposed by the [`Application`](crate::Application)
 //! trait's hooks. Kept minimal: only the types the trait's `DepthInput` carries.
 
-use crate::SmallField;
+use fields::ProtocolField;
+use lambdaworks_math::field::element::FieldElement;
 
 mod sharing;
 pub use sharing::*;
@@ -18,12 +19,12 @@ pub type Wire = usize;
 /// What an application schedules for a given circuit depth: an optional
 /// multiplication batch and/or an optional network-routing request. The MPC
 /// engine consumes this after each application hook returns.
-pub struct DepthInput {
-    pub mult: Option<Multiplication<SmallField>>,
-    pub network_routing: Option<NetworkRouting<SmallField>>,
+pub struct DepthInput<F: ProtocolField> {
+    pub mult: Option<Multiplication<FieldElement<F>>>,
+    pub network_routing: Option<NetworkRouting<FieldElement<F>>>,
 }
 
-impl DepthInput {
+impl<F: ProtocolField> DepthInput<F> {
     /// Build a `DepthInput` carrying neither a multiplication nor a network
     /// routing request — useful when an Application hook has nothing to
     /// schedule for the current depth.
@@ -35,7 +36,7 @@ impl DepthInput {
     }
 
     /// Build a `DepthInput` carrying a multiplication request; no network routing.
-    pub fn from_mult(mult: Multiplication<SmallField>) -> Self {
+    pub fn from_mult(mult: Multiplication<FieldElement<F>>) -> Self {
         Self {
             mult: Some(mult),
             network_routing: None,
@@ -43,7 +44,7 @@ impl DepthInput {
     }
 
     /// Build a `DepthInput` carrying a network routing request; no multiplication.
-    pub fn from_network_routing(network_routing: NetworkRouting<SmallField>) -> Self {
+    pub fn from_network_routing(network_routing: NetworkRouting<FieldElement<F>>) -> Self {
         Self {
             mult: None,
             network_routing: Some(network_routing),
@@ -51,12 +52,12 @@ impl DepthInput {
     }
 
     /// Returns the contained `NetworkRouting` request if one is present.
-    pub fn network_routing(&self) -> Option<NetworkRouting<SmallField>> {
+    pub fn network_routing(&self) -> Option<NetworkRouting<FieldElement<F>>> {
         self.network_routing.clone()
     }
 
     /// Returns the contained `Multiplication` request if one is present.
-    pub fn mult(&self) -> Option<Multiplication<SmallField>> {
+    pub fn mult(&self) -> Option<Multiplication<FieldElement<F>>> {
         self.mult.clone()
     }
 

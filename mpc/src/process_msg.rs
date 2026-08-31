@@ -4,8 +4,9 @@ use std::sync::Arc;
 use crate::{context::Context, msg::ProtMsg};
 use crypto::{hash::verf_mac};
 use types::{WrapperMsg};
+use fields::ProtocolField;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function verifies the Message Authentication Code (MAC) of a sent message
     // A node cannot impersonate as another node because of MACs
     pub fn check_proposal(&self, wrapper_msg: Arc<WrapperMsg<ProtMsg>>) -> bool {

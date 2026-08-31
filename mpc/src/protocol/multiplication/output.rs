@@ -2,13 +2,13 @@ use application::Application;
 use std::collections::HashSet;
 
 use crypto::hash::do_hash;
-use fields::ByteConversion;
-use fields::{LargeFieldSer, LargeField, check_if_all_points_lie_on_degree_x_polynomial};
+use fields::{LargeFieldSer, check_if_all_points_lie_on_degree_x_polynomial, ProtocolField, FieldSer};
 use types::Replica;
 
 use crate::{Context, msg::ProtMsg};
+use lambdaworks_math::field::element::FieldElement;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // Last layer of the protocol
     pub async fn reconstruct_output(&mut self){
         if self.mult_state.output_layer.output_shares.is_none(){
@@ -32,7 +32,7 @@ impl<A: Application> Context<A>{
         self.mult_state.output_layer.output_wire_shares.insert(self.myid, (evaluation_point, output_wire_shares.clone()));
         // Reconstruct the output
         let output_masks_ser = output_wire_shares.iter()
-            .map(|x| x.to_bytes_be())
+            .map(|x| x.ser_be())
             .collect::<Vec<LargeFieldSer>>();
         
 
@@ -43,7 +43,7 @@ impl<A: Application> Context<A>{
     pub async fn handle_reconstruct_masked_output(&mut self, ser_shares: Vec<LargeFieldSer>, sender:Replica){
         log::info!("Handling reconstruct masked output shares from sender {}", sender);
         // Deserialize shares
-        let shares_lf: Vec<LargeField> = ser_shares.into_iter().map(|x| LargeField::from_bytes_be(&x).unwrap()).collect();
+        let shares_lf: Vec<FieldElement<F>> = ser_shares.into_iter().map(|x| F::from_bytes_be(&x).unwrap()).collect();
         let evaluation_point = Self::get_share_evaluation_point(sender,self.use_fft, self.roots_of_unity.clone());
         
         self.mult_state.output_layer.output_wire_shares.insert(sender, (evaluation_point, shares_lf));
@@ -73,13 +73,13 @@ impl<A: Application> Context<A>{
                 let polys = verification_result.1.unwrap();
                 // Output wires reconstructed
                 log::info!("Masked output wires successfully reconstructed, shares are on a degree-t polynomial");
-                let outputs_recon = polys.iter().map(|poly|poly.evaluate(&LargeField::zero())).collect::<Vec<LargeField>>();
+                let outputs_recon = polys.iter().map(|poly|poly.evaluate(&FieldElement::<F>::zero())).collect::<Vec<FieldElement<F>>>();
                 self.mult_state.output_layer.reconstructed_masked_outputs = Some(outputs_recon.clone());
                 // Broadcast using a CTRBC channel
                 let mut broadcast_output = Vec::new();
                 broadcast_output.push(1u8);
                 for output in outputs_recon.iter(){
-                    broadcast_output.extend(output.to_bytes_be());
+                    broadcast_output.extend(output.ser_be());
                 }
                 let _status = self.ctrbc_event_send.send(broadcast_output).await;
             }

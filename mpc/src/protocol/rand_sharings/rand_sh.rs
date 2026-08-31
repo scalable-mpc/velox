@@ -1,11 +1,11 @@
 use application::Application;
 use std::{collections::{HashMap, HashSet}, ops::{Add, Mul}};
 
-use fields::ByteConversion;
-use fields::{LargeField, LargeFieldSer, rand_field_element};
+use fields::{LargeFieldSer, rand_field_element, ProtocolField, FieldSer};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use types::{ProtSyncMsg, Replica, SyncMsg, SyncState};
 use crate::{context::Context};
+use lambdaworks_math::field::element::FieldElement;
 
 /// ACSS batch carrying the `r` values that get squared into random bits.
 pub const RAND_BIT_ACSS_BATCH: usize = 0;
@@ -20,7 +20,7 @@ pub const ZERO_SH2T_BATCH: usize = 0;
 /// Number of Sh2t batches each party deals during preprocessing.
 pub const NUM_SH2T_BATCHES: usize = 1;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     pub async fn init_rand_sh(&mut self){
         // How much preprocessing the circuit needs is the application's call.
         let counts = self.app.preprocessing_count();
@@ -106,7 +106,7 @@ impl<A: Application> Context<A>{
             .map(|(index, batch_size)|{
                 log::info!("Preparing secret sharing batch {} with {} values", index, batch_size);
                 (0..batch_size).into_par_iter()
-                    .map(|_| rand_field_element().to_bytes_be())
+                    .map(|_| rand_field_element::<F>().ser_be())
                     .collect()
             })
             .collect();
@@ -125,7 +125,7 @@ impl<A: Application> Context<A>{
         log::info!("Preparing 2t sharing in preprocessing phase with {} values", self.zero_batch_size);
         let zeros: Vec<Vec<LargeFieldSer>> = vec![
             (0..self.zero_batch_size).into_par_iter()
-                .map(|_| LargeField::zero().to_bytes_be())
+                .map(|_| FieldElement::<F>::zero().ser_be())
                 .collect()
         ];
 
@@ -138,7 +138,7 @@ impl<A: Application> Context<A>{
         // Random masks for output wires
         let mut random_masks = Vec::new();
         for _ in 0..self.output_mask_size{
-            random_masks.push(rand_field_element().to_bytes_be());
+            random_masks.push(rand_field_element::<F>().ser_be());
         }
         let avss_status = self.avss_send.send((true, Some(random_masks), None)).await;
         if avss_status.is_err(){
@@ -191,8 +191,8 @@ impl<A: Application> Context<A>{
             return;
         }
 
-        let shares_deser: Vec<LargeField> = shares.unwrap().into_par_iter().map(|x| 
-            LargeField::from_bytes_be(&x).unwrap()
+        let shares_deser: Vec<FieldElement<F>> = shares.unwrap().into_par_iter().map(|x| 
+            F::from_bytes_be(&x).unwrap()
         ).collect();
 
         if !self.rand_sharings_state.shares.contains_key(&sender){
@@ -228,8 +228,8 @@ impl<A: Application> Context<A>{
             log::info!("Finished processing random sharings, ignoring ACSS and SH2t for all subsequent batches and senders: sender {}", sender);
             return;
         }
-        let shares_deser: Vec<LargeField> = shares.unwrap().into_par_iter().map(|x| 
-            LargeField::from_bytes_be(&x).unwrap()
+        let shares_deser: Vec<FieldElement<F>> = shares.unwrap().into_par_iter().map(|x| 
+            F::from_bytes_be(&x).unwrap()
         ).collect();
 
         if !self.rand_sharings_state.sh2t_shares.contains_key(&sender){
@@ -304,7 +304,7 @@ impl<A: Application> Context<A>{
                 // Generate random sharings
                 // Vandermonde matrix
                 
-                let x_values: Vec<LargeField> = (2..self.num_faults+3).into_iter().map(|x| LargeField::from(x as u64)).collect();
+                let x_values: Vec<FieldElement<F>> = (2..self.num_faults+3).into_iter().map(|x| FieldElement::<F>::from(x as u64)).collect();
                 let vandermonde_matrix = Self::vandermonde_matrix(x_values, 2*self.num_faults+1);
                 
                 // Build party-accumulated share vectors. Batch sizes are read into
@@ -317,17 +317,17 @@ impl<A: Application> Context<A>{
                 let acs_indexed_2t_share_groups = self.gen_2t_sharings(ZERO_SH2T_BATCH, zero_batch_size);
 
                 // Multiply each vector with the indexed vector in the Vandermonde matrix
-                let rand_sharings_bits: Vec<LargeField> = acs_indexed_rand_bit_group.into_par_iter().map(|x| {
+                let rand_sharings_bits: Vec<FieldElement<F>> = acs_indexed_rand_bit_group.into_par_iter().map(|x| {
                     let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
                     res
                 }).flatten().collect();
 
-                let mut rand_sharings_mult: Vec<LargeField> = acs_indexed_mult_group.into_par_iter().map(|x| {
+                let mut rand_sharings_mult: Vec<FieldElement<F>> = acs_indexed_mult_group.into_par_iter().map(|x| {
                     let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
                     res
                 }).flatten().collect();
 
-                let rand_sharings_2t_mult: Vec<LargeField> = acs_indexed_2t_share_groups.into_par_iter().map(|x| {
+                let rand_sharings_2t_mult: Vec<FieldElement<F>> = acs_indexed_2t_share_groups.into_par_iter().map(|x| {
                     let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
                     res
                 }).flatten().collect();
@@ -364,12 +364,12 @@ impl<A: Application> Context<A>{
     }
 
     /// Constructs the Vandermonde matrix for a given set of x-values. Note that the x-values are parties and are converted to the ith root of unity for the evaluation
-    pub fn vandermonde_matrix(x_values: Vec<LargeField>, y_vals_target: usize) -> Vec<Vec<LargeField>> {
+    pub fn vandermonde_matrix(x_values: Vec<FieldElement<F>>, y_vals_target: usize) -> Vec<Vec<FieldElement<F>>> {
         let n = x_values.len();
-        let mut matrix = vec![vec![LargeField::zero(); y_vals_target]; n];
+        let mut matrix = vec![vec![FieldElement::<F>::zero(); y_vals_target]; n];
 
         for (row, x) in x_values.iter().enumerate() {
-            let mut value = LargeField::one();
+            let mut value = FieldElement::<F>::one();
             for col in 0..y_vals_target {
                 matrix[row][col] = value.clone();
                 value = value * x;
@@ -381,20 +381,20 @@ impl<A: Application> Context<A>{
     /// Takes the vector as a slice so callers can hand it a chunk of a larger
     /// buffer without copying that chunk out first.
     pub fn matrix_vector_multiply(
-        matrix: &Vec<Vec<LargeField>>,
-        vector: &[LargeField],
-    ) -> Vec<LargeField> {
+        matrix: &Vec<Vec<FieldElement<F>>>,
+        vector: &[FieldElement<F>],
+    ) -> Vec<FieldElement<F>> {
         matrix
             .iter()
             .map(|row| {
                 row.iter()
                     .zip(vector)
-                    .fold(LargeField::zero(), |sum, (a, b)| sum.add(a.mul(b)))
+                    .fold(FieldElement::<F>::zero(), |sum, (a, b)| sum.add(a.mul(b)))
             })
             .collect()
     }
 
-    pub fn gen_random_sharings(&mut self, batch: usize, batch_size: usize)-> Vec<Vec<LargeField>>{
+    pub fn gen_random_sharings(&mut self, batch: usize, batch_size: usize)-> Vec<Vec<FieldElement<F>>>{
         let acs_output = std::mem::take(&mut self.rand_sharings_state.acs_output);
         let grouped = Self::group_batch_by_position(
             &mut self.rand_sharings_state.shares,
@@ -407,7 +407,7 @@ impl<A: Application> Context<A>{
         grouped
     }
 
-    pub fn gen_2t_sharings(&mut self, batch: usize, batch_size: usize) -> Vec<Vec<LargeField>>{
+    pub fn gen_2t_sharings(&mut self, batch: usize, batch_size: usize) -> Vec<Vec<FieldElement<F>>>{
         let acs_output = std::mem::take(&mut self.rand_sharings_state.acs_output);
         let grouped = Self::group_batch_by_position(
             &mut self.rand_sharings_state.sh2t_shares,
@@ -432,13 +432,13 @@ impl<A: Application> Context<A>{
     /// The party's entry itself is left in place so `verify_sender_termination`
     /// still sees a completed sender.
     fn group_batch_by_position(
-        shares_per_party: &mut HashMap<usize, HashMap<usize, Vec<LargeField>>>,
+        shares_per_party: &mut HashMap<usize, HashMap<usize, Vec<FieldElement<F>>>>,
         acs_output: &HashSet<Replica>,
         num_nodes: usize,
         batch: usize,
         batch_size: usize,
-    ) -> Vec<Vec<LargeField>>{
-        let mut indexed_share_groups: Vec<Vec<LargeField>> = vec![Vec::new(); batch_size];
+    ) -> Vec<Vec<FieldElement<F>>>{
+        let mut indexed_share_groups: Vec<Vec<FieldElement<F>>> = vec![Vec::new(); batch_size];
         for party in 0..num_nodes{
             if !acs_output.contains(&party){
                 continue;

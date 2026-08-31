@@ -1,7 +1,6 @@
 use application::Application;
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::ByteConversion;
-use fields::{LargeField, LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_matrix_multiply};
+use fields::{LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_matrix_multiply, ProtocolField, FieldSer};
 use rayon::prelude::{ParallelIterator, IntoParallelRefIterator};
 
 use crate::{Context, msg::ProtMsg};
@@ -9,10 +8,11 @@ use crate::{Context, msg::ProtMsg};
 use super::ex_compr_state::ExComprState;
 
 use fields::poly::check_if_all_points_lie_on_degree_x_polynomial;
+use lambdaworks_math::field::element::FieldElement;
 
-impl<A: Application> Context<A>{
+impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This method starts compression from the second level onwards
-    pub async fn init_compression_level(&mut self, x_vector: Vec<LargeField>, y_vector: Vec<LargeField>, agg_val: LargeField, depth: usize){
+    pub async fn init_compression_level(&mut self, x_vector: Vec<FieldElement<F>>, y_vector: Vec<FieldElement<F>>, agg_val: FieldElement<F>, depth: usize){
         // Split into chunks for compression
         let elements_per_chunk;
         if x_vector.len() >= self.compression_factor{
@@ -27,27 +27,27 @@ impl<A: Application> Context<A>{
         else{
             elements_per_chunk = 1;
         }
-        let mut x_vec_chunks: Vec<Vec<LargeField>> = x_vector.chunks(elements_per_chunk).into_iter().map(|chunk| chunk.to_vec()).collect();
-        let mut y_vec_chunks: Vec<Vec<LargeField>> = y_vector.chunks(elements_per_chunk).into_iter().map(|chunk| chunk.to_vec()).collect();
+        let mut x_vec_chunks: Vec<Vec<FieldElement<F>>> = x_vector.chunks(elements_per_chunk).into_iter().map(|chunk| chunk.to_vec()).collect();
+        let mut y_vec_chunks: Vec<Vec<FieldElement<F>>> = y_vector.chunks(elements_per_chunk).into_iter().map(|chunk| chunk.to_vec()).collect();
         let mult_value = agg_val;
 
         // Ensure each vector is of the same size for polynomial interpolation
         x_vec_chunks.iter_mut().for_each(|x|{
             if x.len() < elements_per_chunk{
-                let new_chunk = vec![LargeField::zero(); elements_per_chunk - x.len()];
+                let new_chunk = vec![FieldElement::<F>::zero(); elements_per_chunk - x.len()];
                 x.extend(new_chunk);
             }
         });
 
         y_vec_chunks.iter_mut().for_each(|x|{
             if x.len() < elements_per_chunk{
-                let new_chunk = vec![LargeField::zero(); elements_per_chunk - x.len()];
+                let new_chunk = vec![FieldElement::<F>::zero(); elements_per_chunk - x.len()];
                 x.extend(new_chunk);
             }
         });
 
         if !self.verf_state.ex_compr_state.contains_key(&depth){
-            let ex_compr_state = ExComprState::new(depth);
+            let ex_compr_state = ExComprState::<F>::new(depth);
             self.verf_state.ex_compr_state.insert(depth, ex_compr_state);
         }
 
@@ -86,7 +86,7 @@ impl<A: Application> Context<A>{
         if !self.verf_state.ex_compr_state.contains_key(&depth){
             return;
         }
-        let ex_compr_state = self.verf_state.ex_compr_state.get_mut(&depth).expect("ExComprState should exist for the given depth");
+        let ex_compr_state = self.verf_state.ex_compr_state.get_mut(&depth).expect("ExComprState<F> should exist for the given depth");
         
         // Moved out, not cloned: `x_sharings` / `y_sharings` have no reader past
         // this function - the level's later steps work off `x_polys` / `y_polys`
@@ -103,13 +103,13 @@ impl<A: Application> Context<A>{
         }
         let (rem_x, rem_y, rem_mult) = ex_compr_state.rem_mult_tup.clone().unwrap();
         
-        let mut mult_value_last_round = LargeField::zero();
+        let mut mult_value_last_round = FieldElement::<F>::zero();
         if x_vectors[0].len() == 1{
             log::info!("Final level of compression, removing random mask from the set of multiplication tuples");
             mult_value_last_round = mult_vec.last().clone().unwrap().clone();
         }
 
-        let sum_mult: LargeField = mult_vec.clone().into_iter().sum();
+        let sum_mult: FieldElement<F> = mult_vec.clone().into_iter().sum();
         let sub_mult = rem_mult - sum_mult + mult_value_last_round;
         
         // If this round is the last round, mask the output with a random sharing to ensure adversary does not know any thing about the inputs or gates
@@ -154,24 +154,24 @@ impl<A: Application> Context<A>{
         let inv_vdm_first_set = inverse_vandermonde(vandermonde_matrix(first_set_eval_points.clone()));
         let x_coeffs_mat = matrix_matrix_multiply(&inv_vdm_first_set, &x_polynomial_evaluations_vector, false);
         let y_coeffs_mat = matrix_matrix_multiply(&inv_vdm_first_set, &y_polynomial_evaluations_vector, false);
-        let x_polynomials: Vec<Polynomial<LargeField>> = x_coeffs_mat
+        let x_polynomials: Vec<Polynomial<FieldElement<F>>> = x_coeffs_mat
             .par_iter()
             .map(|row| Polynomial::new(row))
             .collect();
-        let y_polynomials: Vec<Polynomial<LargeField>> = y_coeffs_mat
+        let y_polynomials: Vec<Polynomial<FieldElement<F>>> = y_coeffs_mat
             .par_iter()
             .map(|row| Polynomial::new(row))
             .collect();
 
         // Evaluate polynomials on second set of points and collect them.
 
-        let mut x_poly_evals_ss = vec![vec![LargeField::zero(); x_vectors[0].len()];x_vectors.len()];
-        let mut y_poly_evals_ss = vec![vec![LargeField::zero(); y_vectors[0].len()];y_vectors.len()];
+        let mut x_poly_evals_ss = vec![vec![FieldElement::<F>::zero(); x_vectors[0].len()];x_vectors.len()];
+        let mut y_poly_evals_ss = vec![vec![FieldElement::<F>::zero(); y_vectors[0].len()];y_vectors.len()];
 
         for (x_poly, y_poly) in x_polynomials.iter().zip(y_polynomials.iter()) {
             // Evaluate on the second set of points
-            let x_eval = second_set_eval_points.par_iter().map(|point| x_poly.evaluate(point)).collect::<Vec<LargeField>>();
-            let y_eval = second_set_eval_points.par_iter().map(|point| y_poly.evaluate(point)).collect::<Vec<LargeField>>();
+            let x_eval = second_set_eval_points.par_iter().map(|point| x_poly.evaluate(point)).collect::<Vec<FieldElement<F>>>();
+            let y_eval = second_set_eval_points.par_iter().map(|point| y_poly.evaluate(point)).collect::<Vec<FieldElement<F>>>();
 
             // Store evaluations in respective vectors
             for (outer_index, (x_val, y_val)) in x_eval.into_iter().zip(y_eval.into_iter()).enumerate() {
@@ -199,17 +199,17 @@ impl<A: Application> Context<A>{
         }
     }
 
-    pub async fn verify_ex_mult_termination_verification(&mut self, depth: usize, mult_result: Vec<LargeField>){
+    pub async fn verify_ex_mult_termination_verification(&mut self, depth: usize, mult_result: Vec<FieldElement<F>>){
         if depth % 2 == 0{
             // This is the first level of ex_mult termination, initiate second level of ex_mult at this depth here
-            let ex_compr_state = self.verf_state.ex_compr_state.entry(depth).or_insert_with(|| ExComprState::new(depth));
+            let ex_compr_state = self.verf_state.ex_compr_state.entry(depth).or_insert_with(|| ExComprState::<F>::new(depth));
             ex_compr_state.mult_sharings.extend(mult_result.clone());
             self.init_ex_compression_tuples(depth).await;
         }
         else{
             // This is the second level of ex_mult termination, initiate further compression here
             let depth_state_ex_compr = depth - 1;
-            let ex_compr_state = self.verf_state.ex_compr_state.entry(depth_state_ex_compr).or_insert_with(|| ExComprState::new(depth));
+            let ex_compr_state = self.verf_state.ex_compr_state.entry(depth_state_ex_compr).or_insert_with(|| ExComprState::<F>::new(depth));
             ex_compr_state.extended_mult_sharings.extend(mult_result.clone()); // Store the multiplication results for the next round of compression
             self.handle_level_mult_termination(depth_state_ex_compr).await;
         }
@@ -299,8 +299,8 @@ impl<A: Application> Context<A>{
 
         let coin_eval_point = ex_compr_state.coin_output.clone().unwrap();
         let h_point = h_polynomial.evaluate(&coin_eval_point);
-        let x_points: Vec<LargeField> = x_poly_vec.par_iter().map(|poly| poly.evaluate(&coin_eval_point)).collect();
-        let y_points: Vec<LargeField> = y_poly_vec.par_iter().map(|poly| poly.evaluate(&coin_eval_point)).collect();
+        let x_points: Vec<FieldElement<F>> = x_poly_vec.par_iter().map(|poly| poly.evaluate(&coin_eval_point)).collect();
+        let y_points: Vec<FieldElement<F>> = y_poly_vec.par_iter().map(|poly| poly.evaluate(&coin_eval_point)).collect();
         if x_points.len() == 1{
             // Last level of compression, reconstruct sharings here
             log::info!("Last level of compression at depth {} with size of vectors {}, proceeding to reconstruct sharings",depth,x_points.len());
@@ -315,7 +315,7 @@ impl<A: Application> Context<A>{
         log::info!("Terminated compression at depth {} with size of xvector {}, yvector {} hpoint {:?}, proceeding to next depth",depth,x_points.len(),y_points.len(),h_point);
         if x_points.len() == 1{
             log::info!("Last level of compression, reconstructing secrets");
-            let prot_msg = ProtMsg::ReconstructVerfOutputSharing(x_points[0].to_bytes_be(), y_points[0].to_bytes_be(), h_point.to_bytes_be());
+            let prot_msg = ProtMsg::ReconstructVerfOutputSharing(x_points[0].ser_be(), y_points[0].ser_be(), h_point.ser_be());
             self.broadcast(prot_msg).await;
         }
         else{
@@ -324,13 +324,13 @@ impl<A: Application> Context<A>{
         //self.terminate("Term".to_string()).await;
     }
 
-    pub fn gen_evaluation_points_ex_compr(poly_def_points_count: usize)-> (Vec<LargeField>, Vec<LargeField>) {
+    pub fn gen_evaluation_points_ex_compr(poly_def_points_count: usize)-> (Vec<FieldElement<F>>, Vec<FieldElement<F>>) {
         let mut first_set = Vec::with_capacity(poly_def_points_count);
         let mut second_set = Vec::with_capacity(poly_def_points_count);
 
         for i in 1..poly_def_points_count+1{
-            first_set.push(LargeField::from(i as u64)); // Generate first set of evaluation points
-            second_set.push(LargeField::from((i+poly_def_points_count) as u64));    
+            first_set.push(FieldElement::<F>::from(i as u64)); // Generate first set of evaluation points
+            second_set.push(FieldElement::<F>::from((i+poly_def_points_count) as u64));    
         }
         (first_set, second_set)
     }
@@ -343,9 +343,9 @@ impl<A: Application> Context<A>{
         sender: usize){
         log::info!("handle_reconstruct_verf_output_sharing: Received shares from sender {}", sender);
         self.verf_state.output_verf_reconstruction_shares.0.push(Self::get_share_evaluation_point(sender, self.use_fft, self.roots_of_unity.clone()));
-        self.verf_state.output_verf_reconstruction_shares.1.push(LargeField::from_bytes_be(&x_share).unwrap());
-        self.verf_state.output_verf_reconstruction_shares.2.push(LargeField::from_bytes_be(&y_share).unwrap());
-        self.verf_state.output_verf_reconstruction_shares.3.push(LargeField::from_bytes_be(&z_share).unwrap());
+        self.verf_state.output_verf_reconstruction_shares.1.push(F::from_bytes_be(&x_share).unwrap());
+        self.verf_state.output_verf_reconstruction_shares.2.push(F::from_bytes_be(&y_share).unwrap());
+        self.verf_state.output_verf_reconstruction_shares.3.push(F::from_bytes_be(&z_share).unwrap());
         
         if self.verf_state.output_verf_reconstruction_shares.0.len() == 2*self.num_faults + 1{
             // Reconstruct points and check if all 2t+1 points lie on the degree t polynomial
@@ -368,7 +368,7 @@ impl<A: Application> Context<A>{
             let b_poly = &verf_polys[1];
             let c_poly = &verf_polys[2];
 
-            let eval_point = LargeField::zero();
+            let eval_point = FieldElement::<F>::zero();
 
             let a_sec = a_poly.evaluate(&eval_point);
             let b_sec = b_poly.evaluate(&eval_point);

@@ -2,11 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 use crypto::hash::Hash;
 use lambdaworks_math::polynomial::Polynomial;
-use fields::{LargeField, AvssShare, LargeFieldSer};
+use fields::{AvssShare, LargeFieldSer, ProtocolField};
 use types::Replica;
+use lambdaworks_math::field::element::FieldElement;
 
 #[derive(Clone, Debug)]
-pub struct ACSSABState{
+pub struct ACSSABState<F: ProtocolField>{
     // Shares, Nonce, Blinding nonce share in each tuple
     pub shares: HashMap<Replica, AvssShare>,
     // Commitments to shares, commitments to blinding polynomial, and DZK polynomial
@@ -17,11 +18,12 @@ pub struct ACSSABState{
     pub verification_status: HashMap<Replica, bool>,
     pub acss_status: HashSet<Replica>,
 
-    pub dzk_poly: HashMap<Replica,Polynomial<LargeField>>,
-    pub commitment_root_fe: HashMap<Replica, LargeField>,
+    // The DZK proof lives in the extension field, not the sharing field.
+    pub dzk_poly: HashMap<Replica,Polynomial<FieldElement<F::Ext>>>,
+    pub commitment_root_fe: HashMap<Replica, FieldElement<F::Ext>>,
 }
 
-impl ACSSABState{
+impl<F: ProtocolField> ACSSABState<F>{
     pub fn new() -> Self{
         Self{
             shares: HashMap::default(),
