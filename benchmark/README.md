@@ -40,7 +40,7 @@ $ ssh-keygen -f ~/.ssh/aws
 ```
 
 ### Step 3. Configure the testbed
-The file [settings.json](https://github.com/akhilsb/Velox-MPC/blob/master/benchmark/settings.json) (located in [Velox-MPC/benchmarks](https://github.com/akhilsb/Velox-MPC/blob/master/benchmark)) contains all the configuration parameters of the testbed to deploy. Its content looks as follows:
+The file [settings.json](https://github.com/scalable-mpc/velox/blob/master/benchmark/settings.json) (located in [velox/benchmark](https://github.com/scalable-mpc/velox/blob/master/benchmark)) contains all the configuration parameters of the testbed to deploy. Its content looks as follows:
 ```json
 {
     "key": {
@@ -53,7 +53,7 @@ The file [settings.json](https://github.com/akhilsb/Velox-MPC/blob/master/benchm
     "use_private_ips": true,
     "repo": {
         "name": "Velox-MPC",
-        "url": "https://github.com/akhilsb/Velox-MPC.git",
+        "url": "https://github.com/scalable-mpc/velox.git",
         "branch": "master"
     },
     "instances": {
@@ -90,7 +90,7 @@ The third block (`repo`) contains the information regarding the repository's nam
 ```json
 "repo": {
     "name": "Velox-MPC",
-    "url": "https://github.com/akhilsb/Velox-MPC.git",
+    "url": "https://github.com/scalable-mpc/velox.git",
     "branch": "master"
 },
 ```
@@ -106,11 +106,11 @@ The the last block (`instances`) specifies the [AWS instance type](https://aws.a
 The instance type selects the hardware on which to deploy the testbed. For example, `c5.large` instances come with 2 vCPU (2 physical cores), and 4 GB of RAM. The python scripts will configure each instance with 300 GB of SSD hard drive. The `regions` field specifies the data centers to use. If you require more nodes than data centers, the python scripts will distribute the nodes as equally as possible amongst the data centers. All machines run a fresh install of Ubuntu Server 24.04.
 
 ### Step 4. Create a testbed
-The AWS instances are orchestrated with [Fabric](http://www.fabfile.org) from the file [fabfile.py](https://github.com/akhil-sb/Velox-MPC/blob/master/benchmark/fabfile.py) (located in [hashrand-rs/benchmarks](https://github.com/akhilsb/Velox-MPC/blob/master/benchmark)); you can list all possible commands as follows:
+The AWS instances are orchestrated with [Fabric](http://www.fabfile.org) from the file [fabfile.py](https://github.com/scalable-mpc/velox/blob/master/benchmark/fabfile.py) (located in [velox/benchmark](https://github.com/scalable-mpc/velox/blob/master/benchmark)); you can list all possible commands as follows:
 ```bash
 fab --list
 ```
-The command `fab create` creates new AWS instances; open [fabfile.py](https://github.com/akhilsb/hashrand-rs/blob/master/benchmark/fabfile.py) and locate the `create` task:
+The command `fab create` creates new AWS instances; open [fabfile.py](https://github.com/scalable-mpc/velox/blob/master/benchmark/fabfile.py) and locate the `create` task:
 ```python
 @task
 def create(ctx, nodes=n):
@@ -156,7 +156,7 @@ num_messages = 256
 batch_size = 1000
 compression_factor = 10
 ```
-This command first updates all machines with the latest commit of the GitHub repo and branch specified in the [settings.json](https://github.com/akhilsb/Velox-MPC/blob/master/benchmark/settings.json) (step 3) file; this ensures that benchmarks are always run with the latest version of the code. 
+This command first updates all machines with the latest commit of the GitHub repo and branch specified in the [settings.json](https://github.com/scalable-mpc/velox/blob/master/benchmark/settings.json) (step 3) file; this ensures that benchmarks are always run with the latest version of the code. 
 It then generates and uploads the configuration files to each machine, and runs the benchmarks with the specified parameters. Make sure to change the number of nodes in the `remote` function. 
 The input parameters for the protocol can be set in the `_config` function in the benchmark/remote.py file in the `benchmark` folder. 
 
