@@ -30,3 +30,8 @@ client.json
 *.log
 *.txt
 *committee.json
+
+# Compressed benchmark log archives. Run logs themselves are covered by *.log
+# above; these are the zipped bundles pulled back from remote testbeds, and at
+# tens of MB apiece they do not belong in history.
+*.zip
