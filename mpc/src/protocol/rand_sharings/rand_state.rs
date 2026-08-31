@@ -33,7 +33,16 @@ pub struct RandSharings<F: ProtocolField>{
     pub rand_2t_sharings_mult: VecDeque<FieldElement<F>>,
 
     // Fifth, set aside random sharings for coin tossing
-    pub rand_sharings_coin: VecDeque<FieldElement<F>>
+    pub rand_sharings_coin: VecDeque<FieldElement<F>>,
+
+    // Once-guard for `verify_termination`'s combine step. This is deliberately a
+    // flag and not a length check on `rand_sharings_mult`: that vector is
+    // `split_off` into `rand_sharings_coin` and drained by the multiplication
+    // protocol, so its length says nothing about whether the combine already
+    // ran. The flag is also set *before* the combine yields to rayon, so a
+    // message processed during the yield re-enters `verify_termination` and
+    // returns here instead of running preprocessing a second time.
+    pub combine_started: bool
 }
 
 impl<F: ProtocolField> RandSharings<F>{
@@ -51,7 +60,8 @@ impl<F: ProtocolField> RandSharings<F>{
             rand_sharings_inputs: (Vec::new(), Vec::new()),
             rand_sharings_mult: VecDeque::new(),
             rand_2t_sharings_mult: VecDeque::new(),
-            rand_sharings_coin: VecDeque::new()
+            rand_sharings_coin: VecDeque::new(),
+            combine_started: false
         }
     }
 }

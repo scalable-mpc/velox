@@ -1,6 +1,6 @@
 use application::Application;
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::{LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_matrix_multiply, ProtocolField, FieldSer};
+use fields::{LargeFieldSer, inverse_vandermonde_from_points, matrix_matrix_multiply, powers_matrix, rayon_async, ProtocolField, FieldSer};
 use rayon::prelude::{ParallelIterator, IntoParallelRefIterator};
 
 use crate::{Context, msg::ProtMsg};
@@ -151,35 +151,70 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // Routed through `matrix_matrix_multiply` so the dispatcher picks up the
         // GPU path under `--features gpu`. The two batches share the same
         // evaluation points, so the inverse-Vandermonde is computed once.
-        let inv_vdm_first_set = inverse_vandermonde(vandermonde_matrix(first_set_eval_points.clone()));
-        let x_coeffs_mat = matrix_matrix_multiply(&inv_vdm_first_set, &x_polynomial_evaluations_vector, false);
-        let y_coeffs_mat = matrix_matrix_multiply(&inv_vdm_first_set, &y_polynomial_evaluations_vector, false);
-        let x_polynomials: Vec<Polynomial<FieldElement<F>>> = x_coeffs_mat
-            .par_iter()
-            .map(|row| Polynomial::new(row))
-            .collect();
-        let y_polynomials: Vec<Polynomial<FieldElement<F>>> = y_coeffs_mat
-            .par_iter()
-            .map(|row| Polynomial::new(row))
-            .collect();
+        //
+        // The second-set evaluation is a GEMM too. It used to be a sequential
+        // `for` over the polynomials with a `par_iter` over the (small) point set
+        // inside it - parallel on the short axis, serial on the long one - which
+        // paid two rayon dispatches per polynomial while leaving most cores idle
+        // and parked the `Context` task for the whole loop. `powers_matrix *
+        // coeffs` is the same idiom already used for the first set above.
+        //
+        // The whole block is one yielded rayon job so the `select!` loop keeps
+        // draining while it runs.
+        let x_leading = x_vectors[0].len();
+        let y_leading = y_vectors[0].len();
+        let num_coeffs = x_vectors.len();
+        let second_set = second_set_eval_points.clone();
 
-        // Evaluate polynomials on second set of points and collect them.
+        let (x_polynomials, y_polynomials, x_poly_evals_ss, y_poly_evals_ss) =
+            rayon_async(move || {
+                let inv_vdm_first_set =
+                    inverse_vandermonde_from_points(&first_set_eval_points);
+                let x_coeffs_mat =
+                    matrix_matrix_multiply(&inv_vdm_first_set, &x_polynomial_evaluations_vector, false);
+                let y_coeffs_mat =
+                    matrix_matrix_multiply(&inv_vdm_first_set, &y_polynomial_evaluations_vector, false);
 
-        let mut x_poly_evals_ss = vec![vec![FieldElement::<F>::zero(); x_vectors[0].len()];x_vectors.len()];
-        let mut y_poly_evals_ss = vec![vec![FieldElement::<F>::zero(); y_vectors[0].len()];y_vectors.len()];
+                // Evaluate every recovered polynomial at every second-set point
+                // in one GEMM: row `i` of the result is
+                // `[poly_0(p_i), .., poly_{d-1}(p_i)]`, which is the row layout
+                // the per-polynomial loop used to build by pushing.
+                let second_powers = powers_matrix(&second_set, num_coeffs);
+                let x_evals = matrix_matrix_multiply(&second_powers, &x_coeffs_mat, true);
+                let y_evals = matrix_matrix_multiply(&second_powers, &y_coeffs_mat, true);
 
-        for (x_poly, y_poly) in x_polynomials.iter().zip(y_polynomials.iter()) {
-            // Evaluate on the second set of points
-            let x_eval = second_set_eval_points.par_iter().map(|point| x_poly.evaluate(point)).collect::<Vec<FieldElement<F>>>();
-            let y_eval = second_set_eval_points.par_iter().map(|point| y_poly.evaluate(point)).collect::<Vec<FieldElement<F>>>();
+                let x_polynomials: Vec<Polynomial<FieldElement<F>>> = x_coeffs_mat
+                    .par_iter()
+                    .map(|row| Polynomial::new(row))
+                    .collect();
+                let y_polynomials: Vec<Polynomial<FieldElement<F>>> = y_coeffs_mat
+                    .par_iter()
+                    .map(|row| Polynomial::new(row))
+                    .collect();
 
-            // Store evaluations in respective vectors
-            for (outer_index, (x_val, y_val)) in x_eval.into_iter().zip(y_eval.into_iter()).enumerate() {
-                x_poly_evals_ss[outer_index].push(x_val);
-                y_poly_evals_ss[outer_index].push(y_val);
-            }
-        }
+                // The leading zeros are what the previous code produced: it
+                // pre-filled each row with `x_vectors[0].len()` zeros and then
+                // pushed the evaluations after them. Preserved here so this stays
+                // a pure shape change - see the note in TODO.md about whether the
+                // prefill was intended.
+                let pad_rows = |leading: usize, evals: Vec<Vec<FieldElement<F>>>| {
+                    evals.into_iter()
+                        .map(|row| {
+                            let mut out = vec![FieldElement::<F>::zero(); leading];
+                            out.extend(row);
+                            out
+                        })
+                        .collect::<Vec<Vec<FieldElement<F>>>>()
+                };
+                let x_poly_evals_ss = pad_rows(x_leading, x_evals);
+                let y_poly_evals_ss = pad_rows(y_leading, y_evals);
 
+                (x_polynomials, y_polynomials, x_poly_evals_ss, y_poly_evals_ss)
+            }).await;
+
+        // Re-acquire: `ex_compr_state` borrowed `self` across the await.
+        let ex_compr_state = self.verf_state.ex_compr_state.get_mut(&depth)
+            .expect("ExComprState<F> should exist for the given depth");
         ex_compr_state.x_polys = Some(x_polynomials);
         ex_compr_state.y_polys = Some(y_polynomials);
 
@@ -264,7 +299,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // Routed through `matrix_matrix_multiply` for dispatcher-driven GPU path.
         // Single-poly interpolation: the 50k-element bailout will keep it on CPU
         // regardless, but the call site lives on the GEMM pipeline for uniformity.
-        let h_inv_vdm = inverse_vandermonde(vandermonde_matrix(evaluation_points.clone()));
+        let h_inv_vdm = inverse_vandermonde_from_points(&evaluation_points);
         let h_coeffs_mat = matrix_matrix_multiply(&h_inv_vdm, &[h_shares], false);
         let h_polynomial = Polynomial::new(&h_coeffs_mat[0]);
         log::info!("Interpolated H polynomial with degree {} at ExCompr at depth {}", h_polynomial.degree(), depth);

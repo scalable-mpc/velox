@@ -1,8 +1,8 @@
 use application::Application;
 use std::collections::{HashMap, VecDeque, HashSet};
 
-use fields::{AvssShare, LargeFieldSer, inverse_vandermonde, matrix_matrix_multiply, vandermonde_matrix, ProtocolField};
-use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use fields::{AvssShare, LargeFieldSer, interpolate_at_zero, lagrange_coefficients_at_zero, rayon_async, ProtocolField};
+use rayon::prelude::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use types::Replica;
 
 use crate::{Context, msg::ProtMsg};
@@ -54,10 +54,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             }
         }
         // Vandermonde matrix
-        let random_mask_shares: Vec<FieldElement<F>> = shares_accumulated.into_par_iter().map(|x| {
-            let res = Self::matrix_vector_multiply(&vdm_matrix, &x);
-            res
-        }).flatten().collect();
+        let random_mask_shares: Vec<FieldElement<F>> = rayon_async(move || {
+            shares_accumulated.into_par_iter()
+                .map(|x| Self::matrix_vector_multiply(&vdm_matrix, &x))
+                .flatten().collect()
+        }).await;
         log::info!("Generated random mask shares using AVSS and Vandermonde matrix with length {}", random_mask_shares.len());
         self.output_mask_state.rand_sharings.extend(random_mask_shares);
     }
@@ -107,16 +108,15 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                     }
                 }
             }
-            // Batched Lagrange interpolation routed through `matrix_matrix_multiply`
-            // so the dispatcher picks the GPU path under `--features gpu`. We only
-            // need the polynomials at `FieldElement::<F>::zero()`, which is row 0 of the
-            // recovered coefficient matrix (the constant term).
-            let inv_vdm = inverse_vandermonde(vandermonde_matrix(evaluation_indices.clone()));
-            let coeffs_mat = matrix_matrix_multiply(&inv_vdm, &evaluations, false);
-            let reconstructed_secrets: Vec<FieldElement<F>> = coeffs_mat
-                .into_par_iter()
-                .map(|coeffs| coeffs.into_iter().next().unwrap_or_else(FieldElement::<F>::zero))
-                .collect();
+            // Only the constant term is wanted, which this used to reach by
+            // building the full inverse, running a GEMM, and keeping row 0. The
+            // Lagrange weights at zero give it directly.
+            let reconstructed_secrets: Vec<FieldElement<F>> = rayon_async(move || {
+                let lambdas = lagrange_coefficients_at_zero(&evaluation_indices);
+                evaluations.par_iter()
+                    .map(|evals| interpolate_at_zero(&lambdas, evals))
+                    .collect()
+            }).await;
             log::info!("Reconstructed AVSS contributions of the output mask from origin {}", origin);
             self.output_mask_state.public_reconstruction_outputs.insert(origin, reconstructed_secrets);
             // Remove the origin from the acs_recon_set
@@ -147,10 +147,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             }
             log::info!("Reconstructed AVSS contributions of the random mask from all parties");
             // Multiply aggregated shares with Vandermonde matrix
-            let rand_recon_values = rand_combined_secrets.into_par_iter().map(|x| {
-                let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
-                res
-            }).flatten().collect::<Vec<FieldElement<F>>>();
+            let rand_recon_values = rayon_async(move || {
+                rand_combined_secrets.into_par_iter()
+                    .map(|x| Self::matrix_vector_multiply(&vandermonde_matrix, &x))
+                    .flatten().collect::<Vec<FieldElement<F>>>()
+            }).await;
 
             // Use these reconstructed random masks to denoise the output. 
             let masked_outputs = self.mult_state.output_layer.reconstructed_masked_outputs.clone();
