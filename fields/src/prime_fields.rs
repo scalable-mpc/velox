@@ -107,6 +107,19 @@ where
     const SER_BYTES: usize = U256_BYTES;
     const MAX_INPUT_PAYLOAD: usize = U256_ASCII_PAYLOAD;
 
+    /// Stark252 is ~252-bit and BN254 ~254-bit, both already wide enough for a
+    /// 2^-250-ish soundness bound, so these are their own extension.
+    type Ext = Self;
+    const CONV_RATIO: usize = 1;
+
+    fn lift(chunk: &[FieldElement<Self>]) -> FieldElement<Self::Ext> {
+        chunk.first().cloned().unwrap_or_else(FieldElement::zero)
+    }
+
+    fn embed_ext(elem: &FieldElement<Self>) -> FieldElement<Self::Ext> {
+        elem.clone()
+    }
+
     fn rand() -> FieldElement<Self> {
         sample_from::<M, _>(&mut ThreadDraws)
     }

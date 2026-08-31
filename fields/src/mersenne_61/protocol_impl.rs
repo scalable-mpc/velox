@@ -14,6 +14,8 @@ use rand_core::RngCore;
 
 use crate::{byte_conv::ByteConversion, protocol_field::ProtocolField};
 
+use lambdaworks_math::field::traits::IsSubFieldOf;
+
 use super::{
     extensions::{Fp2E, Mersenne61Degree4ExtensionField},
     field::Mersenne61Field,
@@ -40,6 +42,18 @@ impl ProtocolField for Mersenne61Degree4ExtensionField {
     /// 4 limbs × 7 payload bytes — the high byte of each limb is reserved to
     /// keep the limb below 2^56 and the Mersenne reduction a no-op.
     const MAX_INPUT_PAYLOAD: usize = 28;
+
+    /// ~244-bit, so challenges are already sound here and need no lift.
+    type Ext = Self;
+    const CONV_RATIO: usize = 1;
+
+    fn lift(chunk: &[FieldElement<Self>]) -> FieldElement<Self::Ext> {
+        chunk.first().cloned().unwrap_or_else(FieldElement::zero)
+    }
+
+    fn embed_ext(elem: &FieldElement<Self>) -> FieldElement<Self::Ext> {
+        elem.clone()
+    }
 
     fn rand() -> FieldElement<Self> {
         fp4_from_limbs(random::<[u64; 4]>())
@@ -137,6 +151,95 @@ impl ProtocolField for Mersenne61Degree4ExtensionField {
     }
 }
 
+/// [`ProtocolField`] for the *base* Mersenne-61 prime field, `p = 2^61 - 1`.
+///
+/// This is the configuration the soundness lift exists for. Shares are single
+/// 61-bit elements — four times cheaper to multiply and a quarter the bytes on
+/// the wire compared to Fp4 — but a Fiat-Shamir challenge drawn from a 61-bit
+/// field gives a 2^-61 soundness bound, which is not enough. So `Ext` is the
+/// degree-4 extension above, and every challenge and random linear combination
+/// runs there at ~2^-244 while the shares stay small.
+impl ProtocolField for Mersenne61Field {
+    /// One 8-byte limb.
+    const SER_BYTES: usize = 8;
+
+    /// 7 payload bytes: the high byte stays clear so the limb stays below
+    /// `2^56 < 2^61` and the Mersenne reduction is a no-op, exactly as in the
+    /// Fp4 packing but for a single limb instead of four.
+    const MAX_INPUT_PAYLOAD: usize = 7;
+
+    /// 61 bits is far too narrow for a soundness bound, so challenges lift into
+    /// the degree-4 extension.
+    type Ext = Mersenne61Degree4ExtensionField;
+
+    /// Four base elements are the four coefficients of one Fp4 element.
+    const CONV_RATIO: usize = 4;
+
+    fn lift(chunk: &[FieldElement<Self>]) -> FieldElement<Self::Ext> {
+        debug_assert!(chunk.len() <= Self::CONV_RATIO, "chunk wider than one Ext element");
+        let mut coeffs = [FpE::zero(), FpE::zero(), FpE::zero(), FpE::zero()];
+        coeffs[..chunk.len()].clone_from_slice(chunk);
+        // Coefficient order matches `to_subfield_vec`, so `lift` is its inverse.
+        FieldElement::new([
+            Fp2E::new([coeffs[0].clone(), coeffs[1].clone()]),
+            Fp2E::new([coeffs[2].clone(), coeffs[3].clone()]),
+        ])
+    }
+
+    fn embed_ext(elem: &FieldElement<Self>) -> FieldElement<Self::Ext> {
+        // The subfield relation lambdaworks already knows about; unlike `lift`
+        // this is a homomorphism, so evaluation points survive it.
+        FieldElement::new(
+            <Self as IsSubFieldOf<Mersenne61Degree4ExtensionField>>::embed(elem.value().clone()),
+        )
+    }
+
+    fn rand() -> FieldElement<Self> {
+        FieldElement::from(random::<u64>())
+    }
+
+    fn from_rng(rng: &mut ChaCha20Rng) -> FieldElement<Self> {
+        FieldElement::from(rng.next_u64())
+    }
+
+    fn sqrt(elem: &FieldElement<Self>) -> Option<(FieldElement<Self>, FieldElement<Self>)> {
+        // Tonelli-Shanks, from lambdaworks's inherent `sqrt` on `IsPrimeField`.
+        elem.sqrt()
+    }
+
+    fn to_bytes_be(elem: &FieldElement<Self>) -> Vec<u8> {
+        ByteConversion::to_bytes_be(elem)
+    }
+
+    fn to_bytes_le(elem: &FieldElement<Self>) -> Vec<u8> {
+        ByteConversion::to_bytes_le(elem)
+    }
+
+    fn from_bytes_be(bytes: &[u8]) -> Result<FieldElement<Self>, ByteConversionError> {
+        <FieldElement<Self> as ByteConversion>::from_bytes_be(bytes)
+    }
+
+    fn from_bytes_le(bytes: &[u8]) -> Result<FieldElement<Self>, ByteConversionError> {
+        <FieldElement<Self> as ByteConversion>::from_bytes_le(bytes)
+    }
+
+    fn encode_ascii(input: &str) -> Option<FieldElement<Self>> {
+        let bytes = input.as_bytes();
+        if bytes.len() > Self::MAX_INPUT_PAYLOAD {
+            return None;
+        }
+        let mut padded = [0u8; 8];
+        padded[8 - bytes.len()..].copy_from_slice(bytes);
+        <Self as ProtocolField>::from_bytes_be(&padded).ok()
+    }
+
+    fn decode_ascii(elem: &FieldElement<Self>) -> String {
+        let bytes = <Self as ProtocolField>::to_bytes_be(elem);
+        let first_nonzero = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+        bytes[first_nonzero..].iter().map(|&b| b as char).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +314,111 @@ mod tests {
             expect_rng.next_u64(),
         ]);
         assert_eq!(got, expected);
+    }
+
+    /// The lift's whole purpose: `Ext` must be wide enough that a challenge
+    /// drawn from it gives a real soundness bound, while `Self` need not be.
+    #[test]
+    fn base_field_lifts_into_the_degree_four_extension() {
+        type S = Mersenne61Field;
+        assert_eq!(<S as ProtocolField>::CONV_RATIO, 4);
+        assert_eq!(<S as ProtocolField>::SER_BYTES, 8);
+        assert_eq!(<<S as ProtocolField>::Ext as ProtocolField>::SER_BYTES, 32);
+    }
+
+    /// `lift` must be injective — the soundness argument for the random linear
+    /// combination rests on a modified share changing the packed value.
+    #[test]
+    fn lift_is_injective() {
+        type S = Mersenne61Field;
+        let base: Vec<FieldElement<S>> = (1..=4u64).map(FieldElement::from).collect();
+        let lifted = S::lift(&base);
+        for i in 0..4 {
+            let mut perturbed = base.clone();
+            perturbed[i] += FieldElement::<S>::one();
+            assert_ne!(S::lift(&perturbed), lifted, "coefficient {i} did not move the packed value");
+        }
+    }
+
+    /// `embed_ext` is a homomorphism and `lift` is not; both are needed, for
+    /// different things (evaluation points vs. share packing).
+    #[test]
+    fn embed_ext_is_a_homomorphism_and_agrees_with_from_u64() {
+        type S = Mersenne61Field;
+        type L = Mersenne61Degree4ExtensionField;
+        let x = FieldElement::<S>::from(7u64);
+        let y = FieldElement::<S>::from(11u64);
+        assert_eq!(<S as ProtocolField>::embed_ext(&(&x + &y)), <S as ProtocolField>::embed_ext(&x) + <S as ProtocolField>::embed_ext(&y));
+        assert_eq!(<S as ProtocolField>::embed_ext(&(&x * &y)), <S as ProtocolField>::embed_ext(&x) * <S as ProtocolField>::embed_ext(&y));
+        // Evaluation points are built with `from(u64)` on both sides of the
+        // lift, so the two constructions have to land on the same element.
+        assert_eq!(<S as ProtocolField>::embed_ext(&x), FieldElement::<L>::from(7u64));
+    }
+
+    /// The property the DZK depends on: packing evaluations coefficient-wise
+    /// keeps them evaluations of a polynomial of the *same degree* over `Ext`.
+    /// Without this, lifting the shares would destroy the degree the proof is
+    /// about.
+    #[test]
+    fn lift_preserves_polynomial_degree() {
+        use lambdaworks_math::polynomial::Polynomial;
+        type S = Mersenne61Field;
+        type L = Mersenne61Degree4ExtensionField;
+
+        let degree = 3;
+        // Four independent degree-3 polynomials over the base field.
+        let polys: Vec<Polynomial<FieldElement<S>>> = (0..4)
+            .map(|_| {
+                Polynomial::new(&(0..=degree).map(|_| S::rand()).collect::<Vec<_>>())
+            })
+            .collect();
+
+        // Evaluate all four at 8 points, then pack each point's four values.
+        let points: Vec<u64> = (1..=8).collect();
+        let packed: Vec<FieldElement<L>> = points
+            .iter()
+            .map(|&pt| {
+                let at = FieldElement::<S>::from(pt);
+                let vals: Vec<FieldElement<S>> =
+                    polys.iter().map(|p| p.evaluate(&at)).collect();
+                S::lift(&vals)
+            })
+            .collect();
+
+        // The packed values must interpolate to a degree-3 polynomial over Ext:
+        // build it from the first 4 points and check it predicts the other 4.
+        let eval_pts: Vec<FieldElement<L>> =
+            points.iter().map(|&pt| FieldElement::<L>::from(pt)).collect();
+        let interpolated =
+            Polynomial::interpolate(&eval_pts[..=degree], &packed[..=degree]).unwrap();
+        assert_eq!(interpolated.degree(), degree);
+        for i in (degree + 1)..points.len() {
+            assert_eq!(
+                interpolated.evaluate(&eval_pts[i]),
+                packed[i],
+                "packed evaluations left the degree-{degree} polynomial at point {i}"
+            );
+        }
+    }
+
+    /// The base field's own trait contract, at its narrower 8-byte width.
+    #[test]
+    fn base_field_satisfies_the_contract() {
+        type S = Mersenne61Field;
+        let e = S::rand();
+        assert_eq!(S::to_bytes_be(&e).len(), 8);
+        assert_eq!(S::from_bytes_be(&S::to_bytes_be(&e)).unwrap(), e);
+
+        // 7 payload bytes, not 28 — one limb instead of four.
+        for line in ["", "a", "hello", "ZZZZZZZ"] {
+            let packed = S::encode_ascii(line).unwrap_or_else(|| panic!("{line:?} should fit"));
+            assert_eq!(S::decode_ascii(&packed), line);
+        }
+        assert!(S::encode_ascii("12345678").is_none(), "8 bytes must not fit");
+
+        let root = S::rand();
+        let (a, b) = S::sqrt(&(&root * &root)).expect("a square has a root");
+        assert!(a == root || b == root);
     }
 
     #[test]

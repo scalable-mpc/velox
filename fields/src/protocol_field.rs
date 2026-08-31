@@ -19,6 +19,7 @@
 //! | byte serialization | every wire message (the wire format stays `Vec<u8>`) |
 //! | ASCII input encoding/decoding | `mpc::input` reading party inputs, and the output layer printing them back |
 //! | GPU GEMM dispatch | the optional CUDA path, which is layout-specific |
+//! | lifting to a wider field | DZK proofs and verification coins, whose soundness is bounded by field size |
 //!
 //! Serialization is exposed as trait methods rather than a
 //! `where FieldElement<Self>: ByteConversion` bound on purpose: a where-clause
@@ -88,6 +89,61 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
     /// `encode_ascii` exactly — the two live on the same trait so a new field
     /// cannot implement one and inherit the other's byte layout by accident.
     fn decode_ascii(elem: &FieldElement<Self>) -> String;
+
+    // -- Soundness lift -----------------------------------------------------
+    //
+    // Fiat-Shamir challenges and the random linear combinations they weight are
+    // only as sound as the field they live in: a check over a 61-bit field is
+    // 61-bit sound however many times it is repeated. When the sharing field is
+    // too small for that, the challenge and the combination move to an
+    // extension of it, while the shares themselves stay small.
+
+    /// Field the soundness-critical challenges live in.
+    ///
+    /// An *extension* of `Self`, so a sharing over `Self` lifts into it without
+    /// disturbing its degree. For a field that is already wide enough this is
+    /// `Self`, which makes every lift below the identity and costs nothing.
+    ///
+    /// The `Ext = Self::Ext` bound terminates the tower: an extension is its own
+    /// extension, so `F::Ext::Ext` is `F::Ext` and the recursion bottoms out.
+    ///
+    /// # Scope
+    ///
+    /// The lift covers the ACSS DZK proof. The multiplication-verification
+    /// phase — the delinearization coin and the compression levels it feeds —
+    /// deliberately stays in `Self`: its challenge is a reconstructed sharing,
+    /// so lifting it would make the whole compression pipeline `Ext`-valued and
+    /// require `Ext`-valued preprocessing and multiplication. That phase
+    /// instead *assumes* `Self` is large enough for statistical security on its
+    /// own. Choosing a `Self` small enough to need this lift therefore leaves
+    /// verification bounded by `|Self|`, not by `|Ext|`.
+    type Ext: ProtocolField<Ext = Self::Ext>;
+
+    /// How many `Self` elements pack into one [`Ext`](ProtocolField::Ext)
+    /// element — the degree of the extension, and `1` when `Ext = Self`.
+    const CONV_RATIO: usize;
+
+    /// Pack up to [`CONV_RATIO`](ProtocolField::CONV_RATIO) elements into one
+    /// `Ext` element, using them as its coefficients over `Self`. A short chunk
+    /// is zero-padded.
+    ///
+    /// This is injective, which is all the soundness argument needs, and it is
+    /// coefficient-wise, which is why it preserves degree: if each `s_j(x)` is a
+    /// degree-`t` polynomial over `Self`, then `lift([s_0(x), .., s_k(x)])` is a
+    /// degree-`t` polynomial over `Ext`. Packing rather than embedding is what
+    /// makes the linear combination `CONV_RATIO` times cheaper.
+    fn lift(chunk: &[FieldElement<Self>]) -> FieldElement<Self::Ext>;
+
+    /// Embed a single element into `Ext` as a field homomorphism.
+    ///
+    /// Named `embed_ext` rather than `embed` because lambdaworks's
+    /// `IsSubFieldOf` already owns `embed`, and the two resolve ambiguously
+    /// wherever both traits are in scope.
+    ///
+    /// Unlike [`lift`](ProtocolField::lift) this preserves arithmetic, so it is
+    /// what evaluation points and other scalars need. `embed_ext(x) + embed_ext(y)
+    /// == embed_ext(x + y)`; `lift` makes no such promise.
+    fn embed_ext(elem: &FieldElement<Self>) -> FieldElement<Self::Ext>;
 
     /// Optional GPU-accelerated batched GEMM.
     ///

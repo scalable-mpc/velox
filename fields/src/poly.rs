@@ -416,3 +416,58 @@ pub fn transpose<F: ProtocolField>(matrix: Vec<Vec<FieldElement<F>>>) -> Vec<Vec
         .map(|j| (0..rows).map(|i| matrix[i][j].clone()).collect())
         .collect()
 }
+/// Pack polynomials over `F` into polynomials over `F::Ext`, `CONV_RATIO` at a
+/// time, by lifting them coefficient-wise.
+///
+/// Used by the DZK proof, which has to run its random linear combination over
+/// the wider field for soundness while the shares stay over `F`. Packing rather
+/// than embedding each polynomial separately is what makes the combination
+/// `CONV_RATIO` times cheaper.
+///
+/// Degree is preserved: coefficient `k` of the packed polynomial is
+/// `F::lift` of coefficient `k` of each input, so a group of degree-`t`
+/// polynomials packs into a single degree-`t` polynomial over `F::Ext`. When
+/// `F::Ext = F` and `CONV_RATIO = 1` this is the identity.
+pub fn lift_polynomials<F: ProtocolField>(
+    polys: &[Polynomial<FieldElement<F>>],
+) -> Vec<Polynomial<FieldElement<F::Ext>>> {
+    polys
+        .chunks(F::CONV_RATIO)
+        .map(|chunk| {
+            let width = chunk
+                .iter()
+                .map(|p| p.coefficients.len())
+                .max()
+                .unwrap_or(0);
+            let coeffs: Vec<FieldElement<F::Ext>> = (0..width)
+                .map(|k| {
+                    // A shorter polynomial contributes zero at this degree.
+                    let column: Vec<FieldElement<F>> = chunk
+                        .iter()
+                        .map(|p| {
+                            p.coefficients
+                                .get(k)
+                                .cloned()
+                                .unwrap_or_else(FieldElement::<F>::zero)
+                        })
+                        .collect();
+                    F::lift(&column)
+                })
+                .collect();
+            Polynomial::new(&coeffs)
+        })
+        .collect()
+}
+
+/// Pack a party's shares into `F::Ext` elements, `CONV_RATIO` at a time.
+///
+/// The evaluation-side counterpart of [`lift_polynomials`]: if `shares[j]` is
+/// `poly_j` evaluated at this party's point, then the `i`-th packed share is
+/// the `i`-th packed polynomial evaluated at that same point. That
+/// correspondence is what lets a verifier check the dealer's combination
+/// without ever leaving the wide field.
+pub fn lift_shares<F: ProtocolField>(
+    shares: &[FieldElement<F>],
+) -> Vec<FieldElement<F::Ext>> {
+    shares.chunks(F::CONV_RATIO).map(F::lift).collect()
+}
