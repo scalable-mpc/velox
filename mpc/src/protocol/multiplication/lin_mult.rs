@@ -5,8 +5,7 @@ use crate::Context;
 
 use bincode::{Result};
 use crypto::hash::do_hash;
-use lambdaworks_math::{polynomial::Polynomial};
-use fields::{LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply, matrix_matrix_multiply, powers_matrix, ProtocolField, FieldSer};
+use fields::{LargeFieldSer, rayon_async, interpolate_at_zero, inverse_vandermonde_from_points, lagrange_coefficients_at_zero, matrix_vector_multiply, matrix_matrix_multiply, powers_matrix, ProtocolField, FieldSer};
 use rayon::prelude::{ ParallelIterator, IntoParallelRefIterator};
 use types::{Replica, WrapperMsg};
 
@@ -208,23 +207,27 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             depth_state.l1_reconstruction_done = true;
             // Start reconstruction here
             let indices = depth_state.l1_shares.0.clone();
-            let vdm_matrix = vandermonde_matrix(indices);
-
-            let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
-            let secrets: Vec<FieldElement<F>> = depth_state.l1_shares.1.par_iter().map(|group_shares|{
-                let coefficients = matrix_vector_multiply(&inv_vdm_matrix, &group_shares);
-                let poly = Polynomial::new(&coefficients);
-                let secret = poly.evaluate(&FieldElement::<F>::zero()); // Evaluate at zero to get the secret
-                return secret;
-            }).collect();
 
             // The raw per-party L1 shares are dead: this interpolation is their
             // only reader, it runs exactly once, and its result is what the rest
             // of the depth uses. Freeing them here rather than at termination
             // takes the whole L2 round-trip - during which they are the largest
-            // live buffer of the depth - off the peak.
+            // live buffer of the depth - off the peak. Taking them also hands the
+            // rayon job owned inputs, which is what lets it be yielded.
+            let l1_shares = std::mem::take(&mut depth_state.l1_shares.1);
             depth_state.clear_l1_shares();
 
+            // Constant term only - see the note in `quad_mult.rs`.
+            let secrets: Vec<FieldElement<F>> = rayon_async(move || {
+                let lambdas = lagrange_coefficients_at_zero(&indices);
+                l1_shares.par_iter()
+                    .map(|group_shares| interpolate_at_zero(&lambdas, group_shares))
+                    .collect()
+            }).await;
+
+            // Re-acquire after the await; see the note in `quad_mult.rs` on why
+            // the depth cannot terminate or vanish while the job is in flight.
+            let depth_state = self.mult_state.get_single_depth_state(depth, true, 0);
             let shares_bytes: Vec<LargeFieldSer> = secrets.iter().map(|el| el.ser_be()).collect();
             depth_state.l1_shares_reconstructed.extend(secrets);
             ser_shares = Some(bincode::serialize(&shares_bytes).unwrap());
@@ -269,20 +272,25 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             depth_state.l2_reconstruction_done = true;
             // We have enough shares to reconstruct the polynomial
             let indices = depth_state.l2_shares.0.clone();
-            let vdm_matrix = vandermonde_matrix(indices);
-
-            let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
-
-            let reconstructed_secrets: Vec<FieldElement<F>> = depth_state.l2_shares.1.par_iter().map(|group_shares|{
-                let coefficients = matrix_vector_multiply(&inv_vdm_matrix, &group_shares);
-                coefficients
-            }).flatten().collect();
 
             // Same argument as L1: this interpolation is the only reader of the
             // raw L2 shares and runs once. What the depth needs from here on is
             // `l2_shares_reconstructed`.
+            let l2_shares = std::mem::take(&mut depth_state.l2_shares.1);
             depth_state.clear_l2_shares();
 
+            // L2 needs every coefficient, not just the constant term, so this
+            // keeps a full inverse - but gets it from the O(n^2) closed form
+            // rather than Gaussian elimination.
+            let reconstructed_secrets: Vec<FieldElement<F>> = rayon_async(move || {
+                let inv_vdm_matrix = inverse_vandermonde_from_points(&indices);
+                l2_shares.par_iter()
+                    .map(|group_shares| matrix_vector_multiply(&inv_vdm_matrix, group_shares))
+                    .flatten().collect()
+            }).await;
+
+            // Re-acquire after the await; see the note in `quad_mult.rs`.
+            let depth_state = self.mult_state.get_single_depth_state(depth, true, 0);
             let mut appended_msg = Vec::new();
             for secret in reconstructed_secrets.iter(){
                 appended_msg.extend(secret.ser_be());

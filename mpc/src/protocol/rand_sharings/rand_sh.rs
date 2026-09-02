@@ -1,7 +1,7 @@
 use application::Application;
 use std::{collections::{HashMap, HashSet}, ops::{Add, Mul}};
 
-use fields::{LargeFieldSer, rand_field_element, ProtocolField, FieldSer};
+use fields::{LargeFieldSer, rand_field_element, rayon_async, ProtocolField, FieldSer};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use types::{ProtSyncMsg, Replica, SyncMsg, SyncState};
 use crate::{context::Context};
@@ -102,14 +102,18 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             (RAND_BIT_ACSS_BATCH, self.rand_bit_batch_size),
             (MULT_ACSS_BATCH, self.mult_batch_size),
         ];
-        let deg_t_batches: Vec<Vec<LargeFieldSer>> = acss_batch_sizes.into_iter()
-            .map(|(index, batch_size)|{
-                log::info!("Preparing secret sharing batch {} with {} values", index, batch_size);
-                (0..batch_size).into_par_iter()
-                    .map(|_| rand_field_element::<F>().ser_be())
-                    .collect()
-            })
-            .collect();
+        for (index, batch_size) in acss_batch_sizes.iter(){
+            log::info!("Preparing secret sharing batch {} with {} values", index, batch_size);
+        }
+        let deg_t_batches: Vec<Vec<LargeFieldSer>> = rayon_async(move || {
+            acss_batch_sizes.into_iter()
+                .map(|(_index, batch_size)|{
+                    (0..batch_size).into_par_iter()
+                        .map(|_| rand_field_element::<F>().ser_be())
+                        .collect()
+                })
+                .collect()
+        }).await;
 
         // Hold all prepared ACSS secret batches in memory and deal only the first one.
         // Subsequent batches are dealt one at a time as senders complete the in-flight
@@ -123,11 +127,14 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         self.initialize_input_sharing().await;
 
         log::info!("Preparing 2t sharing in preprocessing phase with {} values", self.zero_batch_size);
-        let zeros: Vec<Vec<LargeFieldSer>> = vec![
-            (0..self.zero_batch_size).into_par_iter()
-                .map(|_| FieldElement::<F>::zero().ser_be())
-                .collect()
-        ];
+        let zero_batch_size = self.zero_batch_size;
+        let zeros: Vec<Vec<LargeFieldSer>> = rayon_async(move || {
+            vec![
+                (0..zero_batch_size).into_par_iter()
+                    .map(|_| FieldElement::<F>::zero().ser_be())
+                    .collect()
+            ]
+        }).await;
 
         // Likewise, hold all prepared Sh2t (zero) batches and deal only the first one;
         // the rest are paced as senders complete the in-flight batch.
@@ -191,9 +198,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             return;
         }
 
-        let shares_deser: Vec<FieldElement<F>> = shares.unwrap().into_par_iter().map(|x| 
-            F::from_bytes_be(&x).unwrap()
-        ).collect();
+        let shares_deser: Vec<FieldElement<F>> = deserialize_shares_async(shares.unwrap()).await;
 
         if !self.rand_sharings_state.shares.contains_key(&sender){
             self.rand_sharings_state.shares.insert(sender, HashMap::default());
@@ -228,9 +233,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             log::info!("Finished processing random sharings, ignoring ACSS and SH2t for all subsequent batches and senders: sender {}", sender);
             return;
         }
-        let shares_deser: Vec<FieldElement<F>> = shares.unwrap().into_par_iter().map(|x| 
-            F::from_bytes_be(&x).unwrap()
-        ).collect();
+        let shares_deser: Vec<FieldElement<F>> = deserialize_shares_async(shares.unwrap()).await;
 
         if !self.rand_sharings_state.sh2t_shares.contains_key(&sender){
             self.rand_sharings_state.sh2t_shares.insert(sender, HashMap::default());
@@ -290,8 +293,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
     pub async fn verify_termination(&mut self){
         log::info!("Checking termination for random sharings");
-        if self.rand_sharings_state.rand_sharings_mult.len() > 0{
-            // Sharings already generated, return back
+        if self.rand_sharings_state.combine_started{
+            // The combine already ran (or is running on rayon right now).
             return;
         } 
         if self.rand_sharings_state.acs_output.len() > 0{
@@ -316,21 +319,33 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
                 let acs_indexed_2t_share_groups = self.gen_2t_sharings(ZERO_SH2T_BATCH, zero_batch_size);
 
-                // Multiply each vector with the indexed vector in the Vandermonde matrix
-                let rand_sharings_bits: Vec<FieldElement<F>> = acs_indexed_rand_bit_group.into_par_iter().map(|x| {
-                    let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
-                    res
-                }).flatten().collect();
+                // Claim the combine before yielding. The three jobs below are the
+                // largest compute in the protocol, and `rayon_async` suspends this
+                // task while they run, so ACSS/Sh2t/ACS messages *will* be
+                // processed in the middle of them and will re-enter
+                // `verify_termination`. The flag is what stops preprocessing from
+                // running twice.
+                self.rand_sharings_state.combine_started = true;
 
-                let mut rand_sharings_mult: Vec<FieldElement<F>> = acs_indexed_mult_group.into_par_iter().map(|x| {
-                    let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
-                    res
-                }).flatten().collect();
-
-                let rand_sharings_2t_mult: Vec<FieldElement<F>> = acs_indexed_2t_share_groups.into_par_iter().map(|x| {
-                    let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
-                    res
-                }).flatten().collect();
+                // Multiply each vector with the indexed vector in the Vandermonde
+                // matrix. All three batches go out as a single rayon job: they are
+                // independent, they share the Vandermonde matrix, and one dispatch
+                // keeps the `select!` loop free for the whole combine rather than
+                // for three separate windows.
+                let vdm_job = vandermonde_matrix.clone();
+                let (rand_sharings_bits, mut rand_sharings_mult, rand_sharings_2t_mult) =
+                    rayon_async(move || {
+                        let bits: Vec<FieldElement<F>> = acs_indexed_rand_bit_group.into_par_iter()
+                            .map(|x| Self::matrix_vector_multiply(&vdm_job, &x))
+                            .flatten().collect();
+                        let mult: Vec<FieldElement<F>> = acs_indexed_mult_group.into_par_iter()
+                            .map(|x| Self::matrix_vector_multiply(&vdm_job, &x))
+                            .flatten().collect();
+                        let mult_2t: Vec<FieldElement<F>> = acs_indexed_2t_share_groups.into_par_iter()
+                            .map(|x| Self::matrix_vector_multiply(&vdm_job, &x))
+                            .flatten().collect();
+                        (bits, mult, mult_2t)
+                    }).await;
 
                 log::info!("Completed preprocessing and generated {} random sharings for random bits, {} random sharings for multiplication, and {} random 2t sharings",
                         rand_sharings_bits.len(), rand_sharings_mult.len(), rand_sharings_2t_mult.len());
@@ -484,4 +499,20 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             .await;
         self.add_cancel_handler(cancel_handler);
     }
+}
+/// Deserialise a share batch on rayon without parking the caller.
+///
+/// This runs on every ACSS and Sh2t termination message, so it is the highest
+/// frequency rayon site in the engine: `n` senders times the number of batches.
+/// Each batch is cheap per element but large, and it is reached from a
+/// `handle_*` on the message path, which is exactly where parking the
+/// `Context` task turns "a message arrived" into "the inbox stops draining".
+async fn deserialize_shares_async<F: ProtocolField>(
+    shares: Vec<LargeFieldSer>,
+) -> Vec<FieldElement<F>> {
+    rayon_async(move || {
+        shares.into_par_iter()
+            .map(|x| F::from_bytes_be(&x).unwrap())
+            .collect()
+    }).await
 }

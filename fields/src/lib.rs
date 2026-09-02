@@ -21,6 +21,9 @@ pub use poly::*;
 pub mod mul;
 pub use mul::*;
 
+pub mod par;
+pub use par::rayon_async;
+
 #[cfg(feature = "gpu")]
 pub mod gpu_ffi;
 #[cfg(feature = "gpu")]
