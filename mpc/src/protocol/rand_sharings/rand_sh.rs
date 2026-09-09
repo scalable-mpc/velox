@@ -4,7 +4,7 @@ use std::{collections::{HashMap, HashSet}, ops::{Add, Mul}};
 use fields::{LargeFieldSer, rand_field_element, ProtocolField, FieldSer};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use types::{ProtSyncMsg, Replica, SyncMsg, SyncState};
-use crate::{context::Context};
+use crate::{context::Context, protocol::rand_sharings::ApplicationPreprocessing};
 use lambdaworks_math::field::element::FieldElement;
 
 /// ACSS batch carrying the `r` values that get squared into random bits.
@@ -23,27 +23,37 @@ pub const NUM_SH2T_BATCHES: usize = 1;
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     pub async fn init_rand_sh(&mut self){
         // How much preprocessing the circuit needs is the application's call.
+        // Read once and cached: everything downstream — the ACSS/Sh2t batch
+        // sizes here, the handover in `hand_preprocessing_to_application` — has
+        // to work off the same answer.
         let counts = self.app.preprocessing_count();
-        if counts.net_route.is_some(){
-            log::warn!("Application asked for network routing preprocessing, but Velox has no network routing module; ignoring it");
-        }
-
-        let num_mult_gates = counts.simd_mult;
+        let num_mult_gates = counts.mult_gates();
         let num_rand_bits = counts.rand_bits;
+        let num_depths = counts.depth();
+        let num_outputs = counts.output;
 
         let t = self.num_faults;
+
+        // Reserve each circuit depth a fixed slice of the pool, computed from the
+        // application's per-depth gate profile. Every party derives the same
+        // table, so depth `d` binds to the same masks everywhere regardless of
+        // the order the depths are scheduled locally.
+        self.app_preprocessing = ApplicationPreprocessing::plan(&counts, t);
+        let app_rand_total = self.app_preprocessing.rand_total();
+        let app_zero_total = self.app_preprocessing.zero_total();
+        self.preprocessing_counts = counts;
         // Combining the ACS-agreed dealers' contributions through the Vandermonde
         // matrix turns each raw value a party deals into `t+1` random sharings.
         let sharings_per_value = t + 1;
         let batch_size_for = |sharings: usize| sharings.div_ceil(sharings_per_value);
 
+        let group = 2*t + 1;
         // `init_linear_multiplication_prot` pads every batch it is handed up to a
         // multiple of 2t+1, and the padding consumes masks like real gates do.
-        // Each circuit depth is one batch, the rand-bit squaring is another, and
-        // the handover to the application rounds up once more.
-        let mult_padding = (counts.depth + 2) * (2*t + 1);
-
-        let group = 2*t + 1;
+        // The circuit's own padding is already counted exactly in
+        // `app_rand_total`, depth by depth; this covers the one other batch that
+        // draws from the pool outside verification, the random bit squaring.
+        let rand_bit_squaring_padding = 2 * group;
         let compression_factor = self.compression_factor.max(2);
 
         // Random sharings, by consumer:
@@ -79,9 +89,9 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         let verification_rand = verification_groups * group + 2;
 
         self.mult_batch_size = batch_size_for(
-            num_mult_gates
+            app_rand_total
             + num_rand_bits
-            + mult_padding
+            + rand_bit_squaring_padding
             + verification_rand
             + self.total_sharings_for_coins
         );
@@ -94,22 +104,27 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // that waste is counted once per batch rather than once overall: the
         // rand-bit squaring is one batch, each circuit depth is one, and
         // verification's batches are already counted in groups above.
+        // The circuit's zero sharings are counted exactly by the reservation
+        // table; the rand-bit squaring and verification are budgeted in groups.
         let zero_sharing_groups =
             (num_rand_bits + group).div_ceil(group)
-            + num_mult_gates.div_ceil(group) + counts.depth
             + verification_groups;
-        self.zero_batch_size = batch_size_for(zero_sharing_groups * (t + 1));
+        self.zero_batch_size = batch_size_for(app_zero_total + zero_sharing_groups * (t + 1));
         // AVSS masks blind the output wires before public reconstruction.
-        self.output_mask_size = batch_size_for(counts.output) + 1;
+        self.output_mask_size = batch_size_for(num_outputs) + 1;
 
         log::info!(
             "Preprocessing sized from the application: {} multiplication gates, {} random bits, \
              {} output wires over {} depths -> ACSS batches of {} (rand bit) and {} (mult) values, \
              {} zero values, {} output masks per party; verification budgeted {} random and {} zero \
              sharings for {} tuples over {} compression levels",
-            num_mult_gates, num_rand_bits, counts.output, counts.depth,
+            num_mult_gates, num_rand_bits, num_outputs, num_depths,
             self.rand_bit_batch_size, self.mult_batch_size, self.zero_batch_size, self.output_mask_size,
             verification_rand, verification_groups * (t + 1), num_tuples, compression_levels
+        );
+        log::info!(
+            "Circuit depths reserved {} masks and {} zero sharings across {} depths, laid out by depth",
+            app_rand_total, app_zero_total, num_depths
         );
 
         // Prepare the ACSS secret batches. The vector index doubles as the ACSS
@@ -344,7 +359,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                     res
                 }).flatten().collect();
 
-                let rand_sharings_2t_mult: Vec<FieldElement<F>> = acs_indexed_2t_share_groups.into_par_iter().map(|x| {
+                let mut rand_sharings_2t_mult: Vec<FieldElement<F>> = acs_indexed_2t_share_groups.into_par_iter().map(|x| {
                     let res = Self::matrix_vector_multiply(&vandermonde_matrix, &x);
                     res
                 }).flatten().collect();
@@ -359,7 +374,28 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
                 // Allocate 2n sharings to common coins
                 let rand_sharings_coin =  rand_sharings_mult.split_off(rand_sharings_mult.len()- self.total_sharings_for_coins);
-                
+
+                // Carve the circuit's reservation off the front, into buffers the
+                // depth table indexes. What is left keeps serving the engine's own
+                // multiplications — random bit squaring and verification — from
+                // the front, as before. Splitting the two apart is what lets the
+                // circuit's slices stay at fixed offsets: verification draws can
+                // no longer shift them.
+                let app_rand_total = self.app_preprocessing.rand_total();
+                let app_zero_total = self.app_preprocessing.zero_total();
+                if rand_sharings_mult.len() < app_rand_total || rand_sharings_2t_mult.len() < app_zero_total{
+                    log::error!("Preprocessing fell short of the circuit's reservation: {} masks and {} zero sharings needed, {} and {} generated",
+                        app_rand_total, app_zero_total, rand_sharings_mult.len(), rand_sharings_2t_mult.len());
+                }
+                let app_rand: Vec<FieldElement<F>> =
+                    rand_sharings_mult.drain(0..app_rand_total.min(rand_sharings_mult.len())).collect();
+                let app_zero: Vec<FieldElement<F>> =
+                    rand_sharings_2t_mult.drain(0..app_zero_total.min(rand_sharings_2t_mult.len())).collect();
+                log::info!("Reserved {} masks and {} zero sharings for the circuit's {} depths; {} and {} left for the engine",
+                    app_rand.len(), app_zero.len(), self.app_preprocessing.num_depths(),
+                    rand_sharings_mult.len(), rand_sharings_2t_mult.len());
+                self.app_preprocessing.fill(app_rand, app_zero);
+
                 // Add sharings and coins to state
                 self.rand_sharings_state.rand_sharings_mult.extend(rand_sharings_mult);
                 self.rand_sharings_state.rand_sharings_coin.extend(rand_sharings_coin);
