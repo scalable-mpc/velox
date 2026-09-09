@@ -43,30 +43,46 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // the handover to the application rounds up once more.
         let mult_padding = (counts.depth + 2) * (2*t + 1);
 
-        // Verification multiplies its own tuples, and those multiplications draw
-        // from the same pool. Compression divides the tuple count by
-        // `compression_factor` per level, each level being one padded batch.
+        let group = 2*t + 1;
         let compression_factor = self.compression_factor.max(2);
-        let mut compression_levels = 1;
-        let mut remaining_tuples = num_mult_gates + num_rand_bits;
-        while remaining_tuples > 1 {
-            remaining_tuples /= compression_factor;
-            compression_levels += 1;
-        }
-        // Two extra masks: the random beaver mask `delinearize_mult_tuples` pops.
-        let verification_gates = self.num_nodes*compression_levels * (2*t + 1) + 2;
 
         // Random sharings, by consumer:
         //  - one mask per multiplication gate,
         //  - two per random bit — the `r` that gets squared (dealt in batch 0)
         //    and the mask for that squaring multiplication (batch 1),
         //  - the coin sharings and the verification multiplications.
-        self.rand_bit_batch_size = batch_size_for(num_rand_bits + (2*t + 1));
+        self.rand_bit_batch_size = batch_size_for(num_rand_bits + group);
+
+        // Verification multiplies its own tuples, and those multiplications draw
+        // from the same pool. It compresses every tuple the circuit and the
+        // random bit squaring produced — including the surplus bits the batch
+        // rounding above creates, which are squared and verified like the rest.
+        let num_tuples = self.rand_bit_batch_size * (t + 1) + num_mult_gates;
+        // Each compression level divides the tuple count by `compression_factor`,
+        // until a single tuple is left.
+        let mut compression_levels = 1;
+        let mut remaining_tuples = num_tuples;
+        while remaining_tuples > 1 {
+            remaining_tuples = remaining_tuples.div_ceil(compression_factor);
+            compression_levels += 1;
+        }
+        // A level runs two multiplication batches — the chunked tuples in
+        // `init_compression_level`, then the extended polynomial evaluations in
+        // `init_ex_compression_tuples` — and neither exceeds `k+1` gates:
+        // chunking `T` elements into pieces of `ceil(T/k)` yields at most `k`
+        // chunks whatever `T` is, and the second batch adds the remainder tuple.
+        // The linear protocol charges whole groups of `2t+1` gates, at `2t+1`
+        // random and `t+1` zero sharings per group.
+        let verification_groups =
+            compression_levels * 2 * (compression_factor + 1).div_ceil(group);
+        // Two extra masks: the random beaver mask `delinearize_mult_tuples` pops.
+        let verification_rand = verification_groups * group + 2;
+
         self.mult_batch_size = batch_size_for(
             num_mult_gates
             + num_rand_bits
             + mult_padding
-            + verification_gates
+            + verification_rand
             + self.total_sharings_for_coins
         );
         // Zero sharings: the linear protocol draws `t+1` of them for every group
@@ -76,13 +92,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // Every batch rounds up to whole groups on its own, and a depth holding
         // fewer than 2t+1 gates still burns a full group. Budget per consumer so
         // that waste is counted once per batch rather than once overall: the
-        // rand-bit squaring is one batch, each circuit depth is one, and so is
-        // each compression level of verification.
-        let group = 2*t + 1;
+        // rand-bit squaring is one batch, each circuit depth is one, and
+        // verification's batches are already counted in groups above.
         let zero_sharing_groups =
             (num_rand_bits + group).div_ceil(group)
             + num_mult_gates.div_ceil(group) + counts.depth
-            + verification_gates.div_ceil(group) + compression_levels;
+            + verification_groups;
         self.zero_batch_size = batch_size_for(zero_sharing_groups * (t + 1));
         // AVSS masks blind the output wires before public reconstruction.
         self.output_mask_size = batch_size_for(counts.output) + 1;
@@ -90,9 +105,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         log::info!(
             "Preprocessing sized from the application: {} multiplication gates, {} random bits, \
              {} output wires over {} depths -> ACSS batches of {} (rand bit) and {} (mult) values, \
-             {} zero values, {} output masks per party",
+             {} zero values, {} output masks per party; verification budgeted {} random and {} zero \
+             sharings for {} tuples over {} compression levels",
             num_mult_gates, num_rand_bits, counts.output, counts.depth,
-            self.rand_bit_batch_size, self.mult_batch_size, self.zero_batch_size, self.output_mask_size
+            self.rand_bit_batch_size, self.mult_batch_size, self.zero_batch_size, self.output_mask_size,
+            verification_rand, verification_groups * (t + 1), num_tuples, compression_levels
         );
 
         // Prepare the ACSS secret batches. The vector index doubles as the ACSS
