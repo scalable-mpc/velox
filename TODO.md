@@ -2,7 +2,8 @@
 
 ## Rayon `par_iter` blocks a tokio worker inside the MPC `select!` loop
 
-**Status:** open — analysis done, not yet fixed.
+**Status:** Tiers 1-4 fixed (see "What was done" below).
+Tracked as https://github.com/scalable-mpc/velox/issues/3.
 
 ### What's happening
 
@@ -62,21 +63,132 @@ Parallelism accounting, for reference:
 No `block_on` appears inside any rayon closure, so the classic rayon/tokio
 deadlock is not present.
 
-### Proposed fix
+### Still open
 
-1. Wrap the heavy `par_iter` sites in `tokio::task::block_in_place` so the
-   runtime migrates the remaining tasks off that worker and keeps its full
-   worker count during compute. Cheapest change; requires the multi-thread
-   runtime (already the case).
-2. Alternatively move the compute behind `spawn_blocking` + a `oneshot`, which
-   also lets the `select!` loop keep draining while the job runs. More
-   invasive — the closures currently borrow `&mut self` state.
-3. Consider bounding `net_recv`, or sizing the rayon pool below the core count,
-   so compute stalls surface as backpressure rather than unbounded inbox growth.
+1. **Backpressure.** `net_recv` is still unbounded (`mpc/src/context.rs:203`).
+   Yielding means the loop keeps draining during compute, so the inbox grows
+   more slowly, but nothing bounds it.
 
-Primary sites to convert: `quad_mult.rs:52`, `quad_mult.rs:102`,
-`lin_mult.rs:214`, `lin_mult.rs:276`, `compress_tup.rs:158`,
-`rand_sh.rs:108`/`:127`/`:320`, `rand_bit.rs:124`/`:194`, `rand_mask.rs:61`/`:121`.
+2. **Pool sizing.** Two uncoordinated N-thread pools on N cores; see below.
+
+3. **Measurement.** None of this has been timed. The n=10 / 64-message fixture
+   is far too small for the jobs to be long enough to matter (both master and
+   this branch run it in ~1.8s). Instrumenting the converted sites and sweeping
+   `RAYON_NUM_THREADS` would say which conversions actually pay.
+
+### What was done
+
+`fields::rayon_async` (`fields/src/par.rs`) is the house idiom: hand the job to
+`rayon::spawn` and await a oneshot, so the future actually suspends and the
+calling task's worker is free while the job runs at full rayon width. It
+generalises the pattern `secret_sharing/avid_ab/src/rs.rs` already used for
+erasure coding. `block_in_place` was considered and rejected — it keeps the job
+on the tokio worker and only asks the runtime to compensate.
+
+Converted (each takes ownership of its inputs via `std::mem::take` first, and
+re-acquires the borrowed state after the await):
+
+- `quad_mult.rs` — the matmul core and the L1 interpolation.
+- `lin_mult.rs` — L1 and L2 interpolation.
+- `rand_sh.rs` — the three-batch preprocessing combine (now one job), both
+  secret-batch generators, and the per-message share deserialisation.
+- `rand_bit.rs` — L1/L2 interpolation, the `sqrt`+`inv` batch, and the final
+  bit derivation.
+- `rand_mask.rs` — both Vandermonde combines.
+- `compress_tup.rs` — the whole `ex_compr` block.
+- `poly.rs` — `generate_evaluation_points{,_opt,_fft}`, which run on the
+  ACSS/Sh2t dealer tasks.
+
+Shape fixes, which yielding would only have hidden:
+
+- `compress_tup.rs` second-set evaluation was a sequential `for` over the
+  polynomials with a `par_iter` over the (small) point set inside it — parallel
+  on the short axis, serial on the long one. Now one `powers_matrix * coeffs`
+  GEMM, the idiom the same function already used for the first set. Pinned by
+  `fields/tests/gemm_eval_equiv.rs`.
+- `rand_bit.rs` debug path reconstructed the entire batch and then
+  `truncate(100)` to log 100 values. It now truncates first.
+- `poly.rs` `all_polys_positive` was a `par_iter().all()` over an `Option`
+  discriminant check. Sequential now.
+
+Once-guard fixed as a prerequisite: `verify_termination` in `rand_sh.rs` keyed
+its once-ness on `rand_sharings_mult.len() > 0`, a payload field that is later
+`split_off` and drained. Yielding there would have let a message processed
+during the job re-enter and run preprocessing twice. It now uses a real
+`combine_started: bool` on `RandSharings`, set *before* the job is dispatched.
+
+The other converted sites were already safe: `quad_mult`, `lin_mult` and
+`rand_bit` all set their `*_reconstruction_done` / `*_started` flag before the
+work, and `verify_depth_mult_termination` cannot terminate a depth while its
+reconstruction is in flight (it requires `reconstructed_len > 0`, which is what
+the job is about to produce).
+
+### Interpolation: closed form instead of Gaussian elimination
+
+**Status:** done.
+
+`inverse_vandermonde` was O(n^3) sequential Gaussian elimination with a `clone()`
+per inner operation, reached from thirteen call sites. It is not redundant work -
+the reconstruction sites build their point set from whichever `n-t` senders
+arrive first, so the matrix genuinely differs each round and memoisation does not
+apply. It was an Amdahl serial fraction: it does not shrink with cores, and it
+dominates wall clock whenever the parallel remainder is small (`g < 2*n*N`, so
+roughly `g < 3200` at `N=49`).
+
+Two replacements, both in `fields/src/poly.rs`:
+
+- `inverse_vandermonde_from_points` - the Lagrange closed form, O(n^2). Column
+  `i` of the inverse is the `i`-th basis polynomial's coefficient vector; build
+  `master(X) = prod_j (X - x_j)` once, synthetic-divide by `(X - x_i)` per
+  column, scale by `1 / prod_{j != i}(x_i - x_j)` with all `n` inversions
+  batched into one. Note *column*, not row - the transpose compiles and silently
+  returns wrong answers.
+- `lagrange_coefficients_at_zero` + `interpolate_at_zero` - for the sites that
+  only ever read the secret. Six of the eight dynamic sites built the full
+  `n x n` inverse, ran a matvec, and kept one number; `rand_mask` even had a
+  comment saying it needed only row 0. Per reconstruction with `g` groups this
+  goes from `2n^3` serial + `g*n^2` parallel to `n^2` serial + `g*n` parallel -
+  an n-fold cut in the parallel half too, so unlike the closed-form inverse it
+  keeps paying as `g` grows.
+
+Constant-term sites: `quad_mult` (L1), `lin_mult` (L1), `rand_bit` (L1 and the
+debug path), `rand_mask`, `common_coin`. Full-inverse sites, which need every
+coefficient: `lin_mult` (L2), `rand_bit` (L2), `compress_tup` (first set and the
+h polynomial), and the three internal uses in `poly.rs`.
+
+`inverse_vandermonde` itself is retained, unused by protocol code, as the
+reference the closed form is tested against
+(`fields/tests/vandermonde_closed_form.rs`: bit-identical across n=1..13 and
+four point-set shapes, plus `inv * V == I`, a round-trip through a known
+polynomial, and the `x=0` edge case).
+
+### Pre-existing: preprocessing runs out one sharing short at depth 5005
+
+Unrelated to any of the above, but found while validating it. On the
+`testdata/10`, 64-message fixture the protocol completes preprocessing, the
+36-depth mixing circuit and output masking, then stops at the last verification
+compression level with
+
+```
+Not enough preprocessed sharings for the multiplication at depth 5005:
+need 42 random and 24 zero sharings, 41 and 36 left
+```
+
+Byte-identical on `master` and on this branch, so it is a preprocessing sizing
+bug, not a concurrency one - and it is short by exactly one random sharing.
+`multiplication_preprocessing_requirement` / the application's
+`preprocessing_count` undercount the verification tail.
+
+### Open question raised by the compress_tup rewrite
+
+`x_poly_evals_ss` / `y_poly_evals_ss` were initialised as
+`vec![vec![zero; x_vectors[0].len()]; x_vectors.len()]` and then *pushed* to, so
+every row carries `d` leading zeros ahead of its `d` real evaluations. The zeros
+are harmless to correctness — they contribute nothing to the downstream dot
+products — but they double the inner-product length at every compression level.
+The rewrite preserves them exactly, because dropping them changes
+`x_vectors[0].len()` at the next level and therefore the compression recursion
+itself. Worth deciding deliberately rather than as part of a perf change.
 
 ### Also noted
 
@@ -120,10 +232,11 @@ clearest violation of the contract and the one reachable from outside.
 **3. Once-guards are stored in payload fields, and the memory-reclaim work is
 taking those fields away.** This is the structural defect.
 
-- `mpc/src/protocol/rand_sharings/rand_sh.rs:293` —
-  `if self.rand_sharings_state.rand_sharings_mult.len() > 0 { return; }`.
-  The once-ness of `verify_termination` lives in the length of a data vector
-  that is itself `split_off` at `:344`.
+- `rand_sh.rs` `verify_termination` — **fixed**. Its once-ness used to live in
+  `rand_sharings_mult.len() > 0`, the length of a data vector that is itself
+  `split_off` later in the same function. It now uses a dedicated
+  `RandSharings::combine_started` flag, set before the combine is dispatched.
+  This was a prerequisite for yielding that site to rayon.
 - `mpc/src/protocol/multiplication/weak_mult.rs:148` — `depth_terminated`, a
   real flag, is the correct shape by comparison.
 - Commit `f6eaa7d` introduced `std::mem::take` on exactly this class of field

@@ -2,8 +2,7 @@ use application::Application;
 use std::ops::Mul;
 
 use crypto::hash::{do_hash, Hash};
-use lambdaworks_math::polynomial::Polynomial;
-use fields::{LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply, matrix_matrix_multiply, powers_matrix, ProtocolField, FieldSer};
+use fields::{LargeFieldSer, rayon_async, interpolate_at_zero, inverse_vandermonde_from_points, lagrange_coefficients_at_zero, matrix_vector_multiply, matrix_matrix_multiply, powers_matrix, ProtocolField, FieldSer};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator, IndexedParallelIterator, IntoParallelRefIterator};
 use types::{Replica, WrapperMsg};
 
@@ -119,17 +118,25 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         recon_state.l1_reconstruction_started = true;
 
         log::info!("Attempting L1 reconstruction of random bit sharings");
-        let inv_vdm_matrix = inverse_vandermonde(vandermonde_matrix(recon_state.l1_shares.0.clone()));
-        let my_points: Vec<FieldElement<F>> = recon_state.l1_shares.1.par_iter()
-            .map(|chunk_shares|{
-                let coefficients = matrix_vector_multiply(&inv_vdm_matrix, chunk_shares);
-                Polynomial::new(&coefficients).evaluate(&FieldElement::<F>::zero())
-            })
-            .collect();
         // The per-party L1 shares are dead: this interpolation is their only
         // reader, the claim flag above makes it run once, and every later L1
         // message is dropped by the same flag in `handle_rand_bit_recon_l1`.
-        recon_state.l1_shares = (Vec::new(), Vec::new());
+        // Taking them here also gives the rayon job owned inputs so it can be
+        // yielded instead of parking the `Context` task.
+        let (indices, l1_shares) = std::mem::take(&mut recon_state.l1_shares);
+
+        // Constant term only - see the note in `quad_mult.rs`.
+        let my_points: Vec<FieldElement<F>> = rayon_async(move || {
+            let lambdas = lagrange_coefficients_at_zero(&indices);
+            l1_shares.par_iter()
+                .map(|chunk_shares| interpolate_at_zero(&lambdas, chunk_shares))
+                .collect()
+        }).await;
+
+        // Re-acquire: `recon_state` borrowed `self` across the await. The claim
+        // flag set above means any L1 message handled during the job returned
+        // early, so nothing else touched this state.
+        let recon_state = &mut self.mix_circuit_state.rand_bit_recon_state;
         recon_state.l1_reconstructed.extend(my_points.iter().cloned());
 
         let points_ser: Vec<LargeFieldSer> = my_points.iter().map(|point| point.ser_be()).collect();
@@ -187,19 +194,27 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         recon_state.l2_reconstruction_started = true;
 
         log::info!("Attempting L2 reconstruction of random bit sharings");
-        let inv_vdm_matrix = inverse_vandermonde(vandermonde_matrix(recon_state.l2_shares.0.clone()));
-        // Interpolating 2t+1 points of a degree-2t polynomial gives back its
-        // coefficients, which are the chunk's values.
-        let mut reconstructed_values: Vec<FieldElement<F>> = recon_state.l2_shares.1.par_iter()
-            .map(|chunk_points| matrix_vector_multiply(&inv_vdm_matrix, chunk_points))
-            .flatten()
-            .collect();
-        for _ in 0..recon_state.padding.unwrap(){
-            reconstructed_values.pop();
-        }
         // Same argument as L1: the raw L2 points have no reader past this
         // interpolation, and late L2 messages are dropped by the claim flag.
-        recon_state.l2_shares = (Vec::new(), Vec::new());
+        let (indices, l2_shares) = std::mem::take(&mut recon_state.l2_shares);
+        let padding = recon_state.padding.unwrap();
+
+        // Interpolating 2t+1 points of a degree-2t polynomial gives back its
+        // coefficients, which are the chunk's values.
+        // L2 wants every coefficient (they are the chunk's values), so a full
+        // inverse - via the O(n^2) closed form.
+        let mut reconstructed_values: Vec<FieldElement<F>> = rayon_async(move || {
+            let inv_vdm_matrix = inverse_vandermonde_from_points(&indices);
+            l2_shares.par_iter()
+                .map(|chunk_points| matrix_vector_multiply(&inv_vdm_matrix, chunk_points))
+                .flatten()
+                .collect()
+        }).await;
+        for _ in 0..padding{
+            reconstructed_values.pop();
+        }
+        // Re-acquire after the await; the claim flag above kept this state ours.
+        let recon_state = &mut self.mix_circuit_state.rand_bit_recon_state;
 
         // Pin down what everyone reconstructed before deriving random bits from it.
         let mut appended_msg = Vec::new();
@@ -250,14 +265,21 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // async_mpc's pub_rec.rs:78 pattern — discard the sign-choice branch
         // (`let (sqrt, _) = ...`); the randomness comes from upstream `r`, not
         // from which root is picked.
-        let reconstructed_square_inverses: Vec<FieldElement<F>> = reconstructed_values.into_par_iter()
-            .map(|secret| {
-                let (sqrt_root, _) = F::sqrt(&secret).expect("Square root does not exist");
-                sqrt_root.inv()
-            })
-            .filter(|x| x.is_ok())
-            .map(|x| x.unwrap())
-            .collect();
+        // Yielded: `F::sqrt` is an exponentiation over the extension field and
+        // `.inv()` is a second one, so this is the densest per-element job in the
+        // engine - order 10^3 field multiplications each, against ~1 for the
+        // interpolation sites. Running it inline parked the `Context` task for
+        // the whole batch.
+        let reconstructed_square_inverses: Vec<FieldElement<F>> = rayon_async(move || {
+            reconstructed_values.into_par_iter()
+                .map(|secret| {
+                    let (sqrt_root, _) = F::sqrt(&secret).expect("Square root does not exist");
+                    sqrt_root.inv()
+                })
+                .filter(|x| x.is_ok())
+                .map(|x| x.unwrap())
+                .collect()
+        }).await;
 
         self.mix_circuit_state.rand_bit_inverse_recon_values.extend(reconstructed_square_inverses);
         log::info!("Reconstructed random bit shares of size: {}", self.mix_circuit_state.rand_bit_inverse_recon_values.len());
@@ -289,18 +311,16 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 }
             }
 
-            // generate inverse vandermonde matrix
-            let vdm_matrix = vandermonde_matrix(indices);
-            let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
-            
+            // Only the first 100 are logged, so only the first 100 are
+            // interpolated. This used to reconstruct the entire batch and then
+            // `truncate(100)`, doing `shares_len/100` times the necessary work on
+            // the `Context` task for a debug log.
             let one = FieldElement::<F>::one();
-            let mut reconstructed_square_inverses: Vec<FieldElement<F>> = shares_index_wise.into_par_iter()
-                .map(|x| {
-                    let coefficients = matrix_vector_multiply(&inv_vdm_matrix, &x);
-                    let secret = Polynomial::new(&coefficients).evaluate(&FieldElement::<F>::from(0 as u64));
-                    secret
-                }).collect();
-            reconstructed_square_inverses.truncate(100);
+            shares_index_wise.truncate(100);
+            let lambdas = lagrange_coefficients_at_zero(&indices);
+            let reconstructed_square_inverses: Vec<FieldElement<F>> = shares_index_wise.into_par_iter()
+                .map(|x| interpolate_at_zero(&lambdas, &x))
+                .collect();
             for secret in reconstructed_square_inverses{
                 log::info!("Reconstructed random bit: {:?}", secret);
                 log::info!("One: {:?}", one);
@@ -326,10 +346,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         let reconstructed_shares = std::mem::take(&mut self.mix_circuit_state.rand_bit_inverse_recon_values);
         let rand_bit_input_shares = std::mem::take(&mut self.mix_circuit_state.rand_bit_inp_shares);
 
-        let final_rand_bit_sharings: Vec<FieldElement<F>> = rand_bit_input_shares.into_par_iter().zip(reconstructed_shares.into_par_iter()).map(|(r,re)|{
-            let mult_share = r.mul(re);
-            return mult_share
-        }).collect();
+        let final_rand_bit_sharings: Vec<FieldElement<F>> = rayon_async(move || {
+            rand_bit_input_shares.into_par_iter()
+                .zip(reconstructed_shares.into_par_iter())
+                .map(|(r,re)| r.mul(re))
+                .collect()
+        }).await;
 
         self.mix_circuit_state.rand_bit_sharings.extend(final_rand_bit_sharings);
 

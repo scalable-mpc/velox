@@ -1,7 +1,6 @@
 use application::Application;
 use crypto::hash::do_hash;
-use lambdaworks_math::{polynomial::Polynomial};
-use fields::{LargeFieldSer, vandermonde_matrix, inverse_vandermonde, matrix_vector_multiply, ProtocolField, FieldSer};
+use fields::{LargeFieldSer, rayon_async, interpolate_at_zero, lagrange_coefficients_at_zero, ProtocolField, FieldSer};
 use rayon::prelude::{IntoParallelIterator, IndexedParallelIterator, ParallelIterator, IntoParallelRefIterator};
 use types::Replica;
 
@@ -47,14 +46,17 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // the batch's masks are not materialised a third time as a temporary.
         depth_state.util_rand_sharings.extend(rand_sharings.iter().cloned());
         
-        // Perform multiplication
-        let mult_shares = 
+        // Perform multiplication. This is the matmul core - one inner product per
+        // gate - and the largest per-depth job, so it is yielded to rayon rather
+        // than run inline: the `select!` loop keeps draining while it runs.
+        let mult_shares = rayon_async(move || {
             (a_shares.into_par_iter()
                 .zip(b_shares.into_par_iter()))
             .zip(rand_sharings.into_par_iter()
                 .zip(zero_sharings.into_par_iter()))
             .map(|((a,b),(r,o))| (Self::dot_product(&a,&b)+r+o).ser_be())
-            .collect::<Vec<LargeFieldSer>>(); // Perform dot product and add random shares
+            .collect::<Vec<LargeFieldSer>>() // Perform dot product and add random shares
+        }).await;
 
         let ser_shares = bincode::serialize(&mult_shares).unwrap();
         self.broadcast(ProtMsg::QuadShares(ser_shares, depth)).await;
@@ -95,21 +97,34 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             depth_state.l1_reconstruction_done = true;
 
             let indices = depth_state.l1_shares.0.clone();
-            let vdm_matrix = vandermonde_matrix(indices);
-            let inv_vdm_matrix = inverse_vandermonde(vdm_matrix);
 
-            let reconstructed_secrets: Vec<FieldElement<F>> 
-                = depth_state.l1_shares.1.par_iter()
-                .map(|evaluations|{
-                    let coefficients = matrix_vector_multiply(&inv_vdm_matrix, evaluations);
-                    let polynomial = Polynomial::new(&coefficients);
-                    return polynomial.evaluate(&FieldElement::<F>::zero());
-                }).collect();
-            
-            // The raw per-party shares are dead: this interpolation is their only
-            // reader and it runs exactly once. The depth carries
-            // `l1_shares_reconstructed` from here on.
+            // The raw per-party shares are dead once interpolated: this is their
+            // only reader and `l1_reconstruction_done` above makes it run once.
+            // Taking them here (rather than clearing after) also gives the rayon
+            // job an owned input, which is what lets it be yielded.
+            let l1_shares = std::mem::take(&mut depth_state.l1_shares.1);
             depth_state.clear_l1_shares();
+
+            // Only the secret is wanted, so only the secret is computed: the
+            // Lagrange weights at zero are one O(n^2) vector, after which each
+            // group is a length-n dot product. Building the full n x n inverse
+            // and reading one entry out of the result cost O(n^3) plus an n-fold
+            // matvec per group.
+            let reconstructed_secrets: Vec<FieldElement<F>> = rayon_async(move || {
+                let lambdas = lagrange_coefficients_at_zero(&indices);
+                l1_shares.par_iter()
+                    .map(|evaluations| interpolate_at_zero(&lambdas, evaluations))
+                    .collect()
+            }).await;
+
+            // `depth_state` was borrowed across the await above; re-acquire it.
+            // The entry itself cannot disappear (depths are reclaimed in place by
+            // `clear_shares()`, never removed from `depth_share_map`), and the
+            // depth cannot terminate during the await either: termination needs
+            // `reconstructed_len > 0`, which is exactly what this job is about to
+            // produce, so `verify_depth_mult_termination` returns early and
+            // leaves the depth retryable until we write the result back.
+            let depth_state = self.mult_state.get_single_depth_state(depth, false, 0);
             // Broadcast hash of this reconstructed value.
             let mut appended_msg = Vec::new();
             for secret in reconstructed_secrets.iter(){
