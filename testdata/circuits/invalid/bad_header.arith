@@ -1,0 +1,8 @@
+# Header line must be exactly `<num_gates> <num_wires>`.
+1 3 5
+2
+1 1
+1
+2
+
+2 1 0 1 2 MUL

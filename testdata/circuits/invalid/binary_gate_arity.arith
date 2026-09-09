@@ -1,0 +1,8 @@
+# MUL takes exactly 2 inputs; this one declares 3.
+1 5
+2
+2 2
+1
+4
+
+3 1 0 1 2 4 MUL

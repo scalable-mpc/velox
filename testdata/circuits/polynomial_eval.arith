@@ -1,0 +1,16 @@
+# Polynomial evaluation: f(x) = a*x^2 + b*x + c
+# Party 1 inputs: a, b, c (wires 0, 1, 2) - coefficients
+# Party 2 inputs: x (wire 3) - evaluation point
+# Output: wire 8
+
+5 9
+2
+3 1
+1
+8
+
+2 1 3 3 4 MUL
+2 1 0 4 5 MUL
+2 1 1 3 6 MUL
+2 1 5 6 7 ADD
+2 1 7 2 8 ADD

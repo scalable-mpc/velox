@@ -32,6 +32,8 @@ pub use types::*;
 pub mod anonymous_broadcast;
 pub use anonymous_broadcast::AnonymousBroadcast;
 
+pub mod circuit;
+
 /// How much preprocessing an application's circuit consumes.
 ///
 /// Raw demand, in the application's own terms; the engine converts it into
