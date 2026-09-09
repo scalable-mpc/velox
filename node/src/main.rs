@@ -23,36 +23,79 @@ fn spawn_mpc_over_field(
     compression_factor: usize,
     num_rand_batches: usize,
     node_normal: bool,
+    circuit_path: Option<&str>,
 ) -> Result<oneshot::Sender<()>> {
     match field {
         "m61" | "mersenne61" => spawn_mpc::<fields::DefaultField>(
-            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal, circuit_path),
         "stark252" => spawn_mpc::<fields::Stark252Field>(
-            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal, circuit_path),
         "bn254" => spawn_mpc::<fields::BN254Field>(
-            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal, circuit_path),
         // Shares over the 61-bit base field, DZK proofs lifted into its
         // degree-4 extension. One share carries 7 bytes of text rather than 28,
         // so longer input lines fall back to random values.
         "m61base" => spawn_mpc::<fields::Mersenne61Field>(
-            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal),
+            config, mixing_batch_size, compression_factor, num_rand_batches, node_normal, circuit_path),
         other => Err(anyhow!(
             "unknown field {:?}; expected one of m61, m61base, stark252, bn254", other)),
     }
 }
 
-/// Start anonymous broadcast over field `F`.
+/// Start the MPC protocol over field `F`, running whichever application the
+/// command line selected.
 ///
-/// Nothing in this body names a concrete field: the inputs are read through
-/// `F::encode_ascii`, the circuit is `AnonymousBroadcast<F>`, and the engine is
-/// `mpc::Context<F, _>`.
+/// `--circuit <path>` picks `BristolCircuit`, which evaluates the arithmetic
+/// circuit in that `.arith` file; without it the node runs the anonymous
+/// broadcast mixing network as before. Both are `Application` implementations
+/// over the same engine, so the choice is one branch here and nothing else.
 fn spawn_mpc<F: fields::ProtocolField>(
     config: Node,
     mixing_batch_size: usize,
     compression_factor: usize,
     num_rand_batches: usize,
     node_normal: bool,
+    circuit_path: Option<&str>,
 ) -> Result<oneshot::Sender<()>> {
+    match circuit_path {
+        Some(path) => {
+            let app = build_bristol_circuit::<F>(&config, path)?;
+            spawn_with_app(config, app, compression_factor, num_rand_batches, node_normal)
+        }
+        None => {
+            let app = build_anonymous_broadcast::<F>(&config, mixing_batch_size);
+            spawn_with_app(config, app, compression_factor, num_rand_batches, node_normal)
+        }
+    }
+}
+
+/// Hand an application to the engine. Nothing in this body names a concrete
+/// field or a concrete application.
+fn spawn_with_app<F: fields::ProtocolField, A: application::Application<F>>(
+    config: Node,
+    app: A,
+    compression_factor: usize,
+    num_rand_batches: usize,
+    node_normal: bool,
+) -> Result<oneshot::Sender<()>> {
+    mpc::Context::spawn(
+        config,
+        app,
+        compression_factor,
+        num_rand_batches,
+        node_normal,
+    ).or_else(|e| {
+        log::error!("Error starting MPC protocol: {}", e);
+        Err(e)
+    })
+}
+
+/// Anonymous broadcast over a butterfly mixing network, with this party's
+/// messages read as ASCII payloads through `F::encode_ascii`.
+fn build_anonymous_broadcast<F: fields::ProtocolField>(
+    config: &Node,
+    mixing_batch_size: usize,
+) -> application::AnonymousBroadcast<F> {
     let app = application::AnonymousBroadcast::<F>::new(
         config.num_nodes,
         config.num_faults,
@@ -72,18 +115,39 @@ fn spawn_mpc<F: fields::ProtocolField>(
         log::error!("Error reading input files: {}, falling back to random inputs", e);
         Vec::new()
     });
-    let app = app.with_inputs(inputs);
+    app.with_inputs(inputs)
+}
 
-    mpc::Context::spawn(
-        config,
-        app,
-        compression_factor,
-        num_rand_batches,
-        node_normal,
-    ).or_else(|e| {
-        log::error!("Error starting MPC protocol: {}", e);
-        Err(e)
-    })
+/// The arithmetic circuit in `circuit_path`, with this party's input wires read
+/// as decimal integers.
+///
+/// A malformed circuit file is fatal — every party must evaluate the same
+/// circuit, so there is nothing sensible to fall back to. A short or missing
+/// *input* file is not: the application pads with random values, which still
+/// exercises the circuit.
+fn build_bristol_circuit<F: fields::ProtocolField>(
+    config: &Node,
+    circuit_path: &str,
+) -> Result<application::BristolCircuit<F>> {
+    let app = application::BristolCircuit::<F>::from_file(config.num_nodes, config.id, circuit_path)?;
+
+    let num_inputs = app.inputs_per_party();
+    if num_inputs == 0 {
+        log::info!("Circuit {} gives party {} no input wires", circuit_path, config.id);
+        return Ok(app);
+    }
+
+    let file_location_1 = format!("testdata/inputs/circuit_input_{}.txt", config.id);
+    let file_location_2 = format!("circuit_input_{}.txt", config.id);
+    let inputs = mpc::input::read_numeric_input_from_files::<F>(
+        file_location_1.as_str(),
+        file_location_2.as_str(),
+        num_inputs,
+    ).unwrap_or_else(|e| {
+        log::error!("Error reading circuit input files: {}, falling back to random inputs", e);
+        Vec::new()
+    });
+    Ok(app.with_inputs(inputs))
 }
 
 #[tokio::main]
@@ -119,6 +183,9 @@ async fn main() -> Result<()> {
     //     .expect("Unable to parse broadcast messages file");
     // Optional; the Mersenne-61 Fp4 field the protocol has always used.
     let field_name = m.value_of("field").unwrap_or("m61");
+    // Optional; a `.arith` arithmetic circuit to evaluate. Absent, the node runs
+    // the anonymous broadcast mixing network.
+    let circuit_path = m.value_of("circuit");
     let byz_flag = m.value_of("byz").expect("Unable to parse Byzantine flag");
     let node_normal: bool = match byz_flag {
         "true" => true,
@@ -186,7 +253,8 @@ async fn main() -> Result<()> {
         "mpc" => {
             // The circuit lives in the application; the engine only drives the
             // protocol phases around it. `--field` picks which finite field
-            // both of them run over.
+            // both of them run over, and `--circuit` picks which application:
+            // a `.arith` file, or the built-in mixing network.
             exit_tx = spawn_mpc_over_field(
                 field_name,
                 config,
@@ -194,6 +262,7 @@ async fn main() -> Result<()> {
                 compression_factor,
                 num_rand_batches,
                 node_normal,
+                circuit_path,
             )?;
         }
         // "sh2t" => {

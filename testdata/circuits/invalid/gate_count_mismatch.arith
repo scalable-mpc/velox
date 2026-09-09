@@ -1,0 +1,8 @@
+# Header declares 2 gates; only 1 is defined.
+2 4
+2
+1 1
+1
+2
+
+2 1 0 1 2 MUL

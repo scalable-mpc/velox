@@ -361,50 +361,23 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         self.hand_preprocessing_to_application().await;
     }
 
-    /// Give the application the preprocessed sharings its circuit consumes, and
-    /// run whatever it schedules in response.
+    /// Hand the application the random bits its circuit consumes, and run
+    /// whatever it schedules in response.
     ///
-    /// The engine keeps the rest of the pool for itself: verification multiplies
-    /// its own compressed tuples, and the common coin draws from it too.
+    /// The multiplication masks stay in the engine's pool: it draws them per
+    /// batch in `choose_multiplication_protocol`, for the application's depths
+    /// exactly as for its own. Applications used to be handed a slice of the
+    /// pool up front, sized here and re-portioned there, which put the
+    /// protocol's `2t+1` batching rule in application code.
     pub async fn hand_preprocessing_to_application(&mut self){
-        let counts = self.app.preprocessing_count();
-
-        // One mask per multiplication gate, plus the padding each depth's batch
-        // needs when the linear protocol rounds it up to a multiple of 2t+1.
-        let mult_padding = (counts.depth + 1) * (2*self.num_faults + 1);
-        let rand_sharings_needed = counts.simd_mult + mult_padding;
-        // `t+1` zero sharings per group of 2t+1 gates, matching what the linear
-        // multiplication protocol draws.
-        let zero_sharings_needed = rand_sharings_needed.div_ceil(2*self.num_faults + 1) * (self.num_faults + 1);
-
-        let available_rand = self.rand_sharings_state.rand_sharings_mult.len();
-        let available_zero = self.rand_sharings_state.rand_2t_sharings_mult.len();
-        if available_rand < rand_sharings_needed || available_zero < zero_sharings_needed{
-            log::error!("Preprocessing fell short of the application's needs: {} random and {} zero sharings required, {} and {} generated",
-                rand_sharings_needed, zero_sharings_needed, available_rand, available_zero);
-        }
-
-        let rand_sharings: Vec<FieldElement<F>> = self.rand_sharings_state.rand_sharings_mult
-            .drain(0..rand_sharings_needed.min(available_rand))
-            .collect();
-        let zero_sharings: Vec<FieldElement<F>> = self.rand_sharings_state.rand_2t_sharings_mult
-            .drain(0..zero_sharings_needed.min(available_zero))
-            .collect();
         let rand_bits: Vec<FieldElement<F>> = self.mix_circuit_state.rand_bit_sharings.drain(..).collect();
 
-        log::info!("Handing {} random sharings, {} zero sharings and {} random bits to the application; {} random and {} zero sharings held back for verification",
-            rand_sharings.len(), zero_sharings.len(), rand_bits.len(),
+        log::info!("Handing {} random bits to the application; {} random and {} zero sharings held in the engine's pool for its depths, verification and coins",
+            rand_bits.len(),
             self.rand_sharings_state.rand_sharings_mult.len(),
             self.rand_sharings_state.rand_2t_sharings_mult.len());
 
-        // Velox has no network routing, so the application never gets routing
-        // preprocessing.
-        let depth_input = self.app.on_preprocessing_complete(
-            rand_sharings,
-            zero_sharings,
-            rand_bits,
-            None,
-        ).await;
+        let depth_input = self.app.on_preprocessing_complete(rand_bits).await;
         self.handle_application_depth_input(depth_input).await;
     }
 }

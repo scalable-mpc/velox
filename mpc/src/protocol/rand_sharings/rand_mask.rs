@@ -163,6 +163,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 let masked_outputs = masked_outputs.unwrap();
                 let unmasked_outputs: Vec<FieldElement<F>> = masked_outputs.into_iter().zip(rand_recon_values.into_iter()).map(|(output,mask)| output-mask).collect();
                 
+                // Applications reading numeric outputs — an arithmetic circuit,
+                // say — want the field elements themselves; anonymous broadcast
+                // wants the text they encode. Log both rather than making the
+                // engine's output stage application-specific.
+                log::info!("Reconstructed {} output wires: {:?}", unmasked_outputs.len(), unmasked_outputs);
                 // The text layout is the field's own business — `decode_ascii` is
                 // the exact inverse of the `encode_ascii` that `mpc::input` used
                 // on the way in, whichever field that is.

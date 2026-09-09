@@ -1,4 +1,4 @@
-use application::{Application, Multiplication};
+use application::Application;
 use std::ops::Mul;
 
 use crypto::{hash::{Hash}};
@@ -26,44 +26,47 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         self.multiply_with_preprocessing(a_shares, b_shares, depth, rand_sharings, zero_sharings).await;
     }
 
-    /// Multiplication scheduled by the application. The batch carries the
-    /// preprocessing it consumes — the engine's pool is reserved for random bit
-    /// generation and verification — and its depth is shifted into the
-    /// application range before it reaches the multiplication protocol.
-    pub async fn multiply_application_batch(&mut self, mult: Multiplication<FieldElement<F>>){
-        let input = &mult.input;
-        if !input.x.1.is_empty() || !input.y.1.is_empty() || !input.x_ip.1.is_empty() || !input.y_ip.1.is_empty(){
-            log::warn!("Application supplied second-half sharings at depth {}, but Velox sharings are unpacked; ignoring them", input.depth);
+    /// Multiplication scheduled by the application, at circuit depth `depth`.
+    ///
+    /// The preprocessing comes from the slice reserved for that depth, not from
+    /// the front of the pool: `ApplicationPreprocessing` fixes each depth's
+    /// offsets up front from the application's declared gate profile, so depth
+    /// `d` masks with the same sharings at every party whatever order the depths
+    /// run in locally. Drawing in scheduling order would tie the binding to local
+    /// timing, which forecloses running depths out of order or fast-forwarding
+    /// past one whose reconstruction has already arrived — and two parties
+    /// masking a gate differently do not reconstruct.
+    pub async fn multiply_application_batch(&mut self, x: Vec<FieldElement<F>>, y: Vec<FieldElement<F>>, depth: usize){
+        if x.is_empty(){
+            log::warn!("Application scheduled an empty multiplication batch at depth {}; nothing to do", depth);
+            return;
         }
-
-        // Element-wise gates multiply one sharing by one sharing; inner-product
-        // gates multiply two vectors of sharings into a single output.
-        let mut a_shares: Vec<Vec<FieldElement<F>>> = input.x.0.iter().map(|x| vec![x.clone()]).collect();
-        let mut b_shares: Vec<Vec<FieldElement<F>>> = input.y.0.iter().map(|y| vec![y.clone()]).collect();
-        a_shares.extend(input.x_ip.0.iter().cloned());
-        b_shares.extend(input.y_ip.0.iter().cloned());
-
-        if a_shares.is_empty(){
-            log::warn!("Application scheduled an empty multiplication batch at depth {}; nothing to do", input.depth);
+        if x.len() != y.len(){
+            log::error!("Application scheduled a multiplication batch at depth {} with {} left and {} right operands",
+                depth, x.len(), y.len());
             return;
         }
 
-        let depth = input.depth + APPLICATION_DEPTH_OFFSET;
-        let (rand_needed, zero_needed) = self.multiplication_preprocessing_requirement(a_shares.len());
-        if mult.random_sharings.len() < rand_needed || mult.random_zero_sharings.len() < zero_needed{
-            log::error!("Application supplied too little preprocessing for its {} gates at depth {}: need {} random and {} zero sharings, got {} and {}",
-                a_shares.len(), input.depth, rand_needed, zero_needed,
-                mult.random_sharings.len(), mult.random_zero_sharings.len());
-            return;
-        }
+        let (rand_sharings, zero_sharings) = match self.app_preprocessing.for_depth(depth, x.len()){
+            Ok(preprocessing) => preprocessing,
+            Err(err) => {
+                log::error!("Cannot run the application's multiplication at depth {}: {}", depth, err);
+                return;
+            }
+        };
 
-        self.multiply_with_preprocessing(
+        // One sharing per gate: Velox sharings are unpacked, so each gate is a
+        // one-element vector in the multiplication protocol's batched form.
+        let a_shares: Vec<Vec<FieldElement<F>>> = x.into_iter().map(|x| vec![x]).collect();
+        let b_shares: Vec<Vec<FieldElement<F>>> = y.into_iter().map(|y| vec![y]).collect();
+
+        Box::pin(self.multiply_with_preprocessing(
             a_shares,
             b_shares,
-            depth,
-            mult.random_sharings.clone(),
-            mult.random_zero_sharings.clone()
-        ).await;
+            depth + APPLICATION_DEPTH_OFFSET,
+            rand_sharings,
+            zero_sharings,
+        )).await;
     }
 
     /// Run a multiplication batch against preprocessing the caller supplies.

@@ -1,0 +1,15 @@
+# Inner product of two 2-element vectors using INNERP gate
+# Computes: (a_0 * b_0) + (a_1 * b_1)
+# Party 1 inputs: a_0, a_1 (wires 0, 1)
+# Party 2 inputs: b_0, b_1 (wires 2, 3)
+# Output: wire 4
+#
+# Compare with inner_product_2.arith which uses 2 MUL + 1 ADD gates
+
+1 5
+2
+2 2
+1
+4
+
+4 1 0 1 2 3 4 INNERP

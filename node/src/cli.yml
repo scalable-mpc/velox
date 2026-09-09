@@ -48,6 +48,11 @@ args:
     #     long: bfile
     #     help: The location of a file containing the list of all messages to be reliably broadcasted
     #     takes_value: true
+    - circuit:
+        short: x
+        long: circuit
+        help: "Path to a .arith arithmetic circuit to evaluate; without it the node runs anonymous broadcast"
+        takes_value: true
     - field:
         short: f
         long: field

@@ -1,3 +1,4 @@
+use anyhow::Result;
 use application::{Application, DepthInput};
 use fields::ProtocolField;
 use crate::{Context};
@@ -27,26 +28,35 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
     /// Act on what the application scheduled for the next circuit depth.
     ///
-    /// An empty `DepthInput<F>` means the application has nothing to run yet — it
+    /// [`DepthInput::Waiting`] means the application has nothing to run yet — it
     /// is waiting on preprocessing, on more input sharings, or on another
-    /// depth's results — so the engine simply stops and waits to be called again.
-    pub async fn handle_application_depth_input(&mut self, depth_input: DepthInput<F>){
-        if depth_input.network_routing.is_some(){
-            log::warn!("Application scheduled network routing, but Velox has no network routing module; ignoring the request");
-        }
-
-        let Some(mult) = depth_input.mult else {
-            return;
+    /// depth's results — so the engine stops and waits to be called again. An
+    /// `Err` means the application has given up, which is a different thing and
+    /// used to be indistinguishable from waiting: both arrived as an empty
+    /// `DepthInput` and the protocol hung with the reason buried in one party's
+    /// log.
+    pub async fn handle_application_depth_input(&mut self, depth_input: Result<DepthInput<F>>){
+        let depth_input = match depth_input{
+            Ok(depth_input) => depth_input,
+            Err(err) => {
+                log::error!("Application aborted the circuit: {:#}", err);
+                return;
+            }
         };
 
-        // A `Multiplication` carrying output sharings marks the last depth: the
-        // circuit is done and those sharings are its outputs.
-        if let Some(output) = mult.output{
-            self.handle_application_output(output.0).await;
-            return;
+        match depth_input{
+            DepthInput::Waiting => {}
+            DepthInput::Multiply { depth, x, y } => {
+                // The depth is the application's, not a counter kept here: it
+                // selects the reserved preprocessing slice, so it has to be the
+                // batch's position in the circuit rather than its position in
+                // whatever order this party happened to schedule things.
+                self.multiply_application_batch(x, y, depth).await;
+            }
+            DepthInput::Done(output_wires) => {
+                self.handle_application_output(output_wires).await;
+            }
         }
-
-        self.multiply_application_batch(mult).await;
     }
 
     /// The application's circuit has terminated. Record the output sharings and
@@ -69,9 +79,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         let application_depth = depth - APPLICATION_DEPTH_OFFSET;
         log::info!("Multiplication terminated at application depth {}, handing {} sharings back to the application",
             application_depth, shares.len());
-        // Velox sharings are unpacked, so the application's second-half
-        // representation is always empty.
-        let depth_input = self.app.on_multiplication_complete(application_depth, (shares, Vec::new())).await;
+        let depth_input = self.app.on_depth_complete(application_depth, shares).await;
         Box::pin(self.handle_application_depth_input(depth_input)).await;
     }
 }

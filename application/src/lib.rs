@@ -5,9 +5,21 @@
 //! protocol data-model types its hooks exchange (see [`types`]).
 //!
 //! To build an application, implement [`Application`] and return the
-//! appropriate [`types::DepthInput`] from each hook. The crate ships one
-//! concrete application, [`anonymous_broadcast::AnonymousBroadcast`], plus a
-//! no-op [`DefaultApplication`] for running the base protocol on its own.
+//! appropriate [`types::DepthInput`] from each hook. The crate ships two
+//! concrete applications — [`anonymous_broadcast::AnonymousBroadcast`], whose
+//! butterfly mixing network is compiled in, and
+//! [`bristol_circuit::BristolCircuit`], which evaluates an arithmetic circuit
+//! given as a `.arith` file (see [`circuit`] and `docs/CIRCUIT_FORMAT.md`) —
+//! plus a no-op [`DefaultApplication`] for running the base protocol on its own.
+//!
+//! # Division of labour
+//!
+//! The engine owns the protocol; the application owns the circuit. Concretely,
+//! the application says *what to multiply* and the engine decides *how*: it
+//! numbers the depths, draws the preprocessing each batch consumes, picks the
+//! multiplication protocol, and verifies the resulting tuples. An application
+//! that needed to know `2t+1` to portion its own preprocessing was doing the
+//! engine's job, and doing it once per application.
 
 use std::marker::PhantomData;
 
@@ -23,203 +35,129 @@ pub use types::*;
 pub mod anonymous_broadcast;
 pub use anonymous_broadcast::AnonymousBroadcast;
 
-#[derive(Default, Clone)]
-pub struct PreprocessingCounts{
-    pub simd_mult: usize,
-    pub depth: usize,
+pub mod circuit;
 
-    pub net_route: Option<NetworkRoutingPreprocessingCounts>,
-    pub nr_depth: usize,
+pub mod bristol_circuit;
+pub use bristol_circuit::BristolCircuit;
 
+/// How much preprocessing an application's circuit consumes.
+///
+/// Raw demand, in the application's own terms; the engine converts it into
+/// ACSS/Sh2t batch sizes in `init_rand_sh`, adding what verification and the
+/// common coin draw.
+#[derive(Default, Clone, Debug)]
+pub struct PreprocessingCounts {
+    /// Number of multiplication gates at each depth, depth 1 first.
+    ///
+    /// A profile rather than a total, because the engine reserves each depth a
+    /// *fixed slice* of the preprocessing pool, computed from this vector. Every
+    /// party derives the same table from the same circuit, so depth `d` binds to
+    /// the same random sharings everywhere however the depths happen to be
+    /// scheduled locally — out of order, or fast-forwarded past a depth whose
+    /// reconstruction already arrived. Handing out masks in the order batches
+    /// happen to be scheduled would make that binding depend on local timing,
+    /// and two parties masking a gate differently do not reconstruct.
+    ///
+    /// A depth may run *fewer* gates than it declares — it then uses a prefix of
+    /// its slice, which is still the same prefix everywhere — but never more.
+    pub gates_per_depth: Vec<usize>,
+    /// Number of random bit sharings the circuit consumes.
     pub rand_bits: usize,
-
-    pub output: usize
+    /// Number of output wires to be reconstructed, each of which needs a mask.
+    pub output: usize,
 }
 
-impl PreprocessingCounts{
-    pub fn new_w_nr(simd_mult: usize, depth: usize, rand_bits: usize, output: usize)-> Self{
-        PreprocessingCounts {
-            simd_mult,
-            depth,
-            net_route: None,
-            nr_depth: 0,
-            rand_bits,
-            output
-        }
-    }
-
-    pub fn new(simd_mult: usize, depth: usize, nr: NetworkRoutingPreprocessingCounts, rand_bits: usize, nr_depth: usize, output: usize) -> Self{
-        PreprocessingCounts {
-            simd_mult,
-            depth,
-            net_route: Some(nr),
-            rand_bits,
-            nr_depth,
-            output
-        }
-    }
-}
-
-// This needs to be in better detail.
-#[derive(Clone)]
-pub struct NetworkRoutingPreprocessingCounts{
-    // The pattern is as follows. random_ is the first part, followed by the degree, followed by
-    // first half values and second half values.
-    // degree-3t/2 to 2t transformation
-    pub random_2t_rand_zero: usize,
-    pub random_2t_zero_rand_dual: usize,
-
-    // select, reverse select, routing_l1, routing_l2, routing_l3
-    pub random_2t_rand_rand: usize,
-    // Reverse transformation to degree-3t/2 sharings
-    pub random_3t_2_rand_x: usize,
-    pub random_3t_2_rand_dual: usize,
-
-    // Two selects and degree-2t to degree-3t/2 transformation
-    pub random_3t_zero_zero: usize
-}
-
-impl NetworkRoutingPreprocessingCounts {
-    pub fn new(
-        random_2t_rand_zero: usize,
-        random_2t_zero_rand_dual: usize,
-        random_2t_rand_rand: usize,
-        random_3t_2_rand_x: usize,
-        random_3t_2_rand_dual: usize,
-        random_3t_zero_zero: usize,
-    ) -> Self {
+impl PreprocessingCounts {
+    pub fn new(gates_per_depth: Vec<usize>, rand_bits: usize, output: usize) -> Self {
         Self {
-            random_2t_rand_zero,
-            random_2t_zero_rand_dual,
-            random_2t_rand_rand,
-            random_3t_2_rand_x,
-            random_3t_2_rand_dual,
-            random_3t_zero_zero,
+            gates_per_depth,
+            rand_bits,
+            output,
         }
     }
-}
 
-impl Default for NetworkRoutingPreprocessingCounts {
-    fn default() -> Self {
-        Self::new(0, 0, 0, 0, 0, 0)
+    /// Total number of multiplication gates across every depth.
+    pub fn mult_gates(&self) -> usize {
+        self.gates_per_depth.iter().sum()
     }
-}
 
-/// Actual preprocessed sharings for the network-routing pipeline. Field names
-/// mirror `NetworkRoutingPreprocessingCounts`; `usize` counts there become
-/// `Vec<FieldElement<F>>` here, and the two dual buckets become a pair of vectors
-/// (`.0` = first-half encoding, `.1` = dual companion encoding).
-#[derive(Clone, Default)]
-pub struct NetworkRoutingPreprocessing<F: ProtocolField> {
-    pub random_2t_rand_zero: Vec<FieldElement<F>>,
-    pub random_2t_zero_rand_dual: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
+    /// Number of multiplication depths — protocol rounds, not gate depth.
+    /// Linear gates are evaluated locally and do not count.
+    pub fn depth(&self) -> usize {
+        self.gates_per_depth.len()
+    }
 
-    pub random_2t_rand_rand: Vec<FieldElement<F>>,
-
-    pub random_3t_2_rand_x: Vec<FieldElement<F>>,
-    pub random_3t_2_rand_dual: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
-
-    pub random_3t_zero_zero: Vec<FieldElement<F>>,
-}
-
-impl<F: ProtocolField> NetworkRoutingPreprocessing<F> {
-    pub fn new(
-        random_2t_rand_zero: Vec<FieldElement<F>>,
-        random_2t_zero_rand_dual: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
-        random_2t_rand_rand: Vec<FieldElement<F>>,
-        random_3t_2_rand_x: Vec<FieldElement<F>>,
-        random_3t_2_rand_dual: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
-        random_3t_zero_zero: Vec<FieldElement<F>>,
-    ) -> Self {
-        Self {
-            random_2t_rand_zero,
-            random_2t_zero_rand_dual,
-            random_2t_rand_rand,
-            random_3t_2_rand_x,
-            random_3t_2_rand_dual,
-            random_3t_zero_zero,
-        }
+    /// Number of gates depth `depth` declared, counting depths from 1.
+    pub fn gates_at_depth(&self, depth: usize) -> Option<usize> {
+        depth
+            .checked_sub(1)
+            .and_then(|index| self.gates_per_depth.get(index))
+            .copied()
     }
 }
 
 /// Application-level interface for the MPC protocol.
 ///
 /// The base MPC `Context<A>` drives the event loop and protocol phases
-/// (preprocessing, multiplication, verification, routing). At phase
-/// boundaries it calls into the application via these hooks.
+/// (preprocessing, multiplication, verification, output reconstruction). At
+/// phase boundaries it calls into the application via these hooks, and acts on
+/// the [`DepthInput`] each one returns.
 ///
-/// Each application (anonymous broadcast, decision trees, etc.)
-/// implements this trait to define application-specific behavior.
+/// Each application (anonymous broadcast, arithmetic circuits, decision trees,
+/// …) implements this trait to define application-specific behavior.
 ///
 /// # Extending
-/// Add new hook methods with default implementations so existing
-/// applications continue to compile without changes.
+/// Add new hook methods with default implementations so existing applications
+/// continue to compile without changes. Do not add a hook the engine does not
+/// call: three such hooks accumulated here before, and every application had to
+/// implement them to satisfy the trait even though none could ever fire.
 #[async_trait]
 pub trait Application<F: ProtocolField>: Send + 'static {
-    /// Specifies how much preprocessing the circuit needs.
-    /// The first value is the number of multiplication gates the protocol has (SIMD gates + Network Routing gates) and the second parameter is the number of random bits needed by the circuit.
-    /// TODO: The application should return the number of bits and gates crudely and the MPC implementation should account for the packing factor.
-    fn preprocessing_count(&mut self)-> PreprocessingCounts;
+    /// How much preprocessing the circuit needs.
+    ///
+    /// Takes `&self` and must be pure, and must return the same answer at every
+    /// party: the engine reads it once, at the start of preprocessing, and lays
+    /// out the per-depth preprocessing slices from it. Two parties disagreeing
+    /// on `gates_per_depth` would bind different random sharings to the same
+    /// gate.
+    fn preprocessing_count(&self) -> PreprocessingCounts;
 
-    /// Return the inputs this party wants to secret-share into the MPC.
+    /// The secrets this party contributes to the circuit's input wires, in wire
+    /// order.
     ///
-    /// The outer `Vec` is one entry per sharing (one polynomial per batch);
-    /// each inner `Vec` holds the secrets packed at the first-half evaluation
-    /// points of that polynomial.
-    ///
-    /// Parties that are not acting as dealers for any input should return an
-    /// empty `Vec`. The default implementation does exactly that, so
-    /// applications without input sharing need not override it.
-    async fn inputs(&mut self) -> Vec<Vec<FieldElement<F>>>;
+    /// Parties that deal no inputs return an empty `Vec`; the default
+    /// implementation does exactly that, so applications without input sharing
+    /// need not override it.
+    async fn inputs(&mut self) -> Vec<FieldElement<F>> {
+        Vec::new()
+    }
 
-    /// On terminating a party's input ACSS, this function is invoked to inform the application that there are shares available for use.
-    async fn input_sharing_termination(&mut self, party: usize, shares: Vec<FieldElement<F>>) -> DepthInput<F>;
-    /// Called after preprocessing completes (random sharings generated).
-    ///
-    /// Returns `Some(MultInput)` to kick off the first multiplication depth,
-    /// or `None` if no circuit evaluation is needed.
+    /// A party's input ACSS has terminated, so its `shares` are now available.
+    async fn input_sharing_termination(
+        &mut self,
+        party: usize,
+        shares: Vec<FieldElement<F>>,
+    ) -> Result<DepthInput<F>>;
+
+    /// Preprocessing is complete. `rand_bit_sharings` are the random bits the
+    /// application asked for; the multiplication masks stay with the engine,
+    /// which draws them per batch.
     async fn on_preprocessing_complete(
         &mut self,
-        rand_sharings_mult: Vec<FieldElement<F>>,
-        rand_sharings_3t: Vec<FieldElement<F>>,
         rand_bit_sharings: Vec<FieldElement<F>>,
-        network_routing_preprocessing: Option<NetworkRoutingPreprocessing<F>>
-    ) -> DepthInput<F>;
+    ) -> Result<DepthInput<F>>;
 
-    /// Called after all multiplications at a given depth complete.
-    ///
-    /// `depth` is the circuit depth that was just evaluated.
-    /// `results` contains the output sharings from that depth.
-    /// The results encode values in two different sets of possible locations.
-    ///
-    /// Returns `Some(MultInput)` for the next depth, or `None` when the
-    /// circuit is complete.
-    /// If it is the last depth, then it returns the set of output sharings for output reconstruction.
-    async fn on_multiplication_complete(
+    /// Every multiplication at `depth` has completed; `results` are the output
+    /// sharings, in the order the operands were given.
+    async fn on_depth_complete(
         &mut self,
         depth: usize,
-        results: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
-    ) -> DepthInput<F>;
-
-    async fn on_network_routing_complete(
-        &mut self,
-        depth: usize,
-        results: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
-    ) -> DepthInput<F>;
-
-    /// Called after multiplication verification succeeds.
-    async fn on_verification_complete(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    /// Called when the protocol terminates (success or failure).
-    async fn on_protocol_complete(&mut self) -> Result<()> {
-        Ok(())
-    }
+        results: Vec<FieldElement<F>>,
+    ) -> Result<DepthInput<F>>;
 }
 
 /// Default no-op application for running the base MPC protocol
-/// without application-specific logic (e.g., benchmarking preprocessing).
+/// without application-specific logic (e.g. benchmarking preprocessing).
 pub struct DefaultApplication<F: ProtocolField>(PhantomData<F>);
 
 impl<F: ProtocolField> Default for DefaultApplication<F> {
@@ -236,78 +174,49 @@ impl<F: ProtocolField> DefaultApplication<F> {
 
 #[async_trait]
 impl<F: ProtocolField> Application<F> for DefaultApplication<F> {
-
-    fn preprocessing_count(&mut self)-> PreprocessingCounts{
-        let counts = PreprocessingCounts::new_w_nr(10000,10, 10000, 100);
+    fn preprocessing_count(&self) -> PreprocessingCounts {
+        let counts = PreprocessingCounts::new(vec![1000; 10], 10000, 100);
         log::info!(
-            "DefaultApplication::preprocessing_count -> simd_mult={}, rand_bits={}, output={};",
-            counts.simd_mult,
+            "DefaultApplication::preprocessing_count -> mult_gates={}, depth={}, rand_bits={}, output={}",
+            counts.mult_gates(),
+            counts.depth(),
             counts.rand_bits,
             counts.output
         );
         counts
     }
 
-    async fn input_sharing_termination(&mut self, _party: usize, _shares: Vec<FieldElement<F>>)-> DepthInput<F>{
-        return DepthInput::empty();
+    async fn inputs(&mut self) -> Vec<FieldElement<F>> {
+        (0..1000)
+            .map(|_| FieldElement::<F>::from(random::<u64>()))
+            .collect()
     }
 
-    async fn inputs(&mut self)-> Vec<Vec<FieldElement<F>>>{
-
-        let k = 1000;
-        (0..k)
-            .map(|_| {
-                (0..1)
-                    .map(|_| FieldElement::<F>::from(random::<u64>()))
-                    .collect()
-            })
-            .collect()
+    async fn input_sharing_termination(
+        &mut self,
+        _party: usize,
+        _shares: Vec<FieldElement<F>>,
+    ) -> Result<DepthInput<F>> {
+        Ok(DepthInput::Waiting)
     }
 
     async fn on_preprocessing_complete(
         &mut self,
-        rand_sharings_mult: Vec<FieldElement<F>>,
-        rand_sharings_3t: Vec<FieldElement<F>>,
         rand_bit_sharings: Vec<FieldElement<F>>,
-        network_routing_preprocessing: Option<NetworkRoutingPreprocessing<F>>,
-    ) -> DepthInput<F> {
-        log::info!("DefaultApplication: preprocessing complete with {} {} {} counts",
-            rand_sharings_mult.len(),
-            rand_sharings_3t.len(),
+    ) -> Result<DepthInput<F>> {
+        log::info!(
+            "DefaultApplication: preprocessing complete with {} random bits",
             rand_bit_sharings.len()
         );
-        match network_routing_preprocessing.as_ref() {
-            Some(nr) => log::info!(
-                "DefaultApplication: network routing sharings received -> \
-                 random_2t_rand_zero={}, random_2t_zero_rand_dual=({}, {}), random_2t_rand_rand={}, \
-                 random_3t_2_rand_x={}, random_3t_2_rand_dual=({}, {}), random_3t_zero_zero={}",
-                nr.random_2t_rand_zero.len(),
-                nr.random_2t_zero_rand_dual.0.len(), nr.random_2t_zero_rand_dual.1.len(),
-                nr.random_2t_rand_rand.len(),
-                nr.random_3t_2_rand_x.len(),
-                nr.random_3t_2_rand_dual.0.len(), nr.random_3t_2_rand_dual.1.len(),
-                nr.random_3t_zero_zero.len(),
-            ),
-            None => log::info!("DefaultApplication: no network routing preprocessing received"),
-        }
-        DepthInput::empty()
+        Ok(DepthInput::Waiting)
     }
 
-    async fn on_multiplication_complete(
+    async fn on_depth_complete(
         &mut self,
         depth: usize,
-        _results: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
-    ) -> DepthInput<F> {
+        _results: Vec<FieldElement<F>>,
+    ) -> Result<DepthInput<F>> {
         log::info!("DefaultApplication: depth {} complete", depth);
-        DepthInput::empty()
-    }
-
-    async fn on_network_routing_complete(
-        &mut self,
-        depth: usize,
-        _results: (Vec<FieldElement<F>>, Vec<FieldElement<F>>)
-    )-> DepthInput<F>{
-        log::info!("DefaultApplication: network routing {} complete", depth);
-        DepthInput::empty()
+        Ok(DepthInput::Waiting)
     }
 }

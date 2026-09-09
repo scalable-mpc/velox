@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use application::Application;
+use application::{Application, PreprocessingCounts};
 use config::Node;
 
 use fnv::FnvHashMap;
@@ -24,7 +24,7 @@ use types::{Replica, WrapperMsg, SyncMsg, SyncState};
 
 use crypto::{aes_hash::HashState, hash::Hash};
 
-use crate::{handlers::{handler::Handler, sync_handler::SyncHandler}, msg::ProtMsg, protocol::{online_phase::mix_circuit_state::MixCircuitState, rand_sharings::rand_mask::RandomOutputMaskStruct, MultState, RandSharings, VerificationState}};
+use crate::{handlers::{handler::Handler, sync_handler::SyncHandler}, msg::ProtMsg, protocol::{online_phase::mix_circuit_state::MixCircuitState, rand_sharings::{rand_mask::RandomOutputMaskStruct, ApplicationPreprocessing}, MultState, RandSharings, VerificationState}};
 use lambdaworks_math::field::element::FieldElement;
 
 /// Number of coins sent to the MVBA/ACS instances to facilitate consensus.
@@ -122,6 +122,16 @@ pub struct Context<F: ProtocolField, A: Application<F>> {
     pub zero_batch_size: usize,
 
     pub output_mask_size: usize,
+
+    /// The application's preprocessing demand, read once in `init_rand_sh` and
+    /// reused for the rest of the run. Reading it again later risks sizing the
+    /// preprocessing against one answer and spending it against another.
+    pub preprocessing_counts: PreprocessingCounts,
+
+    /// The application's share of the multiplication preprocessing, reserved a
+    /// fixed slice per circuit depth so that a depth binds to the same random
+    /// sharings at every party however it is scheduled locally.
+    pub app_preprocessing: ApplicationPreprocessing<F>,
 
     pub preprocessing_mult_depth: usize,
     pub delinearization_depth: usize, 
@@ -310,6 +320,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
                 mult_batch_size: 0,
                 zero_batch_size: 0,
                 output_mask_size: 0,
+                preprocessing_counts: PreprocessingCounts::default(),
+                app_preprocessing: ApplicationPreprocessing::new(),
 
                 preprocessing_mult_depth: 0,
                 delinearization_depth: 5000, 

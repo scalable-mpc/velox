@@ -1,3 +1,6 @@
+mod app_preprocessing;
+pub use app_preprocessing::ApplicationPreprocessing;
+
 mod rand_sh;
 
 pub mod rand_state;

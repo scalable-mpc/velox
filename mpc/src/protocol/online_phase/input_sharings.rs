@@ -11,29 +11,19 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     /// Ask the application what this party contributes to the circuit's input
     /// wires and deal it through ACSS-Ab.
     ///
-    /// The application returns one inner `Vec` per sharing. Velox sharings are
-    /// unpacked — one secret each — so anything beyond the first secret of a
-    /// sharing has nowhere to go and is dropped with a warning.
+    /// One secret per sharing: Velox sharings are unpacked. The application used
+    /// to return a `Vec<Vec<_>>` and have everything past the first secret of
+    /// each inner vector dropped with a warning — packing residue, like the
+    /// first-half/second-half pairs that used to run through the rest of this
+    /// interface.
     pub async fn initialize_input_sharing(&mut self){
-        let input_sharings = self.app.inputs().await;
-        if input_sharings.is_empty(){
+        let input_secrets = self.app.inputs().await;
+        if input_secrets.is_empty(){
             log::info!("No input sharings to propose on party {}; skipping input ACSS", self.myid);
             return;
         }
 
-        let mut inputs_ser: Vec<LargeFieldSer> = Vec::with_capacity(input_sharings.len());
-        for secrets in input_sharings.into_iter(){
-            if secrets.len() != 1{
-                log::warn!(
-                    "Application proposed a sharing packing {} secrets, but Velox sharings hold one; keeping the first",
-                    secrets.len()
-                );
-            }
-            match secrets.into_iter().next(){
-                Some(secret) => inputs_ser.push(secret.ser_be()),
-                None => log::warn!("Application proposed an empty input sharing; skipping it"),
-            }
-        }
+        let inputs_ser: Vec<LargeFieldSer> = input_secrets.iter().map(|secret| secret.ser_be()).collect();
 
         log::info!("Initiating input sharing in preprocessing phase for {} inputs", inputs_ser.len());
         let status = self.acss_ab_send.send((self.input_acss_id_offset, inputs_ser)).await;
