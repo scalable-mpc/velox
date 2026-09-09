@@ -5,9 +5,12 @@
 //! protocol data-model types its hooks exchange (see [`types`]).
 //!
 //! To build an application, implement [`Application`] and return the
-//! appropriate [`types::DepthInput`] from each hook. The crate ships one
-//! concrete application, [`anonymous_broadcast::AnonymousBroadcast`], plus a
-//! no-op [`DefaultApplication`] for running the base protocol on its own.
+//! appropriate [`types::DepthInput`] from each hook. The crate ships two
+//! concrete applications — [`anonymous_broadcast::AnonymousBroadcast`], whose
+//! butterfly mixing network is compiled in, and
+//! [`bristol_circuit::BristolCircuit`], which evaluates an arithmetic circuit
+//! given as a `.arith` file (see [`circuit`] and `docs/CIRCUIT_FORMAT.md`) —
+//! plus a no-op [`DefaultApplication`] for running the base protocol on its own.
 //!
 //! # Division of labour
 //!
@@ -33,6 +36,9 @@ pub mod anonymous_broadcast;
 pub use anonymous_broadcast::AnonymousBroadcast;
 
 pub mod circuit;
+
+pub mod bristol_circuit;
+pub use bristol_circuit::BristolCircuit;
 
 /// How much preprocessing an application's circuit consumes.
 ///

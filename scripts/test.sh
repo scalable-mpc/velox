@@ -15,6 +15,11 @@ FIELD=${FIELD:="m61"}
 # When omitted, the node falls back to mpc::NUM_RAND_BATCHES.
 RAND_BATCHES_ARG=${4:+--rand-batches $4}
 
+# Optional: a .arith arithmetic circuit for the nodes to evaluate. When set the
+# nodes run the BristolCircuit application instead of anonymous broadcast; the
+# syncer takes no circuit, it only sequences the run.
+CIRCUIT_ARG=${CIRCUIT:+--circuit $CIRCUIT}
+
 # Run the syncer now
 ./target/$TYPE/node \
     --config $TESTDIR/nodes-0.json \
@@ -37,6 +42,7 @@ for((i=0;i<$1;i++)); do
     --comp $3 \
     --field $FIELD \
     $RAND_BATCHES_ARG \
+    $CIRCUIT_ARG \
     --byzantine false > logs/party-$i-n_$1_$2_$3.log &
 done
 
