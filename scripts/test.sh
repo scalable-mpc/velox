@@ -1,6 +1,6 @@
 # A script to test quickly
 
-killall {node} &> /dev/null
+killall anonymous_broadcast bristol_circuit &> /dev/null
 rm -rf /tmp/*.db &> /dev/null
 vals=(27000 27100 27200 27300)
 
@@ -15,34 +15,40 @@ FIELD=${FIELD:="m61"}
 # When omitted, the node falls back to mpc::NUM_RAND_BATCHES.
 RAND_BATCHES_ARG=${4:+--rand-batches $4}
 
-# Optional: a .arith arithmetic circuit for the nodes to evaluate. When set the
-# nodes run the BristolCircuit application instead of anonymous broadcast; the
-# syncer takes no circuit, it only sequences the run.
-CIRCUIT_ARG=${CIRCUIT:+--circuit $CIRCUIT}
+# Applications own their binaries. Set CIRCUIT to a .arith file to run the
+# bristol_circuit application; otherwise anonymous_broadcast runs, and `--messages`
+# is its anonymity set size. The syncer role is served by whichever binary is in
+# play, via `--protocol sync`.
+if [ -n "${CIRCUIT:-}" ]; then
+    APP_BIN=bristol_circuit
+    APP_ARG="--circuit $CIRCUIT"
+else
+    APP_BIN=anonymous_broadcast
+    APP_ARG="--messages $2"
+fi
 
 # Run the syncer now
-./target/$TYPE/node \
+./target/$TYPE/$APP_BIN \
     --config $TESTDIR/nodes-0.json \
     --ip ip_file \
     --protocol sync \
     --syncer $TESTDIR/syncer \
-    --messages $2 \
+    $APP_ARG \
     --comp $3 \
     --field $FIELD \
     $RAND_BATCHES_ARG \
     --byzantine false > logs/syncer_n_$1_$2_$3.log &
 
 for((i=0;i<$1;i++)); do
-./target/$TYPE/node \
+./target/$TYPE/$APP_BIN \
     --config $TESTDIR/nodes-$i.json \
     --ip ip_file \
     --protocol mpc \
     --syncer $TESTDIR/syncer \
-    --messages $2 \
+    $APP_ARG \
     --comp $3 \
     --field $FIELD \
     $RAND_BATCHES_ARG \
-    $CIRCUIT_ARG \
     --byzantine false > logs/party-$i-n_$1_$2_$3.log &
 done
 

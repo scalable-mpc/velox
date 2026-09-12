@@ -1,0 +1,34 @@
+[package]
+name = "velox"
+version = "0.1.0"
+edition = "2021"
+
+# The engine, as one dependency.
+#
+# An application owns its `main.rs` and imports this crate. It re-exports
+# everything an application needs -- the `Application` trait, the field
+# abstraction, `FieldElement`, the `Node` config type -- so an application takes
+# a single dependency instead of five spread across two repositories. It also
+# owns the parts of a node binary that are not application-specific: argument
+# parsing, config loading, the syncer, the tokio runtime and signal handling.
+
+[dependencies]
+application = { package = "application", path = "../application" }
+fields = { package = "fields", path = "../fields" }
+mpc = { package = "mpc", path = "../mpc" }
+
+config = { package = "config", git = "https://github.com/scalable-mpc/secure-distributed-computing-protocols.git" }
+types = { package = "types", git = "https://github.com/scalable-mpc/secure-distributed-computing-protocols.git" }
+util = { package = "util", git = "https://github.com/scalable-mpc/secure-distributed-computing-protocols.git" }
+network = { package = "network", git = "https://github.com/akhilsb/libnet-rs.git" }
+
+anyhow = "1"
+clap = "2"
+tokio = { version = "1.0", features = ["full"] }
+signal-hook = "0"
+simple_logger = "*"
+log = "*"
+fnv = "1.0.3"
+bincode = "1"
+
+lambdaworks-math = "=0.13.0"

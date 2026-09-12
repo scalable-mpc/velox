@@ -28,10 +28,10 @@ use std::collections::{HashMap, VecDeque};
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use fields::ProtocolField;
-use lambdaworks_math::field::element::FieldElement;
+use velox::ProtocolField;
+use velox::FieldElement;
 
-use application::{Application, DepthInput, PreprocessingCounts};
+use velox::{Application, DepthInput, PreprocessingCounts};
 
 pub struct AnonymousBroadcast<F: ProtocolField> {
     pub num_nodes: usize,
@@ -416,11 +416,11 @@ impl<F: ProtocolField> Application<F> for AnonymousBroadcast<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fields::FieldSer;
+    use velox::fields::FieldSer;
 
     /// The tests exercise the application at one concrete field; the generic
     /// parameter is what the engine binds, not something the tests vary.
-    type F = fields::DefaultField;
+    type F = velox::fields::DefaultField;
 
     fn app(k: usize) -> AnonymousBroadcast<F> {
         AnonymousBroadcast::new(9, 2, 0, k)
