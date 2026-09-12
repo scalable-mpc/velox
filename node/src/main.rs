@@ -95,8 +95,8 @@ fn spawn_with_app<F: fields::ProtocolField, A: application::Application<F>>(
 fn build_anonymous_broadcast<F: fields::ProtocolField>(
     config: &Node,
     mixing_batch_size: usize,
-) -> application::AnonymousBroadcast<F> {
-    let app = application::AnonymousBroadcast::<F>::new(
+) -> anonymous_broadcast::AnonymousBroadcast<F> {
+    let app = anonymous_broadcast::AnonymousBroadcast::<F>::new(
         config.num_nodes,
         config.num_faults,
         config.id,
@@ -128,8 +128,8 @@ fn build_anonymous_broadcast<F: fields::ProtocolField>(
 fn build_bristol_circuit<F: fields::ProtocolField>(
     config: &Node,
     circuit_path: &str,
-) -> Result<application::BristolCircuit<F>> {
-    let app = application::BristolCircuit::<F>::from_file(config.num_nodes, config.id, circuit_path)?;
+) -> Result<bristol_circuit::BristolCircuit<F>> {
+    let app = bristol_circuit::BristolCircuit::<F>::from_file(config.num_nodes, config.id, circuit_path)?;
 
     let num_inputs = app.inputs_per_party();
     if num_inputs == 0 {

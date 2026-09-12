@@ -4,6 +4,18 @@
 members = [
     "fields",
     "application",
+    "circuit",
+    "apps/anonymous_broadcast",
+    "apps/bristol_circuit",
     "node",
     "config"
 ]
+
+# Line tables keep file and line in panics and backtraces, which is what this
+# codebase's diagnostics actually rely on; what is lost is variable inspection
+# under a debugger. Raise to `debug = 1` or `true` if you need to step through.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"

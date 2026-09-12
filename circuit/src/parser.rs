@@ -26,8 +26,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::circuit::{Circuit, Depth, Gate, GateType};
-use crate::types::Wire;
+use crate::{Circuit, Depth, Gate, GateType, Wire};
 
 /// Number of header lines before the gate definitions.
 const HEADER_LINES: usize = 5;

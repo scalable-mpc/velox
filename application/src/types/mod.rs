@@ -4,9 +4,6 @@
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
-/// A wire in the arithmetic circuit, identified by its index.
-pub type Wire = usize;
-
 /// What an application tells the engine to do next.
 ///
 /// Every hook returns one of these. The three variants are the three things an

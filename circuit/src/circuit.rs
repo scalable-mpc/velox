@@ -15,8 +15,8 @@
 //! Input wires stay implicit: the format numbers them `0..total_inputs`,
 //! dealer by dealer in the order of [`Circuit::inputs_per_party`].
 
-use crate::circuit::Depth;
-use crate::types::Wire;
+use crate::Depth;
+use crate::Wire;
 
 /// An arithmetic circuit levelised by multiplicative depth.
 #[derive(Debug, Clone)]
@@ -146,7 +146,7 @@ impl Circuit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::circuit::Gate;
+    use crate::Gate;
 
     /// `w2 = w0 · w1` with both inputs dealt by different parties.
     fn single_mul() -> Circuit {

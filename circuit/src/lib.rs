@@ -6,9 +6,17 @@
 //! `cc_types/src/utils.rs` from the `scalable_mpc` repository; each module's
 //! header records what the port changed and why.
 //!
-//! Nothing here talks to the MPC engine. The application that evaluates a
-//! parsed circuit against the [`Application`](crate::Application) trait is
-//! [`BristolCircuit`](crate::BristolCircuit).
+//! Nothing here talks to the MPC engine: a circuit is a format and an IR, not a
+//! protocol. The application that evaluates one on the engine is
+//! `bristol_circuit::BristolCircuit`, in its own crate.
+
+/// A wire in the arithmetic circuit, identified by its index.
+///
+/// Lives here rather than beside the engine's data model. The `Application`
+/// trait never mentions wires -- it exchanges flat vectors of sharings -- so the
+/// only users of this alias are this crate and the application that evaluates
+/// circuits.
+pub type Wire = usize;
 
 mod gate;
 pub use gate::{Gate, GateType};

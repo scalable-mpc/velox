@@ -12,7 +12,7 @@
 //!    file order, which the parser has checked is topological, so evaluating
 //!    them front to back never reads a wire that is not yet written.
 
-use crate::circuit::Gate;
+use crate::Gate;
 
 /// The gates at one multiplicative level.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

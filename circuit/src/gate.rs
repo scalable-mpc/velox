@@ -10,7 +10,7 @@
 //! struct's two fixed input wires to a list, and doing the engine-side work the
 //! doc describes.
 
-use crate::types::Wire;
+use crate::Wire;
 
 /// Type of arithmetic gate operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
