@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 # The `application` crate defines the interface any application implements to run
-# on top of this MPC engine. It intentionally carries only the trait and the
-# minimal protocol data-model types the trait exposes — no concrete application.
+# on top of this MPC engine. It carries only the trait and the minimal protocol
+# data-model types the trait exposes -- no concrete application, and nothing
+# about any circuit format. Concrete applications live under `apps/`.
 
 [dependencies]
 fields = { package = "fields", path = "../fields" }

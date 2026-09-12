@@ -10,6 +10,8 @@ bincode = "1"
 config = { package = "config", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 mpc = {package = "mpc", path = "../mpc"}
 application = {package = "application", path = "../application"}
+anonymous_broadcast = {package = "anonymous_broadcast", path = "../apps/anonymous_broadcast"}
+bristol_circuit = {package = "bristol_circuit", path = "../apps/bristol_circuit"}
 
 fields = { package = "fields", path="../fields"}
 util = { package = "util", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}

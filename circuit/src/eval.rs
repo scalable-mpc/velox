@@ -9,7 +9,7 @@ use anyhow::{bail, Result};
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
-use crate::circuit::{Circuit, GateType};
+use crate::{Circuit, GateType};
 
 /// Evaluates `circuit` on `inputs`, which are the input wires in wire order —
 /// party by party, in the order of [`Circuit::inputs_per_party`].

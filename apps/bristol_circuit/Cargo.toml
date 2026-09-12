@@ -1,0 +1,22 @@
+[package]
+name = "bristol_circuit"
+version = "0.1.0"
+edition = "2021"
+
+# Evaluates a Bristol-style `.arith` arithmetic circuit on the Velox engine.
+# The circuit format itself is the `circuit` crate; this is only the mapping from
+# a parsed circuit onto the `Application` hooks.
+
+[dependencies]
+application = { package = "application", path = "../../application" }
+circuit = { package = "circuit", path = "../../circuit" }
+fields = { package = "fields", path = "../../fields" }
+
+anyhow = "1"
+async-trait = "0"
+log = "*"
+
+lambdaworks-math = "=0.13.0"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt"] }

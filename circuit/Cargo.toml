@@ -1,0 +1,20 @@
+[package]
+name = "circuit"
+version = "0.1.0"
+edition = "2021"
+
+# The Bristol-style `.arith` arithmetic circuit format: its typed model, its
+# parser, and a cleartext evaluator. See `docs/CIRCUIT_FORMAT.md`.
+#
+# Deliberately knows nothing about the MPC engine or the `Application` trait. A
+# circuit is a format and an IR, so tooling that never runs a protocol -- a
+# compiler emitting `.arith`, a linter, a gate-count report -- can depend on this
+# without pulling in the engine.
+
+[dependencies]
+fields = { package = "fields", path = "../fields" }
+
+anyhow = "1"
+
+# Field element type the cleartext evaluator computes over.
+lambdaworks-math = "=0.13.0"

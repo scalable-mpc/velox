@@ -40,9 +40,8 @@ use async_trait::async_trait;
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
-use crate::circuit::{parse_circuit_file, Circuit};
-use crate::types::Wire;
-use crate::{Application, DepthInput, PreprocessingCounts};
+use circuit::{parse_circuit_file, Circuit, Wire};
+use application::{Application, DepthInput, PreprocessingCounts};
 
 pub struct BristolCircuit<F: ProtocolField> {
     pub num_nodes: usize,
@@ -470,7 +469,7 @@ impl<F: ProtocolField> Application<F> for BristolCircuit<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::circuit::{evaluate_circuit, parse_circuit, parse_circuit_file};
+    use circuit::{evaluate_circuit, parse_circuit, parse_circuit_file};
 
     /// The tests exercise the application at one concrete field; the generic
     /// parameter is what the engine binds, not something the tests vary.
@@ -480,7 +479,7 @@ mod tests {
 
     fn fixture(name: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../testdata/circuits")
+            .join("../../testdata/circuits")
             .join(name)
     }
 

@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
-use crate::{Application, DepthInput, PreprocessingCounts};
+use application::{Application, DepthInput, PreprocessingCounts};
 
 pub struct AnonymousBroadcast<F: ProtocolField> {
     pub num_nodes: usize,
