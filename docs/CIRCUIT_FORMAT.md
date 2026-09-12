@@ -16,15 +16,21 @@ This document is the Velox port of `circuits/CIRCUIT_FORMAT.md` from the
 against it still parse; what changed is on the implementation side, and is
 recorded under [What this port changed](#what-this-port-changed).
 
-Run a circuit with:
+Run a circuit with the `bristol_circuit` binary — each application owns its own:
 
 ```
-./target/release/node --config testdata/10/nodes-$i.json --protocol mpc \
-    --circuit testdata/circuits/polynomial_eval.arith ...
+./target/release/bristol_circuit --config testdata/10/nodes-$i.json \
+    --circuit testdata/circuits/polynomial_eval.arith --comp 2 ...
 ```
 
-Without `--circuit` the node runs the anonymous broadcast mixing network, as
-before.
+or through the test harness, which picks the binary from `CIRCUIT`:
+
+```
+CIRCUIT=testdata/circuits/polynomial_eval.arith bash scripts/test.sh 10 16 2
+```
+
+Anonymous broadcast is the separate `anonymous_broadcast` binary, whose
+`--messages` flag is its anonymity set size.
 
 ## File Structure
 

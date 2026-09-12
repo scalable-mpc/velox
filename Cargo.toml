@@ -7,7 +7,7 @@ members = [
     "circuit",
     "apps/anonymous_broadcast",
     "apps/bristol_circuit",
-    "node",
+    "velox",
     "config"
 ]
 

@@ -23,7 +23,7 @@ class CommandMaker:
     @staticmethod
     def generate_key(filename):
         assert isinstance(filename, str)
-        return f'./node generate_keys --filename {filename}'
+        return f'./anonymous_broadcast generate_keys --filename {filename}'
 
     @staticmethod
     def generate_config_files(bport, client_bport, client_run_port, num_nodes):
@@ -47,7 +47,7 @@ class CommandMaker:
         # Merge: Akhil's `--rand-batches` plumbing (paces preprocessing into
         # smaller ACSS instances; fixes the n=49 / k=32768 OOM) + the higher
         # ulimit (65k FDs needed for the cross-region TCP fan-out at large n).
-        return (f'ulimit -n 65000; ./node --config {key} --ip ip_file '
+        return (f'ulimit -n 65000; ./anonymous_broadcast --config {key} --ip ip_file '
                 f'--protocol mpc --syncer syncer --messages {mixing_batch_size} '
                 f'--comp {compression_factor} --rand-batches {num_batches} --byzantine false')
 
@@ -55,7 +55,7 @@ class CommandMaker:
     def run_syncer(key, mixing_batch_size, compression_factor, num_batches, debug=False):
         assert isinstance(key, str)
         assert isinstance(debug, bool)
-        return (f'ulimit -n 65000; ./node --config {key} --ip ip_file '
+        return (f'ulimit -n 65000; ./anonymous_broadcast --config {key} --ip ip_file '
                 f'--protocol sync --syncer syncer --messages {mixing_batch_size} '
                 f'--comp {compression_factor} --rand-batches {num_batches} --byzantine false')
 
@@ -90,12 +90,16 @@ class CommandMaker:
     @staticmethod
     def alias_binaries(origin):
         assert isinstance(origin, str)
-        # Velox produces `node` and `config` only — there is no `benchmark_client`
-        # binary, so we drop the dangling symlink it used to create. `&&` instead
-        # of `;` and `test -x` make a failed cargo build fail the deploy step
-        # loudly instead of producing dangling symlinks that only surface later
-        # as `./node: No such file or directory` on the remote run.
-        node, config = join(origin, 'node'), join(origin, 'config')
-        return (f'rm -f node config && '
+        # Applications own their binaries now: the single `node` binary was split
+        # into one per application, and this harness runs anonymous broadcast. The
+        # binary also serves as the syncer via `--protocol sync`, so there is
+        # still only one executable to ship alongside `config`.
+        #
+        # `&&` instead of `;` and `test -x` make a failed cargo build fail the
+        # deploy step loudly, instead of leaving dangling symlinks that surface
+        # later as `No such file or directory` on the remote run.
+        node = join(origin, 'anonymous_broadcast')
+        config = join(origin, 'config')
+        return (f'rm -f anonymous_broadcast config && '
                 f'ln -sf {node} . && ln -sf {config} . && '
-                f'test -x ./node && test -x ./config')
+                f'test -x ./anonymous_broadcast && test -x ./config')

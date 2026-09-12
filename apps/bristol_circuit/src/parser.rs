@@ -26,7 +26,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::{Circuit, Depth, Gate, GateType, Wire};
+use circuit::{Circuit, Gate, GateType, Wire};
 
 /// Number of header lines before the gate definitions.
 const HEADER_LINES: usize = 5;
@@ -177,51 +177,7 @@ pub fn parse_circuit(text: &str, source: &str) -> Result<Circuit> {
         }
     }
 
-    Ok(levelise(gates, num_wires, inputs_per_party, output_wires))
-}
-
-/// Groups gates into multiplicative levels.
-///
-/// A wire's level is the longest chain of multiplication gates on any path
-/// reaching it: input wires sit at level 0, a multiplication gate is one past
-/// the highest of its inputs, and a linear gate inherits the highest of its
-/// inputs without advancing. So a level's multiplication gates all become
-/// evaluable at the same round, and its linear gates are the ones that round
-/// unblocks. One pass suffices because the gates are in topological order,
-/// which the caller has just checked.
-fn levelise(
-    gates: Vec<Gate>,
-    num_wires: usize,
-    inputs_per_party: Vec<usize>,
-    output_wires: Vec<Wire>,
-) -> Circuit {
-    let mut wire_levels = vec![0usize; num_wires];
-    let mut levelled: Vec<Gate> = Vec::with_capacity(gates.len());
-    let mut multiplicative_depth = 0;
-
-    for mut gate in gates.into_iter() {
-        let inputs_level = wire_levels[gate.input_left].max(wire_levels[gate.input_right]);
-        gate.level = if gate.is_multiplicative() {
-            inputs_level + 1
-        } else {
-            inputs_level
-        };
-        wire_levels[gate.output] = gate.level;
-        if gate.is_multiplicative() {
-            multiplicative_depth = multiplicative_depth.max(gate.level);
-        }
-        levelled.push(gate);
-    }
-
-    // Levels 0..=multiplicative_depth. A linear gate can never exceed the last
-    // multiplicative level: it inherits an input's level, and every wire level
-    // is set by the gate writing it.
-    let mut levels = vec![Depth::empty(); multiplicative_depth + 1];
-    for gate in levelled.into_iter() {
-        levels[gate.level].add_gate(gate);
-    }
-
-    Circuit::new(levels, num_wires, inputs_per_party, output_wires)
+    Ok(Circuit::from_gates(gates, num_wires, inputs_per_party, output_wires))
 }
 
 /// Parses a whitespace-separated line of non-negative integers.
@@ -253,7 +209,7 @@ fn parse_single_usize(source: &str, line: (usize, &str), what: &str) -> Result<u
 /// Parses one gate definition:
 /// `<num_inputs> <num_outputs> <input_wires...> <output_wire> <TYPE>`.
 ///
-/// The level is left at 0; [`levelise`] assigns the real one.
+/// The level is left at 0; [`Circuit::from_gates`] assigns the real one.
 fn parse_gate_line(source: &str, (line_no, line): (usize, &str), num_wires: usize) -> Result<Gate> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 5 {
@@ -360,7 +316,7 @@ mod tests {
     /// crate directory as the working directory.
     fn fixture(name: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../testdata/circuits")
+            .join("../../testdata/circuits")
             .join(name)
     }
 

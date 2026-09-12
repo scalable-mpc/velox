@@ -4,18 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 # Anonymous broadcast over a butterfly mixing network, as an application on the
-# Velox engine. Depends on the `Application` interface and on the field
-# abstraction -- never on the engine internals.
+# Velox engine. Owns its binary; `velox` is the single dependency that carries
+# the `Application` trait, the field abstraction and the node runner.
 
 [dependencies]
-application = { package = "application", path = "../../application" }
-fields = { package = "fields", path = "../../fields" }
+velox = { package = "velox", path = "../../velox" }
 
 anyhow = "1"
 async-trait = "0"
 log = "*"
-
-lambdaworks-math = "=0.13.0"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["macros", "rt"] }
