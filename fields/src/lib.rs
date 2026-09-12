@@ -12,6 +12,8 @@ pub mod mersenne_61;
 /// so DZK proofs over it run at ~2^-244 while shares stay 8 bytes.
 pub use mersenne_61::Mersenne61Field;
 
+pub mod mersenne_31;
+
 pub mod prime_fields;
 pub use prime_fields::{BN254Field, Stark252Field};
 
