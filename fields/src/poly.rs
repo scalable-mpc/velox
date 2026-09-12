@@ -479,10 +479,18 @@ pub fn matrix_vector_multiply<F: ProtocolField>(
 /// Layout is identical to `async_mpc/fields/src/poly.rs::matrix_matrix_multiply_cpu` so the
 /// two projects' benchmarks are directly comparable.
 ///
-/// Dispatcher: with `--features gpu`, routes large enough inputs to the CUDA kernel
-/// (see `gpu_ffi::gpu_matrix_matrix_multiply`); otherwise (or for small inputs that
-/// would be dominated by PCIe upload overhead) calls `matrix_matrix_multiply_cpu`
-/// directly. The CPU path stays the canonical reference and is always callable.
+/// Dispatcher, in order of preference:
+///
+/// 1. GPU — with `--features gpu`, inputs large enough to amortise the PCIe
+///    upload go to the CUDA kernel (`gpu_ffi::gpu_matrix_matrix_multiply`).
+/// 2. SIMD — fields with an AVX2 lane type (`crate::simd`) run the vector
+///    kernel; it drops to scalar by itself if the CPU lacks AVX2 or
+///    `VELOX_SIMD=off` is set.
+/// 3. Scalar — `matrix_matrix_multiply_cpu`, the canonical reference, always
+///    callable and the only path on targets other than x86_64.
+///
+/// Each step is a `ProtocolField` hook that returns `None` for fields without
+/// that kernel, so adding a field never changes this function.
 pub fn matrix_matrix_multiply<F: ProtocolField>(
     matrix: &[Vec<FieldElement<F>>],
     vectors: &[Vec<FieldElement<F>>],
@@ -496,10 +504,13 @@ pub fn matrix_matrix_multiply<F: ProtocolField>(
     let work = rows.saturating_mul(cols).saturating_mul(vectors.len());
     if work >= GPU_THRESHOLD {
         // `None` for every field without a compiled kernel, and for the one
-        // that has it when the `gpu` feature is off — both fall through to CPU.
+        // that has it when the `gpu` feature is off — both fall through.
         if let Some(out) = F::try_gpu_gemm(matrix, vectors, row_major) {
             return out;
         }
+    }
+    if let Some(out) = F::try_simd_gemm(matrix, vectors, row_major) {
+        return out;
     }
     matrix_matrix_multiply_cpu(matrix, vectors, row_major)
 }

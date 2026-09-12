@@ -19,6 +19,7 @@
 //! | byte serialization | every wire message (the wire format stays `Vec<u8>`) |
 //! | ASCII input encoding/decoding | `mpc::input` reading party inputs, and the output layer printing them back |
 //! | GPU GEMM dispatch | the optional CUDA path, which is layout-specific |
+//! | SIMD GEMM dispatch | the AVX2 path, which needs a lane type per field |
 //! | lifting to a wider field | DZK proofs and verification coins, whose soundness is bounded by field size |
 //!
 //! Serialization is exposed as trait methods rather than a
@@ -148,9 +149,26 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
     /// Optional GPU-accelerated batched GEMM.
     ///
     /// Returning `None` (the default) means "no GPU path for this field" and
-    /// callers fall back to the Rayon CPU kernel. Only fields whose in-memory
-    /// layout matches a compiled CUDA kernel can override this.
+    /// callers fall back to the next kernel in line. Only fields whose
+    /// in-memory layout matches a compiled CUDA kernel can override this.
     fn try_gpu_gemm(
+        _matrix: &[Vec<FieldElement<Self>>],
+        _vectors: &[Vec<FieldElement<Self>>],
+        _row_major: bool,
+    ) -> Option<Vec<Vec<FieldElement<Self>>>> {
+        None
+    }
+
+    /// Optional SIMD (AVX2) batched GEMM.
+    ///
+    /// Returning `None` (the default) means "no vector kernel for this field"
+    /// and `matrix_matrix_multiply` runs the scalar loop. A field overrides
+    /// this by handing the call to `crate::simd::gemm`, which itself falls
+    /// back to the scalar path when the CPU lacks AVX2 or `VELOX_SIMD=off`
+    /// is set — so an override never makes the field *require* SIMD. The
+    /// overrides are `#[cfg(target_arch = "x86_64")]`; on other targets the
+    /// default applies.
+    fn try_simd_gemm(
         _matrix: &[Vec<FieldElement<Self>>],
         _vectors: &[Vec<FieldElement<Self>>],
         _row_major: bool,

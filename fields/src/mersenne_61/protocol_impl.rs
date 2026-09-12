@@ -149,6 +149,17 @@ impl ProtocolField for Mersenne61Degree4ExtensionField {
             matrix, vectors, row_major,
         ))
     }
+
+    /// Lane-wise Fp4 kernel (`simd::m61_avx2::Fp4x4`); scalar when the CPU
+    /// has no AVX2 or `VELOX_SIMD=off`.
+    #[cfg(target_arch = "x86_64")]
+    fn try_simd_gemm(
+        matrix: &[Vec<FieldElement<Self>>],
+        vectors: &[Vec<FieldElement<Self>>],
+        row_major: bool,
+    ) -> Option<Vec<Vec<FieldElement<Self>>>> {
+        Some(crate::simd::gemm(matrix, vectors, row_major))
+    }
 }
 
 /// [`ProtocolField`] for the *base* Mersenne-61 prime field, `p = 2^61 - 1`.
@@ -237,6 +248,17 @@ impl ProtocolField for Mersenne61Field {
         let bytes = <Self as ProtocolField>::to_bytes_be(elem);
         let first_nonzero = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
         bytes[first_nonzero..].iter().map(|&b| b as char).collect()
+    }
+
+    /// Single-limb kernel (`simd::m61_avx2::M61x4`); scalar when the CPU
+    /// has no AVX2 or `VELOX_SIMD=off`.
+    #[cfg(target_arch = "x86_64")]
+    fn try_simd_gemm(
+        matrix: &[Vec<FieldElement<Self>>],
+        vectors: &[Vec<FieldElement<Self>>],
+        row_major: bool,
+    ) -> Option<Vec<Vec<FieldElement<Self>>>> {
+        Some(crate::simd::gemm(matrix, vectors, row_major))
     }
 }
 
