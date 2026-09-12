@@ -15,8 +15,7 @@
 //! Input wires stay implicit: the format numbers them `0..total_inputs`,
 //! dealer by dealer in the order of [`Circuit::inputs_per_party`].
 
-use crate::Depth;
-use crate::Wire;
+use crate::{Depth, Gate, Wire};
 
 /// An arithmetic circuit levelised by multiplicative depth.
 #[derive(Debug, Clone)]
@@ -51,6 +50,56 @@ impl Circuit {
             inputs_per_party,
             output_wires,
         }
+    }
+
+    /// Builds a circuit from gates in topological order, grouping them into
+    /// multiplicative levels.
+    ///
+    /// A wire's level is the longest chain of multiplication gates on any path
+    /// reaching it: input wires sit at level 0, a multiplication gate is one past
+    /// the highest of its inputs, and a linear gate inherits the highest of its
+    /// inputs without advancing. So a level's multiplication gates all become
+    /// evaluable at the same round, and its linear gates are the ones that round
+    /// unblocks. One pass suffices because the gates are in topological order,
+    /// which is the caller's to guarantee — `bristol_circuit`'s parser checks it
+    /// while reading the file.
+    ///
+    /// Levelisation lives here rather than with any one frontend: it is a
+    /// property of the circuit, not of the syntax a circuit was written in, so a
+    /// second frontend emitting these gates directly gets it for free.
+    pub fn from_gates(
+        gates: Vec<Gate>,
+        num_wires: usize,
+        inputs_per_party: Vec<usize>,
+        output_wires: Vec<Wire>,
+    ) -> Self {
+        let mut wire_levels = vec![0usize; num_wires];
+        let mut levelled: Vec<Gate> = Vec::with_capacity(gates.len());
+        let mut multiplicative_depth = 0;
+
+        for mut gate in gates.into_iter() {
+            let inputs_level = wire_levels[gate.input_left].max(wire_levels[gate.input_right]);
+            gate.level = if gate.is_multiplicative() {
+                inputs_level + 1
+            } else {
+                inputs_level
+            };
+            wire_levels[gate.output] = gate.level;
+            if gate.is_multiplicative() {
+                multiplicative_depth = multiplicative_depth.max(gate.level);
+            }
+            levelled.push(gate);
+        }
+
+        // Levels 0..=multiplicative_depth. A linear gate can never exceed the
+        // last multiplicative level: it inherits an input's level, and every wire
+        // level is set by the gate writing it.
+        let mut levels = vec![Depth::empty(); multiplicative_depth + 1];
+        for gate in levelled.into_iter() {
+            levels[gate.level].add_gate(gate);
+        }
+
+        Self::new(levels, num_wires, inputs_per_party, output_wires)
     }
 
     /// Creates an empty circuit.

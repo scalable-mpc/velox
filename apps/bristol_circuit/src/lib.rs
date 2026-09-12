@@ -40,7 +40,10 @@ use async_trait::async_trait;
 use velox::ProtocolField;
 use velox::FieldElement;
 
-use circuit::{parse_circuit_file, Circuit, Wire};
+pub mod parser;
+pub use parser::{parse_circuit, parse_circuit_file};
+
+use circuit::{Circuit, Wire};
 use velox::{Application, DepthInput, PreprocessingCounts};
 
 pub struct BristolCircuit<F: ProtocolField> {
@@ -469,7 +472,8 @@ impl<F: ProtocolField> Application<F> for BristolCircuit<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use circuit::{evaluate_circuit, parse_circuit, parse_circuit_file};
+    use circuit::evaluate_circuit;
+    use crate::{parse_circuit, parse_circuit_file};
 
     /// The tests exercise the application at one concrete field; the generic
     /// parameter is what the engine binds, not something the tests vary.
