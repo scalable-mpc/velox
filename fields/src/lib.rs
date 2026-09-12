@@ -26,6 +26,9 @@ pub use mul::*;
 pub mod par;
 pub use par::rayon_async;
 
+#[cfg(target_arch = "x86_64")]
+pub mod simd;
+
 #[cfg(feature = "gpu")]
 pub mod gpu_ffi;
 #[cfg(feature = "gpu")]
