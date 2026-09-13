@@ -51,17 +51,93 @@ impl Limb for u32 {
     fn random() -> Self { rand::random() }
 }
 
-/// A pack of `LANES` field elements, one limb-vector per base coefficient.
+/// A pack of `LANES` field elements held in vector registers, one register
+/// per base-field coefficient ("limb").
+///
+/// This is the only thing the GEMM kernel (`row_block`) knows about a
+/// field. It never sees a `FieldElement`; it moves limbs between memory and
+/// registers with [`load`](Elem::load) / [`splat`](Elem::splat) /
+/// [`store`](Elem::store), and accumulates with
+/// [`mul_add`](Elem::mul_add). Everything field-specific — how many limbs an
+/// element has, how wide they are, how many fit in a register, and what
+/// multiplication means — is carried by the implementing type, so one
+/// monomorphised kernel serves every field.
+///
+/// Implementors: [`M61x4`], [`Fp4x4`] (Mersenne-61), [`M31x8`], [`Fp4x8`],
+/// [`Fp8x8`] (Mersenne-31).
+///
+/// # Safety
+///
+/// Every method is `unsafe` because the implementations are AVX2 intrinsics
+/// (`#[inline(always)]`, without their own `#[target_feature]`), which are
+/// only valid to execute inside a function compiled with AVX2 enabled and on
+/// a CPU that has it. The kernel provides the former; `super::gemm_with`
+/// checks the latter before calling the kernel.
 pub trait Elem: Copy {
+    /// The machine word one base-field coefficient occupies in memory:
+    /// `u64` for Mersenne-61, `u32` for Mersenne-31.
+    ///
+    /// Fixes the element type of the packed buffers (`vt`, `mat`, `out`)
+    /// the kernel reads and writes, and — together with the 256-bit register
+    /// width — fixes [`LANES`](Elem::LANES).
     type Limb: Limb;
+
+    /// Number of limbs per field element: the extension degree over the
+    /// prime field. `1` for a base field, `4` for the Fp4 towers, `8` for
+    /// Fp8.
+    ///
+    /// Determines the stride of the element-major `mat` buffer
+    /// (`mat[l * LIMBS + j]`), the number of limb planes in `vt` and `out`,
+    /// and the number of registers one pack occupies — an `Fp4x4` is four
+    /// `__m256i`, an `Fp8x8` eight.
     const LIMBS: usize;
+
+    /// Number of field elements one pack holds, i.e. how many consecutive
+    /// output columns of the GEMM a single `mul_add` advances:
+    /// `256 / (8 · size_of::<Limb>())` — 4 for `u64` limbs, 8 for `u32`.
+    ///
+    /// The kernel steps `i` by this amount, and the packed K dimension `kp`
+    /// is rounded up to a multiple of it so the last load never runs past
+    /// the buffer.
     const LANES: usize;
+
+    /// A pack whose every lane is the field's zero — the accumulator's
+    /// starting value for each `(row, lane group)`.
     unsafe fn zero() -> Self;
-    /// Broadcast one element whose `LIMBS` limbs start at `limbs`.
+
+    /// Broadcast one element to all lanes: its `LIMBS` limbs are read
+    /// consecutively from `limbs`, and limb `j` fills every lane of
+    /// register `j`.
+    ///
+    /// Used for the left operand: `matrix[r][l]` is the same for all output
+    /// columns in the group, so one broadcast (`vpbroadcastq`/`d` per limb)
+    /// pairs it with `LANES` different right-operand elements.
     unsafe fn splat(limbs: *const Self::Limb) -> Self;
-    /// Limb `j` of the `LANES` elements is at `ptr.add(j * stride)`.
+
+    /// Load `LANES` *different* elements, one per lane, from the limb-major
+    /// `vt` buffer: limb `j` of all `LANES` elements is the contiguous run at
+    /// `ptr.add(j * stride)`.
+    ///
+    /// `stride` is the distance between limb planes (`C · kp` in the
+    /// kernel). Consecutive elements sharing a limb plane is what makes each
+    /// limb a single unaligned 256-bit load.
     unsafe fn load(ptr: *const Self::Limb, stride: usize) -> Self;
+
+    /// Inverse of [`load`](Elem::load): write limb `j` of the `LANES` lanes
+    /// to `ptr.add(j * stride)`. Called once per `(row, lane group)` after
+    /// the `l` loop, into the row's limb-major output buffer (`stride = kp`).
+    ///
+    /// Values are left weakly reduced; canonicalisation happens when the
+    /// output is unpacked through `SimdField::from_limbs`.
     unsafe fn store(self, ptr: *mut Self::Limb, stride: usize);
+
+    /// `self + a · b`, lane-wise in the field — the kernel's entire inner
+    /// loop body. `a` is the broadcast matrix element, `b` the loaded
+    /// vector elements, `self` the running accumulator.
+    ///
+    /// For an extension field this is the full tower multiply (9 base
+    /// multiplies for Fp4, 27 for Fp8) followed by a lane-wise add; the
+    /// result is weakly reduced and can be fed straight back in as `self`.
     unsafe fn mul_add(self, a: Self, b: Self) -> Self;
 }
 
@@ -363,9 +439,47 @@ fn transpose_any<T: Clone + Send + Sync>(m: Vec<Vec<T>>) -> Vec<Vec<T>> {
         .collect()
 }
 
-/// The AVX2 GEMM proper. Callers must have checked `is_x86_feature_detected!("avx2")`
-/// (see [`super::gemm_with`]); the kernel is `#[target_feature(enable = "avx2")]`
+/// The AVX2 GEMM proper: `out[r][i] = Σ_l matrix[r][l] · vectors[i][l]`.
+///
+/// Callers must have checked `is_x86_feature_detected!("avx2")` (see
+/// [`super::gemm_with`]); the kernel is `#[target_feature(enable = "avx2")]`
 /// and executes AVX2 instructions unconditionally.
+///
+/// # Shape
+///
+/// `matrix` is R×C (R = `matrix.len()`, C = `matrix[0].len()`); `vectors` is
+/// K vectors of length C. The result is the R×K product `M · Vᵀ` if
+/// `row_major`, else its K×R transpose — the same contract as
+/// `poly::matrix_matrix_multiply_cpu`.
+///
+/// # Phases
+///
+/// The function is a pipeline of four phases. The arithmetic happens only in
+/// phase 3; phases 1, 2 and 4 exist to get data into and out of the layout
+/// the vector kernel needs. Their cost is linear in the number of *elements*
+/// (K·C, R·C, R·K) against the R·C·K multiply-adds of phase 3, which is why
+/// the overhead only shows at small R and C (see the module docs).
+///
+/// 1. **Pack `vectors` → `vt`** (limb-major, transposed, padded).
+/// 2. **Pack `matrix` → `mat`** (flat limbs per row).
+/// 3. **Kernel** — one task per (row, block of output columns), each running
+///    [`row_block`] over its columns.
+/// 4. **Unpack `out` → `FieldElement`s**, canonicalising, then transpose if
+///    the caller wants K×R.
+///
+/// # Why this layout
+///
+/// The kernel vectorises across `i`: one register holds the same limb of
+/// `LANES` consecutive output columns `i..i+LANES`, and the inner loop runs
+/// over `l`. For each `(l, i)` it needs limb `j` of `vectors[i..i+LANES][l]`
+/// as one contiguous 256-bit load — which the caller's `Vec<Vec<FieldElement>>`
+/// (element-major, one heap allocation per vector) cannot provide. So the
+/// right operand is repacked once into `vt`, and `matrix[r][l]`, which is the
+/// same for all columns in a group, is simply broadcast.
+///
+/// `FieldElement<F>` is not `#[repr(transparent)]`, so no slice is ever
+/// reinterpreted as limbs: packing goes through `SimdField::to_limbs` and
+/// unpacking through `SimdField::from_limbs`.
 pub(super) fn gemm_avx2<F>(
     matrix: &[Vec<FieldElement<F>>],
     vectors: &[Vec<FieldElement<F>>],
@@ -376,6 +490,12 @@ where
     FieldElement<F>: Clone + Send + Sync,
 {
     debug_assert!(is_x86_feature_detected!("avx2"));
+
+    // ---- Shape checks --------------------------------------------------
+    //
+    // Same behaviour as the scalar path: an empty operand gives an empty
+    // result, and a length mismatch logs and gives an empty result rather
+    // than panicking mid-protocol.
     let rows = matrix.len();
     let k = vectors.len();
     if rows == 0 || k == 0 {
@@ -390,20 +510,49 @@ where
         );
         return Vec::new();
     }
+
+    // ---- Field geometry ------------------------------------------------
+    //
+    // `L`     the limb word (u64 for M61, u32 for M31)
+    // `limbs` limbs per element (1 base, 4 Fp4, 8 Fp8)
+    // `lanes` elements per register (4 for u64 limbs, 8 for u32)
+    // `kp`    K rounded up to a multiple of `lanes`. The kernel always loads
+    //         and stores whole registers, so the last group of columns must
+    //         exist in the buffers even when K is not a multiple of `lanes`;
+    //         the padding columns are zero and are dropped in phase 4.
     type L<F> = <<F as SimdField>::Lanes as Elem>::Limb;
     let limbs = <F::Lanes as Elem>::LIMBS;
     let lanes = <F::Lanes as Elem>::LANES;
     let kp = (k + lanes - 1) / lanes * lanes;
 
-    // Pack the right operand limb-major and transposed: vt[(j*c + l)*kp + i].
-    // Parallel over blocks of `i`; each task scatters its columns into every
-    // (limb, l) plane, extracting each element's limbs exactly once.
+    // ---- Phase 1: pack the right operand ------------------------------
+    //
+    // Target layout (limb-major, then column of the matrix, then output
+    // column):
+    //
+    //     vt[(j·C + l)·kp + i]  =  limb j of vectors[i][l]
+    //
+    // So for fixed (j, l) the K values run contiguously over i, and the
+    // kernel's load of limb j for columns i..i+lanes is one vector load at
+    // `vt + (j·C + l)·kp + i`. The plane for limb j starts at `j·C·kp`,
+    // which is the `stride` the kernel passes to `Elem::load`.
+    //
+    // Work is split over blocks of BLOCK consecutive `i` (the same blocking
+    // as phase 3, so the buffer is written by many cores when K is large).
+    // Each task reads every element in its columns exactly once
+    // (`to_limbs`) and scatters the limbs into the `limbs·C` planes. Tasks
+    // write disjoint `i` ranges of every plane, so they cannot overlap;
+    // Rust cannot see that through a shared `&mut [L]`, hence the raw
+    // pointer handed to each task via `SyncPtr`.
     let mut vt = vec![L::<F>::default(); limbs * c * kp];
     {
         let ptr = SyncPtr(vt.as_mut_ptr());
         let len = vt.len();
         vectors.par_chunks(BLOCK).enumerate().for_each(|(b, chunk)| {
             let p = ptr;
+            // SAFETY: every task writes only indices with `i` in its own
+            // block; blocks are disjoint, and `vt` outlives the parallel
+            // iterator.
             let vt = unsafe { std::slice::from_raw_parts_mut(p.0, len) };
             let mut tmp = [L::<F>::default(); LIMBS_MAX];
             for (di, vec) in chunk.iter().enumerate() {
@@ -418,7 +567,14 @@ where
         });
     }
 
-    // Pack the left operand AoS: mat[r][l*limbs + j].
+    // ---- Phase 2: pack the left operand -------------------------------
+    //
+    // One flat limb array per row, element-major:
+    //
+    //     mat[r][l·limbs + j]  =  limb j of matrix[r][l]
+    //
+    // The kernel broadcasts `matrix[r][l]` to all lanes (`Elem::splat`), so
+    // it only needs the element's limbs to be adjacent; no transposition.
     let mat: Vec<Vec<L<F>>> = matrix
         .par_iter()
         .map(|row| {
@@ -430,23 +586,43 @@ where
         })
         .collect();
 
-    // Compute: one task per (row, block of BLOCK output columns).
+    // ---- Phase 3: the kernel -------------------------------------------
+    //
+    // Output buffer per row, limb-major like `vt` but with a single `l`:
+    //
+    //     out[r][j·kp + i]  =  limb j of the (still weakly reduced) result
+    //
+    // Parallelism is two-level. The outer `par_iter` hands each row to a
+    // task; that is enough when R is large (64 rows in the bench). When R
+    // is small and K large (6 rows × 65536 polynomials in interpolation)
+    // the row is further split into blocks of BLOCK columns so all cores
+    // still take part. Both levels call the same `row_block`, which does,
+    // for each group of `lanes` columns in its range: zero an accumulator,
+    // `mul_add` it with (broadcast `mat[r][l]`, loaded `vt[·][l][i..]`)
+    // for l in 0..C, store it.
     let out: Vec<Vec<L<F>>> = mat
         .par_iter()
         .map(|m_row| {
             let mut row_out = vec![L::<F>::default(); limbs * kp];
             let nblocks = (kp + BLOCK - 1) / BLOCK;
             if nblocks <= 1 {
+                // Short row: one task, the whole column range.
+                // SAFETY: AVX2 was checked by the caller (and asserted above).
                 unsafe { row_block::<F::Lanes>(m_row, &vt, c, kp, &mut row_out, 0, kp) };
             } else {
-                // Blocks write disjoint column ranges of every limb plane;
-                // hand each task the whole row buffer via a raw pointer.
+                // Long row: blocks write disjoint column ranges of every limb
+                // plane, so they can run concurrently on the same buffer.
+                // As in phase 1 the disjointness is invisible to the borrow
+                // checker, so each task gets the buffer via a raw pointer.
                 let ptr = SyncPtr(row_out.as_mut_ptr());
                 let len = row_out.len();
                 (0..nblocks).into_par_iter().for_each(|b| {
                     let i0 = b * BLOCK;
                     let i1 = (i0 + BLOCK).min(kp);
                     let p = ptr;
+                    // SAFETY: this task touches only columns i0..i1 of each
+                    // limb plane; blocks are disjoint; `row_out` outlives the
+                    // iterator; AVX2 was checked by the caller.
                     let slice = unsafe { std::slice::from_raw_parts_mut(p.0, len) };
                     unsafe { row_block::<F::Lanes>(m_row, &vt, c, kp, slice, i0, i1) };
                 });
@@ -455,7 +631,13 @@ where
         })
         .collect();
 
-    // Unpack.
+    // ---- Phase 4: unpack -----------------------------------------------
+    //
+    // Gather the `limbs` limbs of output (r, i) from the limb planes and
+    // rebuild a `FieldElement`. `from_limbs` canonicalises — the kernel
+    // leaves limbs weakly reduced (e.g. the raw value `p` for zero), and
+    // this is the one place that is fixed. Padding columns `k..kp` are
+    // skipped.
     let results: Vec<Vec<FieldElement<F>>> = out
         .par_iter()
         .map(|row_out| {
@@ -471,9 +653,16 @@ where
         })
         .collect();
 
+    // `results` is R×K. The `!row_major` callers (interpolation, which wants
+    // one row per polynomial) get the K×R transpose, as the scalar path does.
     if row_major { results } else { transpose_any(results) }
 }
 
+/// A raw pointer that Rayon may move across threads.
+///
+/// Used in phases 1 and 3 to let several tasks write disjoint regions of one
+/// buffer. Soundness rests on the callers' disjointness arguments (see the
+/// `SAFETY` comments there); the type itself asserts nothing.
 #[derive(Clone, Copy)]
 struct SyncPtr<T>(*mut T);
 unsafe impl<T> Send for SyncPtr<T> {}
