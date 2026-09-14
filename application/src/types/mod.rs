@@ -37,7 +37,13 @@ pub enum DepthInput<F: ProtocolField> {
         y: Vec<FieldElement<F>>,
     },
     /// The circuit is finished; these are its output sharings, in the order
-    /// they should be reconstructed.
+    /// they should be reconstructed. The engine verifies every multiplication
+    /// the circuit ran, reconstructs these wires publicly, and reports the
+    /// result through [`Application::on_output`](crate::Application::on_output).
+    ///
+    /// An empty vector is legitimate: the circuit's product is then whatever
+    /// sharings the application kept for itself, and `on_output` is the
+    /// signal that they are verified.
     Done(Vec<FieldElement<F>>),
 }
 

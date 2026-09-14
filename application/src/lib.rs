@@ -144,6 +144,23 @@ pub trait Application<F: ProtocolField>: Send + 'static {
         depth: usize,
         results: Vec<FieldElement<F>>,
     ) -> Result<DepthInput<F>>;
+
+    /// The protocol has terminated: every multiplication the circuit ran has
+    /// been verified, and the parties have agreed that at least `t+1` of them
+    /// reconstructed the output. `outputs` are the reconstructed values of the
+    /// wires the application returned in [`DepthInput::Done`], in that order —
+    /// empty if it returned none.
+    ///
+    /// This is the only point at which an application knows its run was
+    /// verified *and* agreed on, so it is where an application whose real
+    /// product is the sharings it still holds — a key-generation setup, say —
+    /// persists them. Nothing the application holds should be treated as
+    /// final before this fires. The default does nothing, so applications
+    /// that only care about the reconstructed output need not override it.
+    async fn on_output(&mut self, outputs: Vec<FieldElement<F>>) -> Result<()> {
+        let _ = outputs;
+        Ok(())
+    }
 }
 
 /// Default no-op application for running the base MPC protocol

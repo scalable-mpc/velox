@@ -15,7 +15,11 @@ pub struct RandomOutputMaskStruct<F: ProtocolField>{
     
     pub acs_recon_set: HashSet<Replica>,
     pub recon_shares: HashMap<Replica, HashMap<Replica, Vec<FieldElement<F>>>>,
-    pub public_reconstruction_outputs: HashMap<Replica, Vec<FieldElement<F>>>
+    pub public_reconstruction_outputs: HashMap<Replica, Vec<FieldElement<F>>>,
+
+    // Once-guard for the protocol's final step. The
+    // application's `on_output` must fire exactly once. 
+    pub output_delivered: bool,
 }
 
 impl<F: ProtocolField> RandomOutputMaskStruct<F>{
@@ -27,7 +31,8 @@ impl<F: ProtocolField> RandomOutputMaskStruct<F>{
             acs_recon_set: HashSet::default(),
 
             recon_shares: HashMap::default(),
-            public_reconstruction_outputs: HashMap::default()
+            public_reconstruction_outputs: HashMap::default(),
+            output_delivered: false,
         }
     }
 }
@@ -126,7 +131,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     }
     
     pub async fn verify_protocol_termination(&mut self){
-        if self.output_mask_state.acs_recon_set.len() == 0{
+        if self.output_mask_state.acs_recon_set.len() == 0 && !self.output_mask_state.output_delivered{
+            self.output_mask_state.output_delivered = true;
             // Reconstruct random sharings as given by the VDM matrix
             let x_values: Vec<FieldElement<F>> = (2..self.num_faults+3).into_iter().map(|x| FieldElement::<F>::from(x as u64)).collect();
             let vandermonde_matrix = Self::vandermonde_matrix(x_values, 2*self.num_faults+1);
@@ -175,6 +181,13 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 println!("Broadcast output: {:?}", outputs);
                 let ser_msg = bincode::serialize(&outputs).unwrap();
                 self.terminate("output".to_string(), ser_msg).await;
+
+                // The run is verified and agreed on: tell the application. Its
+                // error is logged rather than propagated — the protocol itself
+                // has already finished, so there is nothing to abort.
+                if let Err(err) = self.app.on_output(unmasked_outputs).await{
+                    log::error!("Application failed to act on the protocol output: {:#}", err);
+                }
             }
         }
     }
