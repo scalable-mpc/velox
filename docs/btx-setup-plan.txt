@@ -1,0 +1,118 @@
+BTX / BTE setup generation on Velox — what the setup is
+========================================================
+
+Tracks GitHub issue #9. Branch `issue-9-btx-setup`.
+
+Sources (local copies in ../../papers/, relative to this repo):
+  - BTX-2026-754.pdf  Agarwal, Das, Gilkalaye, Rindal, Shoup.
+                      "BTX: Simple and Efficient Batch Threshold Encryption."
+                      Fig. 3, KeyGen(1^Bmax, N, t). Assumes a trusted KeyGen.
+  - BTE-2026-760.pdf  Policharla. "A Simple Batched Threshold Encryption Scheme."
+                      Fig. 1, Setup (identical to BTX's KeyGen); Sec. 5 / Fig. 2,
+                      the indexed variant. States that the setup is interactive
+                      and "involves O(B) secure multiplications".
+
+Both schemes run over BLS12-381; [.]_1, [.]_2, [.]_T denote G1, G2, GT and
+p is the scalar field. B is the (maximum) batch size, N the number of
+servers, t the corruption threshold.
+
+
+1. The common core: Shamir shares of the powers of one secret tau
+------------------------------------------------------------------
+
+KeyGen samples a single secret tau <- F_p and outputs
+
+  sk_j  = { sigma_j^i }_{i in [B]}         server j's Shamir share (threshold t)
+                                            of tau^i, for EVERY power i = 1..B.
+                                            Private to server j.
+  ek    = [tau^{B+1}]_T                     public encryption key.
+  dk    = { h_i = [tau^i]_2 }_{i in [2B] \ {B+1}}
+                                            public decryption key: the
+                                            *punctured* powers of tau. The
+                                            middle power B+1 is deliberately
+                                            absent from G2.
+  v_j^i = [sigma_j^i]_2, i in [B], j in [N]  public commitments to every share
+                                            (BTX calls them pk_j^i); a combiner
+                                            checks server j's partial decryption
+                                            with one multi-pairing.
+
+Why a DKG is not enough: a DKG gives shares of tau. Every server needs
+shares of tau^2, tau^3, ..., tau^B — the same tau raised to each power, each
+power on its own fresh degree-t polynomial — and nobody may ever learn tau.
+Products of a shared secret are exactly what needs MPC.
+
+
+2. What the MPC computes
+------------------------
+
+  (a) Sample [tau]: a uniformly random degree-t sharing nobody knows.
+  (b) Powers [tau^2], ..., [tau^{2B}]. Shares up to B become sk_j; power
+      B+1 goes only into GT; powers B+2..2B are needed only in G2 (h_i).
+      Prefix-product circuit by doubling, tau^{2^k + m} = tau^{2^k} * tau^m:
+      2B-1 multiplications, ceil(log2(2B)) depths.
+      B = 512: 1023 gates, 10 depths.
+  (c) Nothing is reconstructed in the clear. The outputs are the shares.
+
+Everything else is local exponentiation of shares followed by Lagrange
+interpolation in the exponent, outside the field MPC:
+
+  - server j publishes [sigma_j^i]_2 for i in [2B] \ {B+1}; any t+1 of them
+    interpolate to h_i, and the i <= B ones are the v_j^i for free;
+  - server j publishes e([sigma_j^{B+1}]_1, [1]_2) = [sigma_j^{B+1}]_T;
+    interpolation in GT gives ek. This is the one power that must be
+    released in GT only: a G2 (or G1) copy of tau^{B+1} lets anyone compute
+    the pad ct_1 o h_{B+1};
+  - the Shamir evaluation domain Omega = {Omega_1..Omega_N} used by the MPC
+    must be the one the combiner uses (Velox uses 1..n or roots of unity
+    depending on use_fft).
+
+
+3. The indexed variant (Policharla Sec. 5, Fig. 2) — more MPC
+--------------------------------------------------------------
+
+Trades censorship resistance delta <= B for O(delta) secret keys. Setup
+samples tau, sk, beta <- F_p^* and needs
+
+  sk_j  = { sigma_j^d }_{d in D}, D = {-(delta-1), ..., delta-1}
+          shares of sk * tau^d. Negative powers of tau => needs [tau^{-1}].
+  A_i   = [sk^{-1} * tau^i]_1, i in [B]
+          needs [sk^{-1}], then B products, then exponent-side interpolation.
+  h_i, ek as before (powers up to 2B).
+  v_beta = [beta]_2,  v_j^d = [beta * sigma_j^d]_2
+          server j computes sigma_j^d * [beta]_2 locally, so beta only needs
+          to be shared / published in G2, never multiplied in MPC.
+
+Extra MPC work: two secure inversions (tau^{-1}, sk^{-1}; each one
+multiplication + one public reveal + local scaling), powers of tau^{-1} up
+to delta-1, and two product depths (sk * tau^d: 2*delta-1 gates;
+sk^{-1} * tau^i: B gates). Depth ~ log2(2B) + 4.
+
+
+4. What this means for Velox (facts, not a design yet)
+------------------------------------------------------
+
+  - Random sharings for the application. [tau] (and [sk], [beta], inversion
+    masks) must come from the engine's random-sharing pool; today
+    applications get only random *bits* via on_preprocessing_complete.
+  - Reveal is needed only for the indexed variant's inversions. The base
+    BTE/BTX setup is pure multiplications. Reveal is the primitive the
+    issue #5 plan adds (docs/comparison-plan.md on issue-5-comparison-ops),
+    still todo there.
+  - Private outputs. DepthInput::Done publicly reconstructs; here the outputs
+    are secret key shares. The application needs to keep its last-depth
+    shares and be told when tuple verification passed, which no hook
+    currently does.
+  - Field. BLS12-381 Fr: lambdaworks 0.13 has
+    bls12_381::default_types::FrField = MontgomeryBackendPrimeField<FrConfig, 4>,
+    covered by the blanket ProtocolField impl in fields/src/prime_fields.rs;
+    needs only a type alias. G1/G2/pairing live in the same module for the
+    exponent-side combiner.
+
+
+5. Open decisions
+-----------------
+
+  - Is the indexed variant (and hence Reveal) in scope for this issue?
+  - Does the exponent-side combiner (G2 / GT interpolation, share
+    commitments) belong in this repo, or is it left to the schemes' own
+    codebases, with this application only emitting per-party share files?
