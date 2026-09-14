@@ -68,7 +68,8 @@ pub use syncer::Syncer;
 pub use application::{Application, DepthInput, PreprocessingCounts};
 
 /// The field abstraction the whole protocol is generic over, and the concrete
-/// fields `--field` selects between.
+/// fields `--field` selects between (`fields::{DefaultField, Mersenne61Field,
+/// Stark252Field, BN254Field, BLS12381ScalarField}`).
 pub use fields::{self, ProtocolField};
 
 /// The element type the trait's data model is built on.
