@@ -64,7 +64,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use velox::{Application, DepthInput, FieldElement, PreprocessingCounts, ProtocolField};
+use velox::{Application, DepthInput, FieldElement, PreprocessingCounts, ProtocolField, RandomWireShares};
 
 pub mod commitments;
 pub use commitments::Commitments;
@@ -265,8 +265,8 @@ impl<F: ProtocolField> BtxSetup<F> {
 #[async_trait]
 impl<F: ProtocolField> Application<F> for BtxSetup<F> {
     fn preprocessing_count(&self) -> PreprocessingCounts {
-        // the circuit is multiplications only and reconstructs nothing, so both rand_bits, and outputs fields are zeros. 
-        let counts = PreprocessingCounts::new(self.gates_per_depth(), 0, 0);
+        // The circuit reconstructs nothing, so there are no output wires.
+        let counts = PreprocessingCounts::new(self.gates_per_depth(), 0);
         log::info!(
             "BtxSetup::preprocessing_count -> batch size {}, {} multiplications over {} depths",
             self.batch_size,
@@ -303,13 +303,8 @@ impl<F: ProtocolField> Application<F> for BtxSetup<F> {
         self.try_start_circuit()
     }
 
-    async fn on_preprocessing_complete(
-        &mut self,
-        _rand_bit_sharings: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
-        log::info!(
-            "BtxSetup: preprocessing complete"
-        );
+    async fn on_preprocessing_complete(&mut self, _wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
+        log::info!("BtxSetup: preprocessing complete");
         self.preprocessing_done = true;
         self.try_start_circuit()
     }
@@ -438,7 +433,7 @@ mod tests {
         }
 
         async fn deliver_preprocessing(&mut self) -> DepthInput<F> {
-            self.app.on_preprocessing_complete(Vec::new()).await.unwrap()
+            self.app.on_preprocessing_complete(RandomWireShares::empty()).await.unwrap()
         }
 
         /// Run every depth the application schedules; returns the output wires
@@ -486,7 +481,7 @@ mod tests {
             assert_eq!(app.depth(), ((2 * batch_size) as f64).log2().ceil() as usize, "B = {}", batch_size);
             let counts = app.preprocessing_count();
             assert_eq!(counts.gates_per_depth, gates);
-            assert_eq!((counts.rand_bits, counts.output), (0, 0));
+            assert_eq!(counts.output, 0);
         }
     }
 
@@ -529,7 +524,7 @@ mod tests {
         // A late dealer after tau was assembled changes nothing.
         assert!(h.app.input_sharing_termination(1, vec![F::rand()]).await.unwrap().is_waiting());
         // Preprocessing arriving twice does not restart the circuit.
-        assert!(h.app.on_preprocessing_complete(Vec::new()).await.unwrap().is_waiting());
+        assert!(h.app.on_preprocessing_complete(RandomWireShares::empty()).await.unwrap().is_waiting());
 
         h.run(second).await;
         assert_eq!(h.app.shares().unwrap(), h.expected_powers());

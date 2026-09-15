@@ -65,7 +65,7 @@ pub use syncer::Syncer;
 // ---------------------------------------------------------------------------
 
 /// The trait an application implements, and the data model its hooks exchange.
-pub use application::{Application, DepthInput, PreprocessingCounts};
+pub use application::{Application, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires};
 
 /// The field abstraction the whole protocol is generic over, and the concrete
 /// fields `--field` selects between (`fields::{DefaultField, Mersenne61Field,

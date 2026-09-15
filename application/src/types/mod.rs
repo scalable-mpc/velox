@@ -4,6 +4,37 @@
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
+/// The random wires preprocessing produced for the application, field for
+/// field what [`RandomWires`](crate::RandomWires) asked for.
+///
+/// Delivered whole, in one call, so the application never has to reason
+/// about which kind arrived first; a new kind of random wire is a new field
+/// here and in `RandomWires`, not a new hook.
+pub struct RandomWireShares<F: ProtocolField> {
+    /// Sharings of `±1`, one per requested bit.
+    pub bits: Vec<FieldElement<F>>,
+    /// Sharings of uniformly random field elements, one per requested sharing.
+    pub sharings: Vec<FieldElement<F>>,
+}
+
+impl<F: ProtocolField> RandomWireShares<F> {
+    pub fn new(bits: Vec<FieldElement<F>>, sharings: Vec<FieldElement<F>>) -> Self {
+        Self { bits, sharings }
+    }
+
+    /// No wires at all — what an application that asked for none receives.
+    pub fn empty() -> Self {
+        Self::new(Vec::new(), Vec::new())
+    }
+}
+
+/// Counts only, like [`DepthInput`]'s: shares mean nothing to a reader alone.
+impl<F: ProtocolField> std::fmt::Debug for RandomWireShares<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RandomWireShares({} bits, {} sharings)", self.bits.len(), self.sharings.len())
+    }
+}
+
 /// What an application tells the engine to do next.
 ///
 /// Every hook returns one of these. The three variants are the three things an

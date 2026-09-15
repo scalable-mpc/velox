@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use velox::ProtocolField;
 use velox::FieldElement;
 
-use velox::{Application, DepthInput, PreprocessingCounts};
+use velox::{Application, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires};
 
 pub struct AnonymousBroadcast<F: ProtocolField> {
     pub num_nodes: usize,
@@ -342,19 +342,20 @@ impl<F: ProtocolField> Application<F> for AnonymousBroadcast<F> {
         // every party, which is what lets the engine reserve each depth a fixed
         // slice of the preprocessing pool.
         let switches_per_depth = self.k_value / 2;
-        let counts = PreprocessingCounts::new(
-            vec![switches_per_depth; self.max_depth],
-            switches_per_depth * self.max_depth,
-            self.k_value,
-        );
+        let counts = PreprocessingCounts::new(vec![switches_per_depth; self.max_depth], self.k_value);
         log::info!(
-            "AnonymousBroadcast::preprocessing_count -> mult_gates={}, depth={}, rand_bits={}, output={}",
+            "AnonymousBroadcast::preprocessing_count -> mult_gates={}, depth={}, output={}",
             counts.mult_gates(),
             counts.depth(),
-            counts.rand_bits,
             counts.output
         );
         counts
+    }
+
+    /// One random bit per switch: the sign that decides whether a wire pair
+    /// is swapped.
+    fn random_wires(&self) -> RandomWires {
+        RandomWires::new((self.k_value / 2) * self.max_depth, 0)
     }
 
     async fn inputs(&mut self) -> Vec<FieldElement<F>> {
@@ -383,18 +384,15 @@ impl<F: ProtocolField> Application<F> for AnonymousBroadcast<F> {
         self.try_start_circuit()
     }
 
-    async fn on_preprocessing_complete(
-        &mut self,
-        rand_bit_sharings: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
+    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
         log::info!(
             "AnonymousBroadcast: preprocessing complete — {} random bits; circuit: k={}, log_k={}, max_depth={}",
-            rand_bit_sharings.len(),
+            wires.bits.len(),
             self.k_value,
             self.log_k,
             self.max_depth,
         );
-        self.rand_bits.extend(rand_bit_sharings);
+        self.rand_bits.extend(wires.bits);
         self.preprocessing_done = true;
         self.try_start_circuit()
     }
@@ -454,7 +452,7 @@ mod tests {
         let counts = app.preprocessing_count();
         assert_eq!(counts.gates_per_depth, vec![8; 16], "8 switches at each of 16 depths");
         assert_eq!(counts.mult_gates(), 8 * 16);
-        assert_eq!(counts.rand_bits, 8 * 16);
+        assert_eq!(app.random_wires().bits, 8 * 16);
         assert!(counts.output >= 16);
         assert_eq!(counts.depth(), 16);
     }
@@ -685,7 +683,7 @@ mod tests {
                 assert_eq!(counts.depth(), max_depth, "n={} k={}", num_nodes, k);
                 assert_eq!(counts.gates_per_depth, vec![k / 2; max_depth], "n={} k={}", num_nodes, k);
                 assert_eq!(counts.mult_gates(), (k / 2) * max_depth, "n={} k={}", num_nodes, k);
-                assert_eq!(counts.rand_bits, (k / 2) * max_depth, "n={} k={}", num_nodes, k);
+                assert_eq!(app.random_wires().bits, (k / 2) * max_depth, "n={} k={}", num_nodes, k);
                 assert_eq!(counts.output, k, "n={} k={}", num_nodes, k);
 
                 // Now run it and check every depth really did schedule what it declared.

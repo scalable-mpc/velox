@@ -30,16 +30,20 @@ use rand::random;
 pub mod types;
 pub use types::*;
 
-/// How much preprocessing an application's circuit consumes.
+/// What the engine consumes evaluating an application's circuit.
 ///
 /// Raw demand, in the application's own terms; the engine converts it into
 /// ACSS/Sh2t batch sizes in `init_rand_sh`, adding what verification and the
-/// common coin draw.
+/// common coin draw. Everything here is spent *by the engine* — masks and
+/// zero-sharings per multiplication, masks per output wire — and the
+/// application never sees it. What the application consumes itself, as
+/// wires, is declared separately in [`RandomWires`].
 #[derive(Default, Clone, Debug)]
 pub struct PreprocessingCounts {
     /// Number of multiplication gates at each depth, depth 1 first.
     ///
-    /// A profile rather than a total, because the engine reserves each depth a
+    /// A profile rather than a total, because the engine reserves preprocessing material 
+    /// for each depth as a
     /// *fixed slice* of the preprocessing pool, computed from this vector. Every
     /// party derives the same table from the same circuit, so depth `d` binds to
     /// the same random sharings everywhere however the depths happen to be
@@ -51,17 +55,14 @@ pub struct PreprocessingCounts {
     /// A depth may run *fewer* gates than it declares — it then uses a prefix of
     /// its slice, which is still the same prefix everywhere — but never more.
     pub gates_per_depth: Vec<usize>,
-    /// Number of random bit sharings the circuit consumes.
-    pub rand_bits: usize,
     /// Number of output wires to be reconstructed, each of which needs a mask.
     pub output: usize,
 }
 
 impl PreprocessingCounts {
-    pub fn new(gates_per_depth: Vec<usize>, rand_bits: usize, output: usize) -> Self {
+    pub fn new(gates_per_depth: Vec<usize>, output: usize) -> Self {
         Self {
             gates_per_depth,
-            rand_bits,
             output,
         }
     }
@@ -83,6 +84,31 @@ impl PreprocessingCounts {
             .checked_sub(1)
             .and_then(|index| self.gates_per_depth.get(index))
             .copied()
+    }
+}
+
+/// Random wires an application's circuit consumes.
+///
+/// These are values the application reads *as sharings* — a random bit to
+/// switch on, a random secret to raise to powers — as opposed to the
+/// material in [`PreprocessingCounts`] that the engine spends on the
+/// application's behalf and never hands over. Both are produced in the
+/// preprocessing phase from the same ACS-agreed dealers, and both come with
+/// the same guarantee: degree-`t`, uniformly random, unknown to any
+/// `t`-coalition, and available without waiting on any particular dealer.
+///
+/// The engine delivers them in [`RandomWireShares`], field for field.
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
+pub struct RandomWires {
+    /// Random bits, delivered as sharings of `±1`.
+    pub bits: usize,
+    /// Sharings of uniformly random field elements.
+    pub sharings: usize,
+}
+
+impl RandomWires {
+    pub fn new(bits: usize, sharings: usize) -> Self {
+        Self { bits, sharings }
     }
 }
 
@@ -112,6 +138,15 @@ pub trait Application<F: ProtocolField>: Send + 'static {
     /// gate.
     fn preprocessing_count(&self) -> PreprocessingCounts;
 
+    /// The random wires the circuit consumes. Same contract as
+    /// [`preprocessing_count`](Application::preprocessing_count): pure, read
+    /// once at the start of preprocessing, the same answer at every party.
+    /// The default asks for none, so a circuit without random wires need not
+    /// mention them.
+    fn random_wires(&self) -> RandomWires {
+        RandomWires::default()
+    }
+
     /// The secrets this party contributes to the circuit's input wires, in wire
     /// order.
     ///
@@ -129,13 +164,10 @@ pub trait Application<F: ProtocolField>: Send + 'static {
         shares: Vec<FieldElement<F>>,
     ) -> Result<DepthInput<F>>;
 
-    /// Preprocessing is complete. `rand_bit_sharings` are the random bits the
-    /// application asked for; the multiplication masks stay with the engine,
-    /// which draws them per batch.
-    async fn on_preprocessing_complete(
-        &mut self,
-        rand_bit_sharings: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>>;
+    /// Preprocessing is complete. `wires` are the random wires the application
+    /// asked for in [`random_wires`](Application::random_wires); the
+    /// multiplication masks stay with the engine, which draws them per batch.
+    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<DepthInput<F>>;
 
     /// Every multiplication at `depth` has completed; `results` are the output
     /// sharings, in the order the operands were given.
@@ -182,15 +214,18 @@ impl<F: ProtocolField> DefaultApplication<F> {
 #[async_trait]
 impl<F: ProtocolField> Application<F> for DefaultApplication<F> {
     fn preprocessing_count(&self) -> PreprocessingCounts {
-        let counts = PreprocessingCounts::new(vec![1000; 10], 10000, 100);
+        let counts = PreprocessingCounts::new(vec![1000; 10], 100);
         log::info!(
-            "DefaultApplication::preprocessing_count -> mult_gates={}, depth={}, rand_bits={}, output={}",
+            "DefaultApplication::preprocessing_count -> mult_gates={}, depth={}, output={}",
             counts.mult_gates(),
             counts.depth(),
-            counts.rand_bits,
             counts.output
         );
         counts
+    }
+
+    fn random_wires(&self) -> RandomWires {
+        RandomWires::new(10000, 0)
     }
 
     async fn inputs(&mut self) -> Vec<FieldElement<F>> {
@@ -207,13 +242,11 @@ impl<F: ProtocolField> Application<F> for DefaultApplication<F> {
         Ok(DepthInput::Waiting)
     }
 
-    async fn on_preprocessing_complete(
-        &mut self,
-        rand_bit_sharings: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
+    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
         log::info!(
-            "DefaultApplication: preprocessing complete with {} random bits",
-            rand_bit_sharings.len()
+            "DefaultApplication: preprocessing complete with {} random bits and {} random sharings",
+            wires.bits.len(),
+            wires.sharings.len()
         );
         Ok(DepthInput::Waiting)
     }
