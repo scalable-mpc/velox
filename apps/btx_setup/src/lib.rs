@@ -34,7 +34,7 @@
 //!
 //! # What the application computes
 //!
-//! Mapped onto the [`Application`] hooks:
+//! Mapped onto the [`Application`] MPC engine interaction API:
 //!
 //!   - [`Application::inputs`]: each party `j` deals one uniformly random
 //!     field element `r_j`, so the engine's input ACSS gives everyone `⟨r_j⟩`.
@@ -51,21 +51,26 @@
 //!     Nothing is ever reconstructed: the product of this circuit is the
 //!     sharings `⟨τ¹⟩_j … ⟨τ^{2B}⟩_j` the party still holds.
 //!   - [`Application::on_output`] is the engine saying those sharings are
-//!     verified and agreed on. Only then is the share file written (see
-//!     [`share_file`]).
+//!     verified and agreed on. The party then prints its shares, computes and
+//!     prints its commitments to them — `g₂^{⟨τ^i⟩_j}` and, for the punctured
+//!     power, `g_T^{⟨τ^{B+1}⟩_j}` (see [`commitments`]) — and is done. Nothing
+//!     is written to disk. Interpolating `h_i` and `ek` from any `t+1` parties'
+//!     commitments is a public computation that needs no party's secrets.
 //!
 //! The circuit waits for all `n` dealers, as the other applications do; the
 //! engine does not yet pass its ACS-agreed dealer set to applications.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
 use velox::{Application, DepthInput, FieldElement, PreprocessingCounts, ProtocolField};
 
-pub mod share_file;
-pub use share_file::ShareFile;
+pub mod commitments;
+pub use commitments::Commitments;
+
+/// The `--field` name under which lifting into BLS12-381's groups applies.
+pub const BLS381: &str = "bls381";
 
 pub struct BtxSetup<F: ProtocolField> {
     pub num_nodes: usize,
@@ -74,9 +79,10 @@ pub struct BtxSetup<F: ProtocolField> {
     /// `B`: the scheme's (maximum) batch size. The table runs to `2B`.
     pub batch_size: usize,
 
-    /// Where the share file goes, and how the field is named in it. `None`
-    /// keeps the shares in memory only — what the tests use.
-    output: Option<(PathBuf, String)>,
+    /// The field's name as the binary's `--field` spells it. Commitments are
+    /// computed only over [`BLS381`]; other fields are for benchmarking the
+    /// circuit and stop at printing the shares.
+    field: String,
 
     /// `⟨r_j⟩` from each dealer whose input ACSS has terminated — this party's
     /// own included, since its share of its own input arrives the same way.
@@ -99,7 +105,13 @@ pub struct BtxSetup<F: ProtocolField> {
 }
 
 impl<F: ProtocolField> BtxSetup<F> {
-    pub fn new(num_nodes: usize, num_faults: usize, my_id: usize, batch_size: usize) -> Result<Self> {
+    pub fn new(
+        num_nodes: usize,
+        num_faults: usize,
+        my_id: usize,
+        batch_size: usize,
+        field: &str,
+    ) -> Result<Self> {
         if batch_size == 0 {
             bail!("batch size must be at least 1");
         }
@@ -111,7 +123,7 @@ impl<F: ProtocolField> BtxSetup<F> {
             num_faults,
             my_id,
             batch_size,
-            output: None,
+            field: field.to_string(),
             contributions: HashMap::new(),
             tau_assembled: false,
             preprocessing_done: false,
@@ -119,13 +131,6 @@ impl<F: ProtocolField> BtxSetup<F> {
             powers: vec![None; 2 * batch_size + 1],
             depths_completed: 0,
         })
-    }
-
-    /// Write the share file under `dir` when the run completes, naming the
-    /// field `field` in it.
-    pub fn with_output(mut self, dir: PathBuf, field: &str) -> Self {
-        self.output = Some((dir, field.to_string()));
-        self
     }
 
     /// Highest power the table holds: `2B`.
@@ -162,12 +167,35 @@ impl<F: ProtocolField> BtxSetup<F> {
         self.powers[1..].iter().cloned().collect()
     }
 
-    /// The share file this party would write, once the table is full.
-    pub fn share_file(&self, field: &str) -> Result<ShareFile> {
+    /// This party's commitments to its shares, once the table is full and if
+    /// the field is the BLS12-381 scalar field — `None` otherwise, since the
+    /// curve's points are multiplied by that field and no other.
+    pub fn commitments(&self) -> Result<Option<Commitments>> {
         let Some(shares) = self.shares() else {
             bail!("power table is not complete: {} depths of {} done", self.depths_completed, self.depth());
         };
-        ShareFile::new::<F>(field, self.num_nodes, self.num_faults, self.batch_size, self.my_id, &shares)
+        Self::lift(&self.field, self.batch_size, &shares)
+    }
+
+    /// The lifting behind [`commitments`](Self::commitments), as a function of
+    /// its inputs so it can run off the engine's task.
+    ///
+    /// The shares are re-read through their bytes rather than cast, which is
+    /// what makes this callable from the generic application: the bytes of a
+    /// `bls381` element are the same whichever alias of the field it is
+    /// typed as.
+    fn lift(field: &str, batch_size: usize, shares: &[FieldElement<F>]) -> Result<Option<Commitments>> {
+        if field != BLS381 {
+            return Ok(None);
+        }
+        let scalars: Vec<commitments::Scalar> = shares
+            .iter()
+            .map(|s| {
+                velox::fields::BLS12381ScalarField::from_bytes_be(&F::to_bytes_be(s))
+                    .map_err(|e| anyhow::anyhow!("share is not a bls381 element: {:?}", e))
+            })
+            .collect::<Result<_>>()?;
+        Commitments::lift(batch_size, &scalars).map(Some)
     }
 
     /// Sum every dealer's contribution into `⟨τ⟩` once all have terminated.
@@ -277,12 +305,10 @@ impl<F: ProtocolField> Application<F> for BtxSetup<F> {
 
     async fn on_preprocessing_complete(
         &mut self,
-        rand_bit_sharings: Vec<FieldElement<F>>,
+        _rand_bit_sharings: Vec<FieldElement<F>>,
     ) -> Result<DepthInput<F>> {
-        // None were asked for; whatever the batch rounding produced is unused.
         log::info!(
-            "BtxSetup: preprocessing complete ({} random bits, unused)",
-            rand_bit_sharings.len()
+            "BtxSetup: preprocessing complete"
         );
         self.preprocessing_done = true;
         self.try_start_circuit()
@@ -325,15 +351,46 @@ impl<F: ProtocolField> Application<F> for BtxSetup<F> {
         if !outputs.is_empty() {
             bail!("BtxSetup declared no output wires but {} were reconstructed", outputs.len());
         }
-        let Some((dir, field)) = self.output.clone() else {
-            log::info!("BtxSetup: run verified; no output directory set, shares stay in memory");
+        let Some(shares) = self.shares() else {
+            bail!("power table is not complete: {} depths of {} done", self.depths_completed, self.depth());
+        };
+        let (j, b) = (self.my_id, self.batch_size);
+        log::info!(
+            "BtxSetup: run verified. Party {}'s shares <tau^i>_{} for i = 1..={} (indices 1..={} are sk_{}), as big-endian hex:",
+            j, j, 2 * b, b, j
+        );
+        for (index, share) in shares.iter().enumerate() {
+            log::info!("BtxSetup: <tau^{}>_{} = {}", index + 1, j, commitments::hex(&F::to_bytes_be(share)));
+        }
+
+        let Some(c) = velox::fields::rayon_async({
+            let field = self.field.clone();
+            move || Self::lift(&field, b, &shares)
+        })
+        .await?
+        else {
+            log::info!(
+                "BtxSetup: field {:?} is not the BLS12-381 scalar field; commitments are not computed. Done.",
+                self.field
+            );
             return Ok(());
         };
-        let path = self.share_file(&field)?.write(&dir)?;
+
+        log::info!("BtxSetup: party {}'s commitments g2^(<tau^i>_{}) for i in [2B] \\ {{B+1}}, compressed G2 as hex:", j, j);
+        for (index, p) in c.low.iter().enumerate() {
+            log::info!("BtxSetup: v_{}^{} = g2^(<tau^{}>_{}) = {}", j, index + 1, index + 1, j, commitments::g2_hex(p));
+        }
+        for (index, p) in c.high.iter().enumerate() {
+            let i = b + 2 + index;
+            log::info!("BtxSetup: g2^(<tau^{}>_{}) = {}", i, j, commitments::g2_hex(p));
+        }
         log::info!(
-            "BtxSetup: run verified; wrote shares of tau^1..tau^{} to {}",
-            self.max_power(),
-            path.display()
+            "BtxSetup: punctured power in GT only: e(g1^(<tau^{}>_{}), g2) = {}",
+            b + 1, j, commitments::gt_hex(&c.middle)
+        );
+        log::info!(
+            "BtxSetup: the public keys follow by interpolation in the exponent of any t+1 = {} parties' commitments",
+            self.num_faults + 1
         );
         Ok(())
     }
@@ -364,7 +421,7 @@ mod tests {
     impl Harness {
         fn new(batch_size: usize) -> Self {
             Self {
-                app: BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, batch_size).unwrap(),
+                app: BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, batch_size, BLS381).unwrap(),
                 tau: FieldElement::<F>::zero(),
                 batches: Vec::new(),
             }
@@ -423,7 +480,7 @@ mod tests {
             (16, vec![1, 2, 4, 8, 16]),
             (512, vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512]),
         ] {
-            let app = BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, batch_size).unwrap();
+            let app = BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, batch_size, BLS381).unwrap();
             assert_eq!(app.gates_per_depth(), gates, "B = {}", batch_size);
             assert_eq!(app.gates_per_depth().iter().sum::<usize>(), 2 * batch_size - 1, "B = {}", batch_size);
             assert_eq!(app.depth(), ((2 * batch_size) as f64).log2().ceil() as usize, "B = {}", batch_size);
@@ -494,24 +551,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn share_file_is_written_only_on_output() {
-        let dir = std::env::temp_dir().join(format!("btx_setup_app_{}", std::process::id()));
+    async fn commitments_are_the_table_in_the_exponent() {
+        use lambdaworks_math::cyclic_group::IsGroup;
+        use lambdaworks_math::elliptic_curve::traits::IsEllipticCurve;
+        let g2 = lambdaworks_math::elliptic_curve::short_weierstrass::curves::bls12_381::twist::BLS12381TwistCurve::generator();
+
         let mut h = Harness::new(2);
-        h.app = BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 1, 2)
-            .unwrap()
-            .with_output(dir.clone(), "bls381");
+        assert!(h.app.commitments().is_err(), "no commitments before the table is full");
         h.deliver_inputs().await;
         let first = h.deliver_preprocessing().await;
         h.run(first).await;
-        assert!(!ShareFile::path(&dir, 1).exists(), "nothing written before on_output");
 
+        let c = h.app.commitments().unwrap().expect("bls381 lifts");
+        let powers = h.expected_powers();
+        assert_eq!(c.low.len(), 2);
+        assert_eq!(c.high.len(), 1);
+        assert_eq!(c.low[0], g2.operate_with_self(powers[0].representative()));
+        assert_eq!(c.low[1], g2.operate_with_self(powers[1].representative()));
+        assert_eq!(c.high[0], g2.operate_with_self(powers[3].representative()));
+        assert_eq!(c.middle, commitments::lift_to_gt(&powers[2]).unwrap());
+
+        // on_output prints and lifts; it must accept the empty output and
+        // reject wires this circuit never declared.
         h.app.on_output(Vec::new()).await.unwrap();
-        let file = ShareFile::read(&ShareFile::path(&dir, 1)).unwrap();
-        assert_eq!((file.party, file.batch_size, file.num_nodes, file.threshold), (1, 2, NUM_NODES, NUM_FAULTS));
-        assert_eq!(file.shares::<F>().unwrap(), h.expected_powers());
-        std::fs::remove_dir_all(&dir).unwrap();
-
-        // Output wires this circuit never declared are a contract violation.
         assert!(h.app.on_output(vec![F::rand()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn other_fields_stop_at_the_shares() {
+        let mut h = Harness::new(2);
+        h.app = BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, 2, "stark252").unwrap();
+        h.deliver_inputs().await;
+        let first = h.deliver_preprocessing().await;
+        h.run(first).await;
+        assert!(h.app.commitments().unwrap().is_none());
+        h.app.on_output(Vec::new()).await.unwrap();
     }
 }
