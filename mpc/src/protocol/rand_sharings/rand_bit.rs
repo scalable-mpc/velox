@@ -1,4 +1,4 @@
-use application::Application;
+use application::{Application, RandomWireShares};
 use std::ops::Mul;
 
 use crypto::hash::{do_hash, Hash};
@@ -361,8 +361,9 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         self.hand_preprocessing_to_application().await;
     }
 
-    /// Hand the application the random bits its circuit consumes, and run
-    /// whatever it schedules in response.
+    /// Hand the application the random wires its circuit consumes — the bits
+    /// squared above and the sharings carved off in `verify_termination` — and
+    /// run whatever it schedules in response.
     ///
     /// The multiplication masks stay in the engine's pool: it draws them per
     /// batch in `choose_multiplication_protocol`, for the application's depths
@@ -371,13 +372,15 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     /// protocol's `2t+1` batching rule in application code.
     pub async fn hand_preprocessing_to_application(&mut self){
         let rand_bits: Vec<FieldElement<F>> = self.mix_circuit_state.rand_bit_sharings.drain(..).collect();
+        let wire_sharings = std::mem::take(&mut self.rand_sharings_state.app_wire_sharings);
 
-        log::info!("Handing {} random bits to the application; {} random and {} zero sharings held in the engine's pool for its depths, verification and coins",
+        log::info!("Handing {} random bits and {} random sharings to the application; {} random and {} zero sharings held in the engine's pool for its depths, verification and coins",
             rand_bits.len(),
+            wire_sharings.len(),
             self.rand_sharings_state.rand_sharings_mult.len(),
             self.rand_sharings_state.rand_2t_sharings_mult.len());
 
-        let depth_input = self.app.on_preprocessing_complete(rand_bits).await;
+        let depth_input = self.app.on_preprocessing_complete(RandomWireShares::new(rand_bits, wire_sharings)).await;
         self.handle_application_depth_input(depth_input).await;
     }
 }

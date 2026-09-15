@@ -1,10 +1,11 @@
-//! [`ProtocolField`] for 256-bit Montgomery prime fields — Stark252 and BN254.
+//! [`ProtocolField`] for 256-bit Montgomery prime fields — Stark252, BN254 and
+//! the BLS12-381 scalar field.
 //!
 //! Written as one blanket impl over `MontgomeryBackendPrimeField<M, 4>` rather
-//! than two copies, because nothing in it depends on the modulus: sampling,
+//! than three copies, because nothing in it depends on the modulus: sampling,
 //! serialization, square roots and the text packing are all the same
-//! computation for any 256-bit prime. Naming a third such field costs a type
-//! alias and nothing else.
+//! computation for any 256-bit prime. Naming another such field costs a type
+//! alias and nothing else — which is all the BLS12-381 scalar field is.
 //!
 //! # How these differ from the Mersenne-61 Fp4 field
 //!
@@ -18,7 +19,10 @@
 use core::fmt::Debug;
 
 use lambdaworks_math::{
-    elliptic_curve::short_weierstrass::curves::bn_254::field_extension::BN254PrimeField,
+    elliptic_curve::short_weierstrass::curves::{
+        bls12_381::default_types::FrField as BLS12381FrField,
+        bn_254::field_extension::BN254PrimeField,
+    },
     errors::ByteConversionError,
     field::{
         element::FieldElement,
@@ -41,6 +45,13 @@ pub type Stark252Field = Stark252PrimeField;
 
 /// The BN254 curve's base field, `p ≈ 2^253.6`.
 pub type BN254Field = BN254PrimeField;
+
+/// The BLS12-381 curve's *scalar* field, `r ≈ 2^254.9` (2-adicity 32).
+///
+/// This is the field the group exponents live in, so an application whose
+/// outputs are later lifted into G1/G2 — the BTX/BTE setup exponentiates each
+/// party's shares — has to compute over it, not over the curve's base field.
+pub type BLS12381ScalarField = BLS12381FrField;
 
 /// Serialized width of a 256-bit element.
 const U256_BYTES: usize = 32;
@@ -107,8 +118,9 @@ where
     const SER_BYTES: usize = U256_BYTES;
     const MAX_INPUT_PAYLOAD: usize = U256_ASCII_PAYLOAD;
 
-    /// Stark252 is ~252-bit and BN254 ~254-bit, both already wide enough for a
-    /// 2^-250-ish soundness bound, so these are their own extension.
+    /// Stark252 is ~252-bit, BN254 ~254-bit and BLS12-381's scalar field
+    /// ~255-bit, all already wide enough for a 2^-250-ish soundness bound, so
+    /// these are their own extension.
     type Ext = Self;
     const CONV_RATIO: usize = 1;
 
@@ -182,8 +194,8 @@ mod tests {
     use super::*;
     use rand_core::SeedableRng;
 
-    /// Every property is checked for both fields through the same generic body:
-    /// what the protocol relies on is the trait's contract, not either modulus.
+    /// Every property is checked for every field through the same generic body:
+    /// what the protocol relies on is the trait's contract, not any modulus.
     fn field_contract<F: ProtocolField>(name: &str) {
         let e = F::rand();
         assert_eq!(F::to_bytes_be(&e).len(), F::SER_BYTES, "{name}: width");
@@ -219,13 +231,19 @@ mod tests {
         field_contract::<BN254Field>("BN254");
     }
 
-    /// The two fields must not collapse to the same arithmetic — a guard against
+    #[test]
+    fn bls12_381_scalar_satisfies_the_contract() {
+        field_contract::<BLS12381ScalarField>("BLS12-381 Fr");
+    }
+
+    /// The fields must not collapse to the same arithmetic — a guard against
     /// a blanket impl accidentally keying off something modulus-independent.
     #[test]
-    fn the_two_fields_are_distinct() {
+    fn the_fields_are_distinct() {
         let text = "distinct";
         let s = Stark252Field::encode_ascii(text).unwrap();
         let b = BN254Field::encode_ascii(text).unwrap();
+        let r = BLS12381ScalarField::encode_ascii(text).unwrap();
         // Same bytes in, same bytes out — but they are different types, and
         // their inverses differ because the moduli differ.
         assert_eq!(
@@ -233,8 +251,16 @@ mod tests {
             BN254Field::to_bytes_be(&b),
             "identical payloads encode identically"
         );
+        assert_eq!(
+            Stark252Field::to_bytes_be(&s),
+            BLS12381ScalarField::to_bytes_be(&r),
+            "identical payloads encode identically"
+        );
         let s_inv = Stark252Field::to_bytes_be(&s.inv().unwrap());
         let b_inv = BN254Field::to_bytes_be(&b.inv().unwrap());
+        let r_inv = BLS12381ScalarField::to_bytes_be(&r.inv().unwrap());
         assert_ne!(s_inv, b_inv, "different moduli must give different inverses");
+        assert_ne!(s_inv, r_inv, "different moduli must give different inverses");
+        assert_ne!(b_inv, r_inv, "different moduli must give different inverses");
     }
 }

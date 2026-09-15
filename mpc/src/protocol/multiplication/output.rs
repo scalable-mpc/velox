@@ -67,26 +67,33 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                     }
                 }
             }
-            // Reconstruct the outputs
-            let verification_result = check_if_all_points_lie_on_degree_x_polynomial(evaluation_points, evaluations, self.num_faults+1);
-            if verification_result.0{
-                let polys = verification_result.1.unwrap();
-                // Output wires reconstructed
-                log::info!("Masked output wires successfully reconstructed, shares are on a degree-t polynomial");
-                let outputs_recon = polys.iter().map(|poly|poly.evaluate(&FieldElement::<F>::zero())).collect::<Vec<FieldElement<F>>>();
-                self.mult_state.output_layer.reconstructed_masked_outputs = Some(outputs_recon.clone());
-                // Broadcast using a CTRBC channel
-                let mut broadcast_output = Vec::new();
-                broadcast_output.push(1u8);
-                for output in outputs_recon.iter(){
-                    broadcast_output.extend(output.ser_be());
-                }
-                let _status = self.ctrbc_event_send.send(broadcast_output).await;
+            // Reconstruct the outputs. A circuit with no output wires — one
+            // whose product is the sharings the application kept, as in a
+            // key-generation setup — still goes through the CTRBC/ACS steps
+            // below: that is where the parties agree that enough of them
+            // passed verification. There is just nothing to interpolate, and
+            // the degree check cannot be asked about zero polynomials.
+            let outputs_recon = if evaluations.is_empty(){
+                log::info!("Circuit declared no output wires; nothing to reconstruct");
+                Vec::new()
             }
             else{
-                log::error!("Output reconstruction failed, shares not on a degree-t polynomial");
-                return;
+                let verification_result = check_if_all_points_lie_on_degree_x_polynomial(evaluation_points, evaluations, self.num_faults+1);
+                let Some(polys) = verification_result.1.filter(|_| verification_result.0) else{
+                    log::error!("Output reconstruction failed, shares not on a degree-t polynomial");
+                    return;
+                };
+                log::info!("Masked output wires successfully reconstructed, shares are on a degree-t polynomial");
+                polys.iter().map(|poly|poly.evaluate(&FieldElement::<F>::zero())).collect::<Vec<FieldElement<F>>>()
+            };
+            self.mult_state.output_layer.reconstructed_masked_outputs = Some(outputs_recon.clone());
+            // Broadcast using a CTRBC channel
+            let mut broadcast_output = Vec::new();
+            broadcast_output.push(1u8);
+            for output in outputs_recon.iter(){
+                broadcast_output.extend(output.ser_be());
             }
+            let _status = self.ctrbc_event_send.send(broadcast_output).await;
         }
     }
 

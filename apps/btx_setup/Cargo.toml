@@ -1,0 +1,26 @@
+[package]
+name = "btx_setup"
+version = "0.1.0"
+edition = "2021"
+
+# Setup generation for batched threshold encryption (BTX, eprint 2026/754;
+# simple BTE, eprint 2026/760) as an application on the Velox engine: Shamir
+# shares of tau, tau^2, ..., tau^{2B} for a tau no party knows, and each
+# party's commitments to its shares in G2/GT. Owns its binary; `velox` carries
+# the `Application` trait, the field abstraction and the node runner.
+
+[dependencies]
+velox = { package = "velox", path = "../../velox" }
+
+anyhow = "1"
+async-trait = "0"
+log = "*"
+
+# Commitments: lifting shares into BLS12-381's G2/GT. Pinned to the version the
+# field crate builds on, so the scalar field here and the one the curve's
+# points are multiplied by are the same type.
+lambdaworks-math = "=0.13.0"
+rayon = "=1.10.0"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt"] }

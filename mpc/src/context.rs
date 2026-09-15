@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use application::{Application, PreprocessingCounts};
+use application::{Application, PreprocessingCounts, RandomWires};
 use config::Node;
 
 use fnv::FnvHashMap;
@@ -127,6 +127,9 @@ pub struct Context<F: ProtocolField, A: Application<F>> {
     /// reused for the rest of the run. Reading it again later risks sizing the
     /// preprocessing against one answer and spending it against another.
     pub preprocessing_counts: PreprocessingCounts,
+    /// The random wires the application asked for, read at the same point and
+    /// for the same reason.
+    pub random_wires: RandomWires,
 
     /// The application's share of the multiplication preprocessing, reserved a
     /// fixed slice per circuit depth so that a depth binds to the same random
@@ -321,6 +324,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
                 zero_batch_size: 0,
                 output_mask_size: 0,
                 preprocessing_counts: PreprocessingCounts::default(),
+                random_wires: RandomWires::default(),
                 app_preprocessing: ApplicationPreprocessing::new(),
 
                 preprocessing_mult_depth: 0,

@@ -27,8 +27,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // sizes here, the handover in `hand_preprocessing_to_application` — has
         // to work off the same answer.
         let counts = self.app.preprocessing_count();
+        // Number of random wires the circuit requires. 
+        let wires = self.app.random_wires();
         let num_mult_gates = counts.mult_gates();
-        let num_rand_bits = counts.rand_bits;
+        let num_rand_bits = wires.bits;
+        let num_wire_sharings = wires.sharings;
         let num_depths = counts.depth();
         let num_outputs = counts.output;
 
@@ -42,6 +45,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         let app_rand_total = self.app_preprocessing.rand_total();
         let app_zero_total = self.app_preprocessing.zero_total();
         self.preprocessing_counts = counts;
+        self.random_wires = wires;
         // Combining the ACS-agreed dealers' contributions through the Vandermonde
         // matrix turns each raw value a party deals into `t+1` random sharings.
         let sharings_per_value = t + 1;
@@ -60,6 +64,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         //  - one mask per multiplication gate,
         //  - two per random bit — the `r` that gets squared (dealt in batch 0)
         //    and the mask for that squaring multiplication (batch 1),
+        //  - one per random wire sharing the application reads directly,
         //  - the coin sharings and the verification multiplications.
         self.rand_bit_batch_size = batch_size_for(num_rand_bits + group);
 
@@ -90,6 +95,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
         self.mult_batch_size = batch_size_for(
             app_rand_total
+            + num_wire_sharings
             + num_rand_bits
             + rand_bit_squaring_padding
             + verification_rand
@@ -115,10 +121,10 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
         log::info!(
             "Preprocessing sized from the application: {} multiplication gates, {} random bits, \
-             {} output wires over {} depths -> ACSS batches of {} (rand bit) and {} (mult) values, \
-             {} zero values, {} output masks per party; verification budgeted {} random and {} zero \
-             sharings for {} tuples over {} compression levels",
-            num_mult_gates, num_rand_bits, num_outputs, num_depths,
+             {} random wire sharings, {} output wires over {} depths -> ACSS batches of {} (rand bit) \
+             and {} (mult) values, {} zero values, {} output masks per party; verification budgeted \
+             {} random and {} zero sharings for {} tuples over {} compression levels",
+            num_mult_gates, num_rand_bits, num_wire_sharings, num_outputs, num_depths,
             self.rand_bit_batch_size, self.mult_batch_size, self.zero_batch_size, self.output_mask_size,
             verification_rand, verification_groups * (t + 1), num_tuples, compression_levels
         );
@@ -406,10 +412,21 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                     rand_sharings_mult.drain(0..app_rand_total.min(rand_sharings_mult.len())).collect();
                 let app_zero: Vec<FieldElement<F>> =
                     rand_sharings_2t_mult.drain(0..app_zero_total.min(rand_sharings_2t_mult.len())).collect();
-                log::info!("Reserved {} masks and {} zero sharings for the circuit's {} depths; {} and {} left for the engine",
-                    app_rand.len(), app_zero.len(), self.app_preprocessing.num_depths(),
+                // The application's random wire sharings come next, at a fixed
+                // offset for the same reason the mask slices do: every party
+                // must read the same sharing as the same wire.
+                let num_wire_sharings = self.random_wires.sharings;
+                if rand_sharings_mult.len() < num_wire_sharings{
+                    log::error!("Preprocessing fell short of the application's random wires: {} sharings needed, {} left",
+                        num_wire_sharings, rand_sharings_mult.len());
+                }
+                let app_wire_sharings: Vec<FieldElement<F>> =
+                    rand_sharings_mult.drain(0..num_wire_sharings.min(rand_sharings_mult.len())).collect();
+                log::info!("Reserved {} masks and {} zero sharings for the circuit's {} depths and {} random wire sharings; {} and {} left for the engine",
+                    app_rand.len(), app_zero.len(), self.app_preprocessing.num_depths(), app_wire_sharings.len(),
                     rand_sharings_mult.len(), rand_sharings_2t_mult.len());
                 self.app_preprocessing.fill(app_rand, app_zero);
+                self.rand_sharings_state.app_wire_sharings = app_wire_sharings;
 
                 // Add sharings and coins to state
                 self.rand_sharings_state.rand_sharings_mult.extend(rand_sharings_mult);

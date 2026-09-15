@@ -44,7 +44,7 @@ pub mod parser;
 pub use parser::{parse_circuit, parse_circuit_file};
 
 use circuit::{Circuit, Wire};
-use velox::{Application, DepthInput, PreprocessingCounts};
+use velox::{Application, DepthInput, PreprocessingCounts, RandomWireShares};
 
 pub struct BristolCircuit<F: ProtocolField> {
     pub num_nodes: usize,
@@ -374,19 +374,14 @@ impl<F: ProtocolField> Application<F> for BristolCircuit<F> {
             .map(|level| level.num_mul_gates())
             .collect();
 
-        let counts = PreprocessingCounts::new(
-            gates_per_depth,
-            // No random bits: the circuit has no gate that consumes one.
-            // Comparison gates would be the first (see issue #5), and would add
-            // their solved-bit demand here.
-            0,
-            self.circuit.num_outputs(),
-        );
+        // No random wires: the circuit has no gate that consumes one, so
+        // `random_wires` is left at its default. Comparison gates would be the
+        // first (see issue #5), and would declare their solved-bit demand there.
+        let counts = PreprocessingCounts::new(gates_per_depth, self.circuit.num_outputs());
         log::info!(
-            "BristolCircuit::preprocessing_count -> mult_gates={}, depth={}, rand_bits={}, output={}",
+            "BristolCircuit::preprocessing_count -> mult_gates={}, depth={}, output={}",
             counts.mult_gates(),
             counts.depth(),
-            counts.rand_bits,
             counts.output
         );
         counts
@@ -427,14 +422,11 @@ impl<F: ProtocolField> Application<F> for BristolCircuit<F> {
         self.try_start_circuit()
     }
 
-    async fn on_preprocessing_complete(
-        &mut self,
-        rand_bit_sharings: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
+    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
         log::info!(
             "BristolCircuit: preprocessing complete — {} random bits (unused); circuit: {} \
              multiplications over {} levels",
-            rand_bit_sharings.len(),
+            wires.bits.len(),
             self.circuit.num_mul_gates(),
             self.circuit.multiplicative_depth(),
         );
@@ -522,7 +514,7 @@ mod tests {
         /// The engine hands over random bits only; the multiplication masks stay
         /// in its own pool and are drawn per batch.
         async fn deliver_preprocessing(&mut self) -> DepthInput<F> {
-            self.app.on_preprocessing_complete(Vec::new()).await.unwrap()
+            self.app.on_preprocessing_complete(RandomWireShares::empty()).await.unwrap()
         }
 
         /// Hand the application every dealer's inputs, sliced out of the circuit's
@@ -710,7 +702,7 @@ mod tests {
             "two gates at level 1, one at level 2 — the engine reserves each its own slice"
         );
         assert_eq!(counts.output, 1);
-        assert_eq!(counts.rand_bits, 0, "no gate consumes a random bit yet");
+        assert_eq!(app.random_wires().bits, 0, "no gate consumes a random bit yet");
     }
 
     /// Input wires are bound positionally, so each party deals exactly the block

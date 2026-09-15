@@ -35,6 +35,11 @@ pub struct RandSharings<F: ProtocolField>{
     // Fifth, set aside random sharings for coin tossing
     pub rand_sharings_coin: VecDeque<FieldElement<F>>,
 
+    // Sharings of uniformly random values the application asked for as wires
+    // (`RandomWires::sharings`), carved off the pool right after the circuit's
+    // mask reservation and handed over whole with the random bits.
+    pub app_wire_sharings: Vec<FieldElement<F>>,
+
     // Once-guard for `verify_termination`'s combine step. This is deliberately a
     // flag and not a length check on `rand_sharings_mult`: that vector is
     // `split_off` into `rand_sharings_coin` and drained by the multiplication
@@ -61,6 +66,7 @@ impl<F: ProtocolField> RandSharings<F>{
             rand_sharings_mult: VecDeque::new(),
             rand_2t_sharings_mult: VecDeque::new(),
             rand_sharings_coin: VecDeque::new(),
+            app_wire_sharings: Vec::new(),
             combine_started: false
         }
     }
