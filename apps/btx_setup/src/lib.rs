@@ -36,12 +36,13 @@
 //!
 //! Mapped onto the [`Application`] MPC engine interaction API:
 //!
-//!   - [`Application::inputs`]: each party `j` deals one uniformly random
-//!     field element `r_j`, so the engine's input ACSS gives everyone `⟨r_j⟩`.
-//!   - [`Application::input_sharing_termination`]: once all `n` dealers have
-//!     terminated, `⟨τ⟩ = Σ_j ⟨r_j⟩`, summed locally. Any honest `r_j` in the
-//!     sum makes `τ` uniform and unknown to the adversary, and the ACSS hides
-//!     honest inputs, so a corrupt dealer choosing last cannot bias it.
+//!   - [`Application::random_wires`] asks the engine for one random sharing for exponentiation:
+//!     `⟨τ⟩` comes out of the preprocessing pool of random double sharings used for multiplication, extracted from whichever
+//!     `n−t` dealers the ACS agreed on. At least `t+1` of those are honest, so
+//!     `τ` is uniform and unknown to any `t`-coalition — the guarantee the
+//!     multiplication masks already rest on — and no party waits on any
+//!     particular dealer. The circuit has no inputs of its own.
+//!   - [`Application::on_preprocessing_complete`] starts the online protocol with depth 1.
 //!   - [`Application::on_depth_complete`] fills a power table by doubling:
 //!     after depth `k−1` the table holds `⟨τ¹⟩ … ⟨τ^{2^{k−1}}⟩`; depth `k`
 //!     multiplies `⟨τ^{2^{k−1}}⟩` by `⟨τ¹⟩ … ⟨τ^m⟩`, `m = min(2^{k−1}, 2B − 2^{k−1})`,
@@ -50,21 +51,15 @@
 //!   - The last depth returns [`DepthInput::Done`] with **no** output wires.
 //!     Nothing is ever reconstructed: the product of this circuit is the
 //!     sharings `⟨τ¹⟩_j … ⟨τ^{2B}⟩_j` the party still holds.
-//!   - [`Application::on_output`] is the engine saying those sharings are
-//!     verified and agreed on. The party then prints its shares, computes and
-//!     prints its commitments to them — `g₂^{⟨τ^i⟩_j}` and, for the punctured
-//!     power, `g_T^{⟨τ^{B+1}⟩_j}` (see [`commitments`]) — and is done. Nothing
-//!     is written to disk. Interpolating `h_i` and `ek` from any `t+1` parties'
-//!     commitments is a public computation that needs no party's secrets.
-//!
-//! The circuit waits for all `n` dealers, as the other applications do; the
-//! engine does not yet pass its ACS-agreed dealer set to applications.
-
-use std::collections::HashMap;
+//!   - [`Application::on_output`] is the engine saying the multiplication operations performed in the online phase
+//!     have been verified and at least t+1 honest parties terminated the protocol successfully. 
+//!     The party then outputs its shares, computes and prints its commitments to them — `g₂^{⟨τ^i⟩_j}` and, for the punctured
+//!     power, `g_T^{⟨τ^{B+1}⟩_j}` (see [`commitments`]) — and is done. 
+//!     Interpolating `h_i` and `ek` from any `t+1` parties' commitments is a public computation that needs no party's secrets.
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use velox::{Application, DepthInput, FieldElement, PreprocessingCounts, ProtocolField, RandomWireShares};
+use velox::{Application, DepthInput, FieldElement, PreprocessingCounts, ProtocolField, RandomWireShares, RandomWires};
 
 pub mod commitments;
 pub use commitments::Commitments;
@@ -83,16 +78,7 @@ pub struct BtxSetup<F: ProtocolField> {
     /// computed only over [`BLS381`]; other fields are for benchmarking the
     /// circuit and stop at printing the shares.
     field: String,
-
-    /// `⟨r_j⟩` from each dealer whose input ACSS has terminated — this party's
-    /// own included, since its share of its own input arrives the same way.
-    contributions: HashMap<usize, FieldElement<F>>,
-    /// Set once `⟨τ⟩` has been written into the table, so late dealers are
-    /// ignored rather than re-summed.
-    tau_assembled: bool,
-    /// Set once preprocessing has been handed over.
-    preprocessing_done: bool,
-    /// Set once depth 1 has been scheduled, so the circuit starts exactly once.
+    
     circuit_started: bool,
 
     /// `powers[i]` is this party's share `⟨τ^i⟩_j`, `i = 1..=2B`. Index 0 is
@@ -124,9 +110,6 @@ impl<F: ProtocolField> BtxSetup<F> {
             my_id,
             batch_size,
             field: field.to_string(),
-            contributions: HashMap::new(),
-            tau_assembled: false,
-            preprocessing_done: false,
             circuit_started: false,
             powers: vec![None; 2 * batch_size + 1],
             depths_completed: 0,
@@ -198,30 +181,14 @@ impl<F: ProtocolField> BtxSetup<F> {
         Commitments::lift(batch_size, &scalars).map(Some)
     }
 
-    /// Sum every dealer's contribution into `⟨τ⟩` once all have terminated.
-    fn try_assemble_tau(&mut self) {
-        if self.tau_assembled || self.contributions.len() < self.num_nodes {
-            return;
-        }
-        let tau = self
-            .contributions
-            .values()
-            .fold(FieldElement::<F>::zero(), |acc, share| acc + share);
-        self.powers[1] = Some(tau);
-        self.tau_assembled = true;
-        // Summed and not read again; the flag above short-circuits late dealers
-        // before they could be inserted back into an emptied map.
-        self.contributions.clear();
-        log::info!("BtxSetup: assembled [tau] from {} dealers", self.num_nodes);
-    }
-
-    /// Schedule depth 1 as soon as both `⟨τ⟩` and the preprocessing material
-    /// are in hand — the two arrive in either order.
-    fn try_start_circuit(&mut self) -> Result<DepthInput<F>> {
-        if self.circuit_started || !self.tau_assembled || !self.preprocessing_done {
+    /// Start the circuit exactly once, from the `⟨τ⟩` preprocessing delivered.
+    fn start_circuit(&mut self, tau: FieldElement<F>) -> Result<DepthInput<F>> {
+        if self.circuit_started {
+            log::debug!("BtxSetup: ignoring a repeated preprocessing handover");
             return Ok(DepthInput::Waiting);
         }
         self.circuit_started = true;
+        self.powers[1] = Some(tau);
         self.schedule_depth(1)
     }
 
@@ -276,37 +243,37 @@ impl<F: ProtocolField> Application<F> for BtxSetup<F> {
         counts
     }
 
-    async fn inputs(&mut self) -> Vec<FieldElement<F>> {
-        vec![F::rand()]
+    /// One random sharing: `⟨τ⟩`. No random bits.
+    fn random_wires(&self) -> RandomWires {
+        RandomWires::new(0, 1)
     }
 
+    /// This circuit has no inputs, so the engine runs no input ACSS and this
+    /// never fires; if it does, the shares belong to nothing here.
     async fn input_sharing_termination(
         &mut self,
         party: usize,
         shares: Vec<FieldElement<F>>,
     ) -> Result<DepthInput<F>> {
-        if self.tau_assembled {
-            log::debug!("BtxSetup: ignoring input sharing from party {}, tau already assembled", party);
-            return Ok(DepthInput::Waiting);
-        }
-        let Some(share) = shares.into_iter().next() else {
-            bail!("party {} dealt no input; every dealer contributes one element to tau", party);
-        };
-        self.contributions.insert(party, share);
-        log::info!(
-            "BtxSetup: contribution from party {} in ({} of {} dealers)",
-            party,
-            self.contributions.len(),
-            self.num_nodes
+        log::warn!(
+            "BtxSetup: ignoring {} input sharings from party {}; this circuit takes no inputs",
+            shares.len(),
+            party
         );
-        self.try_assemble_tau();
-        self.try_start_circuit()
+        Ok(DepthInput::Waiting)
     }
 
-    async fn on_preprocessing_complete(&mut self, _wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
-        log::info!("BtxSetup: preprocessing complete");
-        self.preprocessing_done = true;
-        self.try_start_circuit()
+    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
+        log::info!(
+            "BtxSetup: preprocessing complete ({} random sharings, {} random bits)",
+            wires.sharings.len(),
+            wires.bits.len()
+        );
+        let mut sharings = wires.sharings.into_iter();
+        let (Some(tau), None) = (sharings.next(), sharings.next()) else {
+            bail!("BtxSetup asked for exactly one random sharing for tau and got a different number");
+        };
+        self.start_circuit(tau)
     }
 
     async fn on_depth_complete(
@@ -403,9 +370,9 @@ mod tests {
     const NUM_FAULTS: usize = 1;
 
     /// A stand-in engine. Linear operations on Shamir sharings are the same
-    /// operations on the secrets, so feeding each dealer's secret `r_j` where
-    /// the engine would feed `⟨r_j⟩`, and multiplying batches in the clear,
-    /// makes the table directly comparable to the powers of `τ = Σ r_j`.
+    /// operations on the secrets, so feeding `τ` itself where the engine would
+    /// feed `⟨τ⟩`, and multiplying batches in the clear, makes the table
+    /// directly comparable to the powers of `τ`.
     struct Harness {
         app: BtxSetup<F>,
         tau: FieldElement<F>,
@@ -417,23 +384,17 @@ mod tests {
         fn new(batch_size: usize) -> Self {
             Self {
                 app: BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, batch_size, BLS381).unwrap(),
-                tau: FieldElement::<F>::zero(),
+                tau: F::rand(),
                 batches: Vec::new(),
             }
         }
 
-        async fn deliver_inputs(&mut self) -> DepthInput<F> {
-            let mut last = DepthInput::Waiting;
-            for party in 0..NUM_NODES {
-                let r = F::rand();
-                self.tau = &self.tau + &r;
-                last = self.app.input_sharing_termination(party, vec![r]).await.unwrap();
-            }
-            last
-        }
-
+        /// The engine's handover: the one random sharing asked for, as `τ`.
         async fn deliver_preprocessing(&mut self) -> DepthInput<F> {
-            self.app.on_preprocessing_complete(RandomWireShares::empty()).await.unwrap()
+            self.app
+                .on_preprocessing_complete(RandomWireShares::new(Vec::new(), vec![self.tau.clone()]))
+                .await
+                .unwrap()
         }
 
         /// Run every depth the application schedules; returns the output wires
@@ -486,12 +447,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn table_holds_the_powers_of_the_summed_tau() {
+    async fn table_holds_the_powers_of_tau() {
         for batch_size in [1, 2, 3, 16] {
             let mut h = Harness::new(batch_size);
-            // Inputs first, then preprocessing: the second arrival starts the circuit.
-            assert!(h.deliver_inputs().await.is_waiting());
             let first = h.deliver_preprocessing().await;
+            assert!(matches!(first, DepthInput::Multiply { depth: 1, .. }), "B = {}: starts on the handover", batch_size);
             let outputs = h.run(first).await;
             assert!(outputs.is_empty(), "B = {}: the circuit declares no output wires", batch_size);
             assert_eq!(h.batches, h.app.gates_per_depth(), "B = {}", batch_size);
@@ -500,19 +460,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn starts_whichever_of_inputs_and_preprocessing_arrives_last() {
-        let mut h = Harness::new(4);
-        assert!(h.deliver_preprocessing().await.is_waiting());
-        let first = h.deliver_inputs().await;
-        assert!(matches!(first, DepthInput::Multiply { depth: 1, .. }));
-        h.run(first).await;
-        assert_eq!(h.app.shares().unwrap(), h.expected_powers());
+    async fn wrong_number_of_random_sharings_is_an_error() {
+        for sharings in [0, 2] {
+            let mut h = Harness::new(4);
+            let wires = RandomWireShares::new(Vec::new(), (0..sharings).map(|_| F::rand()).collect());
+            assert!(h.app.on_preprocessing_complete(wires).await.is_err(), "{} sharings", sharings);
+        }
+        assert_eq!(BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, 4, BLS381).unwrap().random_wires(), RandomWires::new(0, 1));
     }
 
     #[tokio::test]
-    async fn replayed_and_late_events_are_ignored() {
+    async fn replayed_and_stray_events_are_ignored() {
         let mut h = Harness::new(4);
-        h.deliver_inputs().await;
         let first = h.deliver_preprocessing().await;
         let DepthInput::Multiply { depth, x, y } = first else { panic!("depth 1 not scheduled") };
         let results: Vec<FieldElement<F>> = x.iter().zip(y.iter()).map(|(x, y)| x * y).collect();
@@ -521,10 +480,10 @@ mod tests {
 
         // A replayed termination of depth 1 schedules nothing.
         assert!(h.app.on_depth_complete(depth, results).await.unwrap().is_waiting());
-        // A late dealer after tau was assembled changes nothing.
+        // An input sharing belongs to nothing in this circuit.
         assert!(h.app.input_sharing_termination(1, vec![F::rand()]).await.unwrap().is_waiting());
         // Preprocessing arriving twice does not restart the circuit.
-        assert!(h.app.on_preprocessing_complete(RandomWireShares::empty()).await.unwrap().is_waiting());
+        assert!(h.deliver_preprocessing().await.is_waiting());
 
         h.run(second).await;
         assert_eq!(h.app.shares().unwrap(), h.expected_powers());
@@ -533,7 +492,6 @@ mod tests {
     #[tokio::test]
     async fn wrong_batch_shape_is_an_error() {
         let mut h = Harness::new(4);
-        h.deliver_inputs().await;
         let DepthInput::Multiply { depth, x, .. } = h.deliver_preprocessing().await else {
             panic!("depth 1 not scheduled")
         };
@@ -553,7 +511,6 @@ mod tests {
 
         let mut h = Harness::new(2);
         assert!(h.app.commitments().is_err(), "no commitments before the table is full");
-        h.deliver_inputs().await;
         let first = h.deliver_preprocessing().await;
         h.run(first).await;
 
@@ -576,7 +533,6 @@ mod tests {
     async fn other_fields_stop_at_the_shares() {
         let mut h = Harness::new(2);
         h.app = BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, 2, "stark252").unwrap();
-        h.deliver_inputs().await;
         let first = h.deliver_preprocessing().await;
         h.run(first).await;
         assert!(h.app.commitments().unwrap().is_none());
