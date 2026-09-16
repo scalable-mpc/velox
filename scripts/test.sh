@@ -8,7 +8,7 @@ vals=(27000 27100 27200 27300)
 TESTDIR=${TESTDIR:="testdata/$1"}
 TYPE=${TYPE:="release"}
 
-# Finite field to run over: m61 (default), stark252, or bn254.
+# Finite field to run over: m61 (default), m61base, m31, m31base, stark252, or bn254.
 FIELD=${FIELD:="m61"}
 
 # Optional 4th arg: number of random-sharing sub-batches (--rand-batches).

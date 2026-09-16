@@ -12,7 +12,7 @@ use rand::random;
 use rand_chacha::ChaCha20Rng;
 use rand_core::RngCore;
 
-use crate::{byte_conv::ByteConversion, protocol_field::ProtocolField};
+use crate::{byte_conv::ByteConversion, mersenne_prime::MersennePrimeField, protocol_field::ProtocolField};
 
 use lambdaworks_math::field::traits::IsSubFieldOf;
 
@@ -451,5 +451,16 @@ mod tests {
         let (a, b) = F::sqrt(&square).expect("a square has a root");
         assert!(a == root || b == root);
         assert_eq!(&a * &a, square);
+    }
+}
+
+impl MersennePrimeField for Mersenne61Field {
+    const BITS: usize = 61;
+
+    /// Through `representative`, not `value()`: the internal word may hold `p`
+    /// itself as a non-canonical zero (`weak_reduce` leaves it, `as_representative`
+    /// folds it).
+    fn to_canonical_u64(elem: &FieldElement<Self>) -> u64 {
+        <Self as lambdaworks_math::field::traits::IsPrimeField>::representative(elem.value())
     }
 }

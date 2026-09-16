@@ -44,8 +44,10 @@ fn start_over_field(config: Node, matches: &ArgMatches) -> Result<ExitSender> {
         "stark252" => start::<velox::fields::Stark252Field>(config, matches),
         "bn254" => start::<velox::fields::BN254Field>(config, matches),
         "m61base" => start::<velox::fields::Mersenne61Field>(config, matches),
+        "m31" | "mersenne31" => start::<velox::fields::Mersenne31Degree8ExtensionField>(config, matches),
+        "m31base" => start::<velox::fields::Mersenne31Field>(config, matches),
         other => bail!(
-            "unknown field {:?}; expected one of m61, m61base, stark252, bn254",
+            "unknown field {:?}; expected one of m61, m61base, m31, m31base, stark252, bn254",
             other
         ),
     }

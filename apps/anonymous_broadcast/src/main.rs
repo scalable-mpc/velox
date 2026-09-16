@@ -49,8 +49,13 @@ fn start_over_field(config: Node, matches: &ArgMatches) -> Result<ExitSender> {
         // extension. One share carries 7 bytes of text rather than 28, so longer
         // input lines fall back to random values.
         "m61base" => start::<velox::fields::Mersenne61Field>(config, matches),
+        // The Mersenne-31 pair: the Fp8 tower (24 bytes of text per share) and
+        // its 31-bit base field (3 bytes, so nearly every line falls back to a
+        // random value — it exists for the comparison layer, not for text).
+        "m31" | "mersenne31" => start::<velox::fields::Mersenne31Degree8ExtensionField>(config, matches),
+        "m31base" => start::<velox::fields::Mersenne31Field>(config, matches),
         other => bail!(
-            "unknown field {:?}; expected one of m61, m61base, stark252, bn254",
+            "unknown field {:?}; expected one of m61, m61base, m31, m31base, stark252, bn254",
             other
         ),
     }
