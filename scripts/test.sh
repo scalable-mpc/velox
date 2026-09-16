@@ -1,6 +1,6 @@
 # A script to test quickly
 
-killall anonymous_broadcast bristol_circuit &> /dev/null
+killall anonymous_broadcast bristol_circuit reveal_probe &> /dev/null
 rm -rf /tmp/*.db &> /dev/null
 vals=(27000 27100 27200 27300)
 
@@ -19,7 +19,11 @@ RAND_BATCHES_ARG=${4:+--rand-batches $4}
 # bristol_circuit application; otherwise anonymous_broadcast runs, and `--messages`
 # is its anonymity set size. The syncer role is served by whichever binary is in
 # play, via `--protocol sync`.
-if [ -n "${CIRCUIT:-}" ]; then
+# Set APP_BIN to run another application's binary with the same arguments
+# (e.g. APP_BIN=reveal_probe, whose second argument is --values).
+if [ -n "${APP_BIN:-}" ]; then
+    APP_ARG="${APP_ARG:-}"
+elif [ -n "${CIRCUIT:-}" ]; then
     APP_BIN=bristol_circuit
     APP_ARG="--circuit $CIRCUIT"
 else

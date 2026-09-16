@@ -97,11 +97,19 @@ new preprocessing types.
 ### Engine delta (complete)
 
 - **E1.** `DepthInput::Reveal { depth, values }` — batched public
-  reconstruction of degree-t sharings using the L1/L2 chunk trick factored out
-  of `lin_mult.rs` / `rand_bit.rs` into `protocol/reveal/`. Results return via
-  a new hook `on_reveal_complete(depth, values)` whose default impl returns
-  `Err`, so `AnonymousBroadcast` is untouched. Every `([y], y)` pair is
-  recorded in `verf_state`.
+  reconstruction of degree-t sharings. Done as an overhaul:
+  `mpc/src/protocol/public_reconstruction/` is the one chunked L1/L2
+  exchange with hash agreement, parameterised by `ReconConfig { degree: T |
+  TwoT, privacy }` and dispatched on `ReconKind { Multiplication, RandBit,
+  Reveal }`; `lin_mult` (degree 2t, privacy on — the per-message zero term)
+  and `rand_bit` (degree t) run on it, each keeping only its preamble and
+  completion. Its state hangs off the depth's `SingleDepthState`; the
+  random-bit batch is keyed at `RAND_BIT_RECON_DEPTH = 1`. Degree-t step 1
+  checks that the `n − t` L1 shares lie on one degree-t polynomial. Results
+  return via `on_reveal_complete(depth, values)`; every `([y], y)` pair is
+  recorded in `verf_state.revealed` for E2. Contract: reveal only values
+  blinded by a fresh random sharing (what a party learns at L1 is the
+  sharing polynomial of a public combination of the revealed values).
 - **E2.** Reveal verification: in the verification phase, open one
   coin-weighted combination `Σ ρ_i ([y_i] − y_i)` through the O(n²)
   degree-checked path the output layer uses; abort if nonzero. Privacy does
@@ -210,9 +218,15 @@ One PR each. Ask before every commit.
   The engine's dispatcher gets two stub arms that log an error until T3 /
   T5b replace them. Application protocol code compiles unchanged; only the
   apps' exhaustive test matches gain a wildcard arm.
-- **T3 — `mpc`: reveal primitive (E1).** Factor the L1/L2 machinery,
-  once-guards, hash agreement, record pairs. Regression via the existing
-  fixture since `lin_mult` / `rand_bit` route through it.
+- **T3 — `mpc`: public reconstruction overhaul + reveal (E1).** The
+  `public_reconstruction` module with an in-process test of the whole
+  exchange over a local Shamir sharing (both degrees, privacy term, corrupt
+  L1 share caught at degree t); `lin_mult` and `rand_bit` rewired onto it;
+  the `Reveal` arm; `apps/reveal_probe`, the one application that reveals,
+  checking `revealed − blind == input` at every party in `on_output`.
+  `quad_mult` left as is: unreachable (`multiplication_switch_threshold` is
+  0). Regression: the fixture over `m61` (comp 10/64), `m31base`,
+  `bristol_circuit`, `btx_setup`; the probe over `m61`, `m61base`, `m31base`.
 - **T4 — `ops` crate, offline.** `CarryTree`, solved-bit assembly,
   ΠTrunc / ΠFixed-Mult local steps, `Op` / `OpBatch` / `OpCounts`,
   `Program::plan`, per-op state machines, `OpsAdapter`, plaintext fake-engine
@@ -238,7 +252,7 @@ T0 so that no later task rediscovers a shortfall at depth 5005.
 
 | New consumer | Where the budget lives | Change, and in which task |
 |---|---|---|
-| `Reveal` depth | `plan` charges a depth `groups·(2t+1)` masks and `groups·(t+1)` zero sharings from its gate count | Declares 0 gates → reserves nothing, which is right: L1/L2 reconstruction consumes no preprocessing. T3 confirms. |
+| `Reveal` depth | `plan` charges a depth `groups·(2t+1)` masks and `groups·(t+1)` zero sharings from its gate count | Declares 0 gates → reserves nothing, which is right: the reconstruction pads with zero shares and draws nothing. Confirmed in T3 (`reveal_probe` declares `[1, 0]`). |
 | `MaskedMultiply` depth | same table | Draws the 2t zero-sharing like a multiplication but **not** a pool mask. Done in T2: `masked_gates_per_depth`, `plan` charges zero sharings only, `for_masked_depth` hands them out. T5b consumes. |
 | Verification of `MaskedMultiply` tuples | `num_tuples = rand_bit_batch_size·(t+1) + num_mult_gates` drives `compression_levels` and hence `verification_groups` | Done in T2: `mult_gates()` counts plain and masked gates. |
 | E2 reveal check | one coin (`total_sharings_for_coins = 10n`) and one robust opening through the output-mask path (`output_mask_size = batch_size_for(num_outputs) + 1`) | One more mask than output wires; check whether the existing `+ 1` is spare. T5. |
