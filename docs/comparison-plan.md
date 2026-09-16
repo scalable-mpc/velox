@@ -64,8 +64,7 @@ probability `2^{-ℓ}` and is ignored, as in the paper.
 |---|---|---|---|---|
 | `DReLU(a)` | reveal `y = 2a + r`; `b = y_0 ⊕ [r_0]`; `c = BitLTL(y, [r]_B)`; out `1 − (b ⊕ c)` | 1 + 6 + 1 = 8 | ~86 mults ≈ 260 elems + 1 reveal | 61 bits, ~86 masks, ~43 zero-sharings |
 | `Trunc_d(a)` | ΠTrunc: reveal `c = a + 2^{ℓ−2} + r`, rest local; error `±2` | 1 | ~3 elems | 61 bits |
-| `FixedMul_d(a,b)` v1 | `Mul` then `Trunc` | 2 | mult + reveal | 61 bits + mask |
-| `FixedMul_d(a,b)` v2 | ΠFixed-Mult via a `MaskedMultiply` engine primitive | 1 | as a mult | follow-up |
+| `FixedMul_d(a,b)` | ΠFixed-Mult via a `MaskedMultiply` engine primitive: reveal `c = ab + r + 2^{ℓ−2}`, rest local | 1 | as a mult | 61 bits + ~0.5 zero-sharing |
 | `Lt(a,b)` | `1 − DReLU(a − b)` | 8 | | |
 | `Relu(a)`, `Max(a,b)` | DReLU then one multiplication | 9 | | |
 
@@ -113,6 +112,16 @@ new preprocessing types.
   and L2 both detect errors — ~6 elements/value, no verification hook.
 - **E3.** `delinearization_depth` derived from the declared profile instead of
   the hard-coded 5000.
+- **E4.** `DepthInput::MaskedMultiply { depth, x, y, mask }` — the existing
+  multiplication protocol with the caller's `[mask]` (the solved-bits `[r]`
+  plus the `2^{ℓ−2}` offset, supplied by the ops layer) in place of a
+  pool-drawn mask, and the public `c = xy + mask` handed back through
+  `on_reveal_complete` instead of being folded. The engine still draws the
+  2t zero-sharing that randomises the degree-2t opening, and registers
+  `(x, y, c − [mask])` for tuple verification, so the malicious guarantee is
+  unchanged. This is what makes ΠFixed-Mult one round: the application layer
+  cannot open a degree-2t value on its own (no zero-sharings, no path into
+  verification).
 
 ### The ops layer
 
@@ -145,7 +154,7 @@ each engine depth is. The span depends only on which kinds are present:
 | `Compare` (± `Mul`, `Lt`) | R, M×6 (tree), M (final XOR) | 8 |
 | `Relu` / `Max` | Compare + M | 9 |
 | `Trunc` + `Mul` | R, M | 2 |
-| `FixedMul` (v1) | M, R | 2 |
+| `FixedMul` | MM (masked multiply) | 1 |
 
 Rule: one engine depth of reveals first (all ops' `y` / `c` values), then
 multiplication depths; plain `Mul`s ride in the first multiplication depth of
@@ -175,14 +184,23 @@ randomised at 61. Only the engine's own reveal is outside that harness; the
 
 One PR each. Ask before every commit.
 
-- **T0 — preprocessing undercount fix.** `TODO.md`: "runs out one sharing
-  short at depth 5005" (`rand_sh.rs` sizing /
-  `multiplication_preprocessing_requirement`). Prerequisite: three new
-  consumers on top of an off-by-one are unattributable.
-- **T1 — `fields`: `MersennePrimeField: ProtocolField`** with `const BITS`,
-  `to_canonical_u64`, `from_u64`; implemented for `Mersenne61Field` only
-  (there is no M31 *base* field, only the Fp8 tower). Compile-time restriction
-  at no cost to the engine.
+- **T0 — preprocessing undercount.** Closed without a code change: the
+  "one sharing short at depth 5005" failure recorded in `TODO.md` was fixed
+  by `fb45d90` (2026-09-09, verification tail sized from the compression
+  factor) one commit after the note was written. Verified on `master` at
+  `7395e86`: `testdata/10` with `--comp 10`/64 messages, `--comp 64`/64 and
+  `--comp 256`/256 all complete every phase. The stale note is removed. What
+  survives of T0 is the budget audit below, carried into the tasks that add
+  consumers.
+- **T1 — `fields`: `MersennePrimeField`** with `const BITS`, `MODULUS`,
+  `to_canonical_u64`, `bit`; supertrait `IsPrimeField` (a fact about the
+  field, not the protocol), implemented for `Mersenne61Field` and
+  `Mersenne31Field`. Compile-time restriction at no cost to the engine: the
+  ops adapter bounds `F: ProtocolField + MersennePrimeField`. Also, so the
+  engine can actually run at ℓ = 31: `ProtocolField` for `Mersenne31Field`
+  (`Ext` = the existing Fp8 tower, `CONV_RATIO` 8) and for
+  `Degree8ExtensionField` (Tonelli–Shanks `sqrt`, 32-byte serialization),
+  plus `--field m31` / `m31base` arms in every binary.
 - **T2 — `application`: `DepthInput::Reveal` + `on_reveal_complete`**
   (default `Err`), docs. Pure data; both apps compile unchanged.
 - **T3 — `mpc`: reveal primitive (E1).** Factor the L1/L2 machinery,
@@ -194,6 +212,10 @@ One PR each. Ask before every commit.
   test suite. The bulk of the work; reviewable without running parties.
 - **T5 — `mpc`: reveal verification (E2)** and the derived
   `delinearization_depth` (E3).
+- **T5b — `mpc`: `MaskedMultiply` (E4).** Caller-supplied mask in
+  `lin_mult` / `quad_mult`, public `c` returned via `on_reveal_complete`,
+  tuple `(x, y, c − [mask])` into `verf_state`. Its `DepthInput` variant is
+  added in T2 alongside `Reveal`.
 - **T6 — Bristol app onto `OpsApplication`.** Gate types `DRELU`, `LT`,
   `RELU`, `MAX`, `TRUNC d`, `FMUL d`; leveliser emits `OpCounts`;
   `docs/CIRCUIT_FORMAT.md`; test circuit under `testdata/circuits/`;
@@ -201,17 +223,34 @@ One PR each. Ask before every commit.
 - **T7 — benchmark + `docs/comparison.md`** (carry-tree derivation, layout
   table, why nothing is opened), in the style of `docs/simd-m61-avx2.md`.
 
+## Preprocessing budget: what each new consumer must touch
+
+Sizing lives in `init_rand_sh` (`mpc/src/protocol/rand_sharings/rand_sh.rs`)
+and `ApplicationPreprocessing::plan` (`app_preprocessing.rs`). Traced during
+T0 so that no later task rediscovers a shortfall at depth 5005.
+
+| New consumer | Where the budget lives | Change, and in which task |
+|---|---|---|
+| `Reveal` depth | `plan` charges a depth `groups·(2t+1)` masks and `groups·(t+1)` zero sharings from its gate count | Declares 0 gates → reserves nothing, which is right: L1/L2 reconstruction consumes no preprocessing. T3 confirms. |
+| `MaskedMultiply` depth | same table | Draws the 2t zero-sharing like a multiplication but **not** a pool mask. `DepthReservation` ties both counts to one gate number, so the per-depth profile needs a kind (plain vs. masked) and `plan` must charge zero sharings but no masks for masked depths. Shape decided in T2, charged in T5b. |
+| Verification of `MaskedMultiply` tuples | `num_tuples = rand_bit_batch_size·(t+1) + num_mult_gates` drives `compression_levels` and hence `verification_groups` | Masked gates must count in `mult_gates()`. T5b. |
+| E2 reveal check | one coin (`total_sharings_for_coins = 10n`) and one robust opening through the output-mask path (`output_mask_size = batch_size_for(num_outputs) + 1`) | One more mask than output wires; check whether the existing `+ 1` is spare. T5. |
+| Solved bits | `rand_bit_batch_size = batch_size_for(num_rand_bits + group)`, from `random_wires().bits` | The adapter adds `ℓ·(#compares + #truncs + #fixed_muls)` to the bits it reports. Surplus bits from the `t+1` rounding are already squared and verified. T4. |
+
 ## Follow-ups (out of scope)
 
-- `MaskedMultiply` engine primitive for the 1-round ΠFixed-Mult.
 - `DepthInput::Parallel` so a batch's reveals and plain `Mul`s share a round.
 - Folding the final XOR into the tree root with the two-layer DN trick
   (Liu et al. §5.2, Π2L-DN): 8 → 7 rounds for DReLU.
-- Mersenne-31 base field as a `ProtocolField` (note `2^{-31}` per-comparison
-  probability of `r ≡ 0`, which reveals `a`).
+- Verification soundness over Mersenne-31: the delinearization coin stays in
+  the sharing field, so tuple verification is `2^{-31}`-sound there
+  (`ProtocolField::Ext` covers the DZK only). Fine for benchmarking the
+  ℓ = 31 carry tree, not for deployment. Also note the `2^{-31}`
+  per-comparison probability of `r ≡ 0`, which reveals `a`.
 
-## Open decisions
+## Decisions taken
 
-- E2: deferred reveal check (recommended) vs. detect-at-L2 chunking
-  (~6 elements/value).
-- FixedMul v1 (2 rounds) acceptable for the first landing.
+- E2: deferred coin-weighted reveal check in the verification phase
+  (approved 2026-09-15).
+- FixedMul: `MaskedMultiply` engine primitive (E4) from the start, no 2-round
+  interim (decided 2026-09-15).

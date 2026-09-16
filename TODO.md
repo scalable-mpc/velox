@@ -162,23 +162,6 @@ reference the closed form is tested against
 four point-set shapes, plus `inv * V == I`, a round-trip through a known
 polynomial, and the `x=0` edge case).
 
-### Pre-existing: preprocessing runs out one sharing short at depth 5005
-
-Unrelated to any of the above, but found while validating it. On the
-`testdata/10`, 64-message fixture the protocol completes preprocessing, the
-36-depth mixing circuit and output masking, then stops at the last verification
-compression level with
-
-```
-Not enough preprocessed sharings for the multiplication at depth 5005:
-need 42 random and 24 zero sharings, 41 and 36 left
-```
-
-Byte-identical on `master` and on this branch, so it is a preprocessing sizing
-bug, not a concurrency one - and it is short by exactly one random sharing.
-`multiplication_preprocessing_requirement` / the application's
-`preprocessing_count` undercount the verification tail.
-
 ### Open question raised by the compress_tup rewrite
 
 `x_poly_evals_ss` / `y_poly_evals_ss` were initialised as
