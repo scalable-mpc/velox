@@ -141,13 +141,15 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         self.verify_depth_mult_termination(depth).await;
     }
 
+    /// Termination of the quadratic protocol's single-level exchange. The
+    /// linear protocol terminates through the public reconstruction instead
+    /// (`complete_linear_multiplication`); both end in
+    /// `finish_multiplication_depth`.
     pub async fn verify_depth_mult_termination(&mut self, depth: usize){
         // Now, subtract random sharings from the reconstructed secrets
         if !self.mult_state.depth_share_map.contains_key(&depth){
             return;
         }
-        // Computed before `mult_state` borrows `self.mult_state`.
-        let verified_depth = self.is_verified_depth(depth);
         let mult_state = self.mult_state.depth_share_map.get_mut(&depth).unwrap();
         if mult_state.depth_terminated{
             return;
@@ -196,48 +198,50 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             for _i in 0..mult_state.padding_shares{
                 shares_next_depth.pop();
             }
-            log::info!("Shares for next depth: {}", shares_next_depth.len());
-            // Only verified depths' tuples are ever read back (delinearization
-            // filters on `is_verified_depth`), so recording the outputs of
-            // verification's own compression multiplications just retained a
-            // vector per compression level for the rest of the run.
-            if verified_depth{
-                self.verf_state.add_mult_output_shares(depth, shares_next_depth.clone()); // Store the shares for the next depth
-            }
-            // self.choose_multiplication_protocol(a_shares, b_shares, depth)
-            // How to handle next depth wires?
-            mult_state.depth_terminated = true;
-            // The per-party L1/L2 share buffers for this depth are now dead: the
-            // reconstructed secrets have been moved into `shares_next_depth`
-            // above and handed to the next depth / verification. Free them. The
-            // termination bookkeeping is retained so late shares stay deduped.
-            // NOTE: this only frees party-sent shares; the multiplication tuples
-            // in `verf_state` are kept, as verification consumes them across all
-            // depths.
-            // Most of this is already gone by now - the raw shares were freed at
-            // their interpolation and the two vectors above were moved out - so
-            // this is the backstop for the paths that did not reach those points
-            // (e.g. hash agreement on a depth whose L1 shares never all arrived).
-            mult_state.clear_shares();
-            if depth == self.preprocessing_mult_depth{
-                // Random bit sharings, add them to mix_circuit state
-                log::info!("Multiplication complete for rand_bit preparation with shares_len: {:?}", shares_next_depth.len());
-                self.mix_circuit_state.rand_bit_recon_shares.insert(self.myid, shares_next_depth);
-                self.init_rand_bit_reconstruction().await;
-            }
-            else if depth >= self.delinearization_depth{
-                // Verification multiplies its own compressed tuples.
-                self.verify_ex_mult_termination_verification(depth, shares_next_depth).await;
-            }
-            else{
-                // An application circuit depth: hand the results back and let the
-                // application decide what runs next.
-                self.verify_application_depth_termination(depth, shares_next_depth).await;
-            }
+            self.finish_multiplication_depth(depth, shares_next_depth).await;
         }
         else{
             log::error!("Secrets less than number of random sharings used, this should not happen. Abandoning the protocol at depth {}",depth);
             return;
+        }
+    }
+
+    /// A multiplication depth has its product sharings: record them for
+    /// verification, mark the depth done, free its buffers, and hand the
+    /// products to whoever runs the next step — the random-bit pipeline for
+    /// the preprocessing depth, verification for its own depths, and the
+    /// application for everything in between.
+    pub async fn finish_multiplication_depth(&mut self, depth: usize, shares_next_depth: Vec<FieldElement<F>>){
+        let verified_depth = self.is_verified_depth(depth);
+        log::info!("Shares for next depth: {}", shares_next_depth.len());
+        // Only verified depths' tuples are ever read back (delinearization
+        // filters on `is_verified_depth`), so recording the outputs of
+        // verification's own compression multiplications just retained a
+        // vector per compression level for the rest of the run.
+        if verified_depth{
+            self.verf_state.add_mult_output_shares(depth, shares_next_depth.clone());
+        }
+        let mult_state = self.mult_state.get_single_depth_state(depth, true, 0);
+        mult_state.depth_terminated = true;
+        // The per-party share buffers for this depth are dead: the products
+        // are in `shares_next_depth`. Most of this is already gone - the raw
+        // shares were freed at their interpolation - so this is the backstop.
+        // The termination bookkeeping is retained so late shares stay deduped.
+        mult_state.clear_shares();
+        if depth == self.preprocessing_mult_depth{
+            // Random bit sharings, add them to mix_circuit state
+            log::info!("Multiplication complete for rand_bit preparation with shares_len: {:?}", shares_next_depth.len());
+            self.mix_circuit_state.rand_bit_recon_shares.insert(self.myid, shares_next_depth);
+            self.init_rand_bit_reconstruction().await;
+        }
+        else if depth >= self.delinearization_depth{
+            // Verification multiplies its own compressed tuples.
+            self.verify_ex_mult_termination_verification(depth, shares_next_depth).await;
+        }
+        else{
+            // An application circuit depth: hand the results back and let the
+            // application decide what runs next.
+            self.verify_application_depth_termination(depth, shares_next_depth).await;
         }
     }
 

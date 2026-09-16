@@ -10,6 +10,11 @@ use lambdaworks_math::field::element::FieldElement;
 /// `delinearization_depth` (verification) above.
 pub const APPLICATION_DEPTH_OFFSET: usize = 100;
 
+/// Depth the random-bit reconstruction is keyed at. The squares it opens come
+/// out of the multiplication at `preprocessing_mult_depth` (0), which owns
+/// that depth's reconstruction; a depth carries one, so this is the next.
+pub const RAND_BIT_RECON_DEPTH: usize = 1;
+
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function will be used to run the online phase of the protocol
     pub async fn init_random_shared_bits_preparation(&mut self) {
@@ -53,16 +58,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 // whatever order this party happened to schedule things.
                 self.multiply_application_batch(x, y, depth).await;
             }
-            // The reveal primitive and the masked multiplication are declared
-            // ahead of their protocols so applications can be written against
-            // them; until those land, scheduling one is an application error
-            // like any other, surfaced here rather than as a hang.
             DepthInput::Reveal { depth, values } => {
-                log::error!(
-                    "Application scheduled a reveal of {} values at depth {}, which this engine does not implement yet",
-                    values.len(), depth
-                );
+                Box::pin(self.init_reveal(depth, values)).await;
             }
+            // Declared ahead of its protocol so applications can be written
+            // against it; until that lands, scheduling one is an application
+            // error like any other, surfaced here rather than as a hang.
             DepthInput::MaskedMultiply { depth, x, .. } => {
                 log::error!(
                     "Application scheduled a masked multiplication of {} gates at depth {}, which this engine does not implement yet",
