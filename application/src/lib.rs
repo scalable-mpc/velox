@@ -13,11 +13,17 @@
 //! # Division of labour
 //!
 //! The engine owns the protocol; the application owns the circuit. Concretely,
-//! the application says *what to multiply* and the engine decides *how*: it
-//! numbers the depths, draws the preprocessing each batch consumes, picks the
-//! multiplication protocol, and verifies the resulting tuples. An application
-//! that needed to know `2t+1` to portion its own preprocessing was doing the
-//! engine's job, and doing it once per application.
+//! the application says *what to multiply* and *what to reveal* and the engine
+//! decides *how*: it numbers the depths, draws the preprocessing each batch
+//! consumes, picks the multiplication protocol, runs the public
+//! reconstruction, and verifies the resulting tuples and revealed values. An
+//! application that needed to know `2t+1` to portion its own preprocessing was
+//! doing the engine's job, and doing it once per application.
+//!
+//! The engine's vocabulary is deliberately small — a multiplication batch, a
+//! reveal batch, a masked multiplication batch — so that richer operations
+//! (comparison, truncation) are built *above* this trait, as sequences of
+//! those batches, rather than as engine features.
 
 use std::marker::PhantomData;
 
@@ -54,7 +60,21 @@ pub struct PreprocessingCounts {
     ///
     /// A depth may run *fewer* gates than it declares — it then uses a prefix of
     /// its slice, which is still the same prefix everywhere — but never more.
+    ///
+    /// A depth that carries a [`Reveal`](DepthInput::Reveal) declares `0`
+    /// here: a reveal consumes no preprocessing.
     pub gates_per_depth: Vec<usize>,
+    /// Number of [`MaskedMultiply`](DepthInput::MaskedMultiply) gates at each
+    /// depth, depth 1 first, under the same fixed-slice rule as
+    /// [`gates_per_depth`](Self::gates_per_depth). Shorter than that vector
+    /// means the remaining depths have none; empty (the default) means the
+    /// circuit has no masked multiplications at all.
+    ///
+    /// A masked gate is charged a share of the `2t` zero-sharings a batch
+    /// draws but no mask, since the application supplies the mask. A depth
+    /// declares gates of one kind only — one batch per depth, see
+    /// [`DepthInput`].
+    pub masked_gates_per_depth: Vec<usize>,
     /// Number of output wires to be reconstructed, each of which needs a mask.
     pub output: usize,
 }
@@ -63,27 +83,54 @@ impl PreprocessingCounts {
     pub fn new(gates_per_depth: Vec<usize>, output: usize) -> Self {
         Self {
             gates_per_depth,
+            masked_gates_per_depth: Vec::new(),
             output,
         }
     }
 
-    /// Total number of multiplication gates across every depth.
+    /// Declare masked multiplication gates per depth; see
+    /// [`masked_gates_per_depth`](Self::masked_gates_per_depth).
+    pub fn with_masked_gates(mut self, masked_gates_per_depth: Vec<usize>) -> Self {
+        self.masked_gates_per_depth = masked_gates_per_depth;
+        self
+    }
+
+    /// Total number of multiplication gates across every depth, plain and
+    /// masked: every one of them produces a tuple the verification phase
+    /// checks, which is what this total sizes.
     pub fn mult_gates(&self) -> usize {
+        self.plain_gates() + self.masked_gates_per_depth.iter().sum::<usize>()
+    }
+
+    /// Gates that draw a mask from the engine's pool — the plain ones.
+    pub fn plain_gates(&self) -> usize {
         self.gates_per_depth.iter().sum()
     }
 
     /// Number of multiplication depths — protocol rounds, not gate depth.
     /// Linear gates are evaluated locally and do not count.
     pub fn depth(&self) -> usize {
-        self.gates_per_depth.len()
+        self.gates_per_depth.len().max(self.masked_gates_per_depth.len())
     }
 
-    /// Number of gates depth `depth` declared, counting depths from 1.
+    /// Number of plain gates depth `depth` declared, counting depths from 1;
+    /// `None` past the declared depths.
     pub fn gates_at_depth(&self, depth: usize) -> Option<usize> {
-        depth
-            .checked_sub(1)
-            .and_then(|index| self.gates_per_depth.get(index))
-            .copied()
+        Self::at_depth(&self.gates_per_depth, self.depth(), depth)
+    }
+
+    /// Number of masked gates depth `depth` declared, counting depths from 1;
+    /// `Some(0)` for a declared depth the shorter vector does not reach.
+    pub fn masked_gates_at_depth(&self, depth: usize) -> Option<usize> {
+        Self::at_depth(&self.masked_gates_per_depth, self.depth(), depth)
+    }
+
+    fn at_depth(profile: &[usize], depths: usize, depth: usize) -> Option<usize> {
+        let index = depth.checked_sub(1)?;
+        if index >= depths {
+            return None;
+        }
+        Some(profile.get(index).copied().unwrap_or(0))
     }
 }
 
@@ -177,6 +224,27 @@ pub trait Application<F: ProtocolField>: Send + 'static {
         results: Vec<FieldElement<F>>,
     ) -> Result<DepthInput<F>>;
 
+    /// A [`Reveal`](DepthInput::Reveal) or
+    /// [`MaskedMultiply`](DepthInput::MaskedMultiply) batch at `depth` has
+    /// completed; `values` are the reconstructed field elements, in operand
+    /// order. They are public — every party holds the same vector.
+    ///
+    /// The default is an error, not [`DepthInput::Waiting`]: an application
+    /// that scheduled a reveal and does not handle its result has a bug, and
+    /// `Waiting` would turn that into the silent hang the `Err` path exists to
+    /// surface. Applications that never reveal need not override it.
+    async fn on_reveal_complete(
+        &mut self,
+        depth: usize,
+        values: Vec<FieldElement<F>>,
+    ) -> Result<DepthInput<F>> {
+        let _ = values;
+        anyhow::bail!(
+            "a reveal batch completed at depth {} but this application does not implement on_reveal_complete",
+            depth
+        )
+    }
+
     /// The protocol has terminated: every multiplication the circuit ran has
     /// been verified, and the parties have agreed that at least `t+1` of them
     /// reconstructed the output. `outputs` are the reconstructed values of the
@@ -258,5 +326,47 @@ impl<F: ProtocolField> Application<F> for DefaultApplication<F> {
     ) -> Result<DepthInput<F>> {
         log::info!("DefaultApplication: depth {} complete", depth);
         Ok(DepthInput::Waiting)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Masked gates count towards the tuples verification sizes, not towards
+    /// the masks the pool provides.
+    #[test]
+    fn masked_gates_are_tuples_but_not_masks() {
+        let counts = PreprocessingCounts::new(vec![3, 0, 5], 0).with_masked_gates(vec![0, 4]);
+        assert_eq!(counts.plain_gates(), 8);
+        assert_eq!(counts.mult_gates(), 12);
+        assert_eq!(PreprocessingCounts::new(vec![3], 0).mult_gates(), 3);
+    }
+
+    /// The depth count covers both profiles, and each lookup fills the shorter
+    /// profile with zeros up to that count.
+    #[test]
+    fn depth_spans_both_profiles() {
+        let counts = PreprocessingCounts::new(vec![3, 0], 0).with_masked_gates(vec![0, 4, 6]);
+        assert_eq!(counts.depth(), 3);
+        assert_eq!(counts.gates_at_depth(1), Some(3));
+        assert_eq!(counts.gates_at_depth(3), Some(0), "declared by the masked profile only");
+        assert_eq!(counts.masked_gates_at_depth(1), Some(0));
+        assert_eq!(counts.masked_gates_at_depth(3), Some(6));
+        assert_eq!(counts.gates_at_depth(4), None);
+        assert_eq!(counts.masked_gates_at_depth(4), None);
+        assert_eq!(counts.gates_at_depth(0), None);
+        assert_eq!(counts.masked_gates_at_depth(0), None);
+    }
+
+    /// Without masked gates nothing about the old accessors changes.
+    #[test]
+    fn plain_profile_is_unchanged() {
+        let counts = PreprocessingCounts::new(vec![1, 2], 7);
+        assert_eq!(counts.depth(), 2);
+        assert_eq!(counts.gates_at_depth(2), Some(2));
+        assert_eq!(counts.gates_at_depth(3), None);
+        assert_eq!(counts.masked_gates_at_depth(2), Some(0));
+        assert_eq!(counts.output, 7);
     }
 }

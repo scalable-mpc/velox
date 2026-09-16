@@ -53,6 +53,22 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 // whatever order this party happened to schedule things.
                 self.multiply_application_batch(x, y, depth).await;
             }
+            // The reveal primitive and the masked multiplication are declared
+            // ahead of their protocols so applications can be written against
+            // them; until those land, scheduling one is an application error
+            // like any other, surfaced here rather than as a hang.
+            DepthInput::Reveal { depth, values } => {
+                log::error!(
+                    "Application scheduled a reveal of {} values at depth {}, which this engine does not implement yet",
+                    values.len(), depth
+                );
+            }
+            DepthInput::MaskedMultiply { depth, x, .. } => {
+                log::error!(
+                    "Application scheduled a masked multiplication of {} gates at depth {}, which this engine does not implement yet",
+                    x.len(), depth
+                );
+            }
             DepthInput::Done(output_wires) => {
                 self.handle_application_output(output_wires).await;
             }

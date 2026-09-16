@@ -433,6 +433,7 @@ mod tests {
             DepthInput::Multiply { depth, x, y } => (depth, x, y),
             DepthInput::Waiting => panic!("expected a multiplication batch, got Waiting"),
             DepthInput::Done(_) => panic!("expected a multiplication batch, got Done"),
+            other => panic!("expected a multiplication batch, got {:?}", other),
         }
     }
 
@@ -562,6 +563,7 @@ mod tests {
                         x.iter().zip(y.iter()).map(|(a, b)| a.clone() * b.clone()).collect();
                     depth_input = app.handle_mult_results(depth, results).unwrap();
                 }
+                other => panic!("the mixing circuit only multiplies, got {:?}", other),
             }
         }
     }
@@ -705,6 +707,7 @@ mod tests {
                                 x.iter().zip(y.iter()).map(|(a, b)| a.clone() * b.clone()).collect();
                             depth_input = app.handle_mult_results(depth, results).unwrap();
                         }
+                        other => panic!("n={} k={}: the mixing circuit only multiplies, got {:?}", num_nodes, k, other),
                     }
                 }
                 assert_eq!(scheduled, counts.gates_per_depth, "n={} k={}", num_nodes, k);
@@ -769,6 +772,7 @@ mod tests {
                             x.iter().zip(y.iter()).map(|(a, b)| a.clone() * b.clone()).collect();
                         depth_input = app.handle_mult_results(depth, results).unwrap();
                     }
+                    other => panic!("k={}: the mixing circuit only multiplies, got {:?}", k, other),
                 }
             }
             assert_eq!(depths_seen, app.max_depth, "k={}", k);

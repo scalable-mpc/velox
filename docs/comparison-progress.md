@@ -8,7 +8,7 @@ Status legend: `todo` · `in progress` · `in review` · `done` · `blocked`.
 |---|---|---|---|
 | T0 — preprocessing undercount | done | | Already fixed by `fb45d90`; verified on master `7395e86` (comp 10/64/256). Stale `TODO.md` note removed; budget audit table added to the plan. |
 | T1 — `fields`: `MersennePrimeField` | done | | Both M61 and M31 base fields. Scope grew on request: `ProtocolField` for M31 base + Fp8 tower, `--field m31`/`m31base`; fixture runs clean over both. |
-| T2 — `application`: `Reveal` + `on_reveal_complete` | todo | | |
+| T2 — `application`: `Reveal`, `MaskedMultiply`, `on_reveal_complete` | done | | Counts shape and `plan` charging included; engine stub arms until T3/T5b. Also fixed the stale `mpc` lib-test helper left by the BTX merge. |
 | T3 — `mpc`: reveal primitive (E1) | todo | | |
 | T4 — `ops` crate (offline) | todo | | |
 | T5 — `mpc`: reveal verification (E2), derived `delinearization_depth` (E3) | todo | | |
@@ -34,4 +34,5 @@ Status legend: `todo` · `in progress` · `in review` · `done` · `blocked`.
 - 2026-09-14 — Branch created; plan and this file written. No code changes yet.
 - 2026-09-15 — Rebased onto master after PR #14 (BTX setup) merged. E2 approved; FixedMul v2 chosen.
 - 2026-09-15 — T0: undercount found already fixed (`fb45d90`); three fixture runs clean. `TODO.md` note dropped, budget audit recorded in the plan.
+- 2026-09-15 — T2 implemented: two `DepthInput` variants with constructors, `on_reveal_complete` (default `Err`), `masked_gates_per_depth` + `plan` charging + `for_masked_depth`, stub dispatcher arms; 62 tests across application/mpc/apps pass; m61 fixture clean.
 - 2026-09-15 — T1 implemented. `MersennePrimeField` for M61 + M31; `ProtocolField` for M31 base and Fp8 (Tonelli–Shanks sqrt); 50 field tests pass; `testdata/10` fixture completes over `m31` and `m31base`. Caveat recorded: tuple verification is 2^-31-sound over M31.

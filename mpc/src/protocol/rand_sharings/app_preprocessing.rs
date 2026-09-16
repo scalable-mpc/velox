@@ -65,20 +65,27 @@ impl<F: ProtocolField> ApplicationPreprocessing<F> {
     /// Each depth is charged what the linear multiplication protocol charges a
     /// batch of that many gates: the gate count padded up to a whole number of
     /// groups of `2t+1`, one mask per padded gate, and `t+1` zero sharings per
-    /// group. Padding a depth that declares no gates costs nothing.
+    /// group. Padding a depth that declares no gates costs nothing, which is
+    /// what a reveal depth declares.
+    ///
+    /// A depth of masked gates is charged the zero sharings and no masks: the
+    /// application supplies the mask. A depth declares one kind or the other;
+    /// a depth that declares both is charged for both, which only wastes
+    /// material, and the engine refuses the second batch at that number anyway.
     pub fn plan(counts: &PreprocessingCounts, num_faults: usize) -> Self {
         let group = 2 * num_faults + 1;
         let zero_per_group = num_faults + 1;
 
         let mut table = Vec::with_capacity(counts.depth());
         let (mut rand_offset, mut zero_offset) = (0usize, 0usize);
-        for gates in counts.gates_per_depth.iter() {
-            let groups = gates.div_ceil(group);
+        for depth in 1..=counts.depth() {
+            let plain_groups = counts.gates_at_depth(depth).unwrap_or(0).div_ceil(group);
+            let masked_groups = counts.masked_gates_at_depth(depth).unwrap_or(0).div_ceil(group);
             let reservation = DepthReservation {
                 rand_offset,
-                rand_len: groups * group,
+                rand_len: plain_groups * group,
                 zero_offset,
-                zero_len: groups * zero_per_group,
+                zero_len: (plain_groups + masked_groups) * zero_per_group,
             };
             rand_offset += reservation.rand_len;
             zero_offset += reservation.zero_len;
@@ -172,6 +179,44 @@ impl<F: ProtocolField> ApplicationPreprocessing<F> {
             self.zero[reservation.zero_offset..zero_end].to_vec(),
         ))
     }
+    /// Masked depths reconstruct a masked degree-2t sharing. The secret itself is blinded
+    /// by a degree-t random sharing. But, the coefficients can themselves reveal information
+    /// about the secrets because it is a degree-2t sharing that we get after multiplying two sharings. 
+    /// Hence, we only prepare degree-2t sharings of zero as preprocessing material for masked reveal. 
+    /// 
+    /// The zero sharings depth `depth` consumes for a masked batch of `gates`
+    /// gates, counting depths from 1. No masks: the caller brought its own.
+    /// Same prefix rule as [`for_depth`](Self::for_depth).
+    pub fn for_masked_depth(&self, depth: usize, gates: usize) -> Result<Vec<FieldElement<F>>, String> {
+        let Some(reservation) = depth.checked_sub(1).and_then(|index| self.table.get(index)) else {
+            return Err(format!(
+                "depth {} is outside the {} depths the application declared",
+                depth,
+                self.table.len()
+            ));
+        };
+
+        let zero_len = gates.div_ceil(self.group) * self.zero_per_group;
+        if zero_len > reservation.zero_len {
+            return Err(format!(
+                "depth {} ran {} masked gates but declared zero sharings for {}",
+                depth,
+                gates,
+                reservation.zero_len / self.zero_per_group * self.group
+            ));
+        }
+        let zero_end = reservation.zero_offset + zero_len;
+        if zero_end > self.zero.len() {
+            return Err(format!(
+                "depth {} needs zero sharings [{}..{}), but only {} were reserved; preprocessing fell short",
+                depth,
+                reservation.zero_offset,
+                zero_end,
+                self.zero.len()
+            ));
+        }
+        Ok(self.zero[reservation.zero_offset..zero_end].to_vec())
+    }
 }
 
 impl<F: ProtocolField> Default for ApplicationPreprocessing<F> {
@@ -191,7 +236,12 @@ mod tests {
     const GROUP: usize = 7;
 
     fn planned(gates_per_depth: Vec<usize>) -> ApplicationPreprocessing<F> {
-        let counts = PreprocessingCounts::new(gates_per_depth, 0, 1);
+        let counts = PreprocessingCounts::new(gates_per_depth, 1);
+        ApplicationPreprocessing::plan(&counts, NUM_FAULTS)
+    }
+
+    fn planned_with_masked(gates: Vec<usize>, masked: Vec<usize>) -> ApplicationPreprocessing<F> {
+        let counts = PreprocessingCounts::new(gates, 1).with_masked_gates(masked);
         ApplicationPreprocessing::plan(&counts, NUM_FAULTS)
     }
 
@@ -277,6 +327,50 @@ mod tests {
 
         let error = plan.for_depth(3, 1).unwrap_err();
         assert!(error.contains("outside the 2 depths"), "got {:?}", error);
+    }
+
+    /// A masked depth is charged zero sharings but no masks, so the next plain
+    /// depth's masks start where the previous plain depth's ended.
+    #[test]
+    fn masked_depths_take_zero_sharings_only() {
+        let plan = planned_with_masked(vec![GROUP, 0, GROUP], vec![0, GROUP + 1, 0]);
+
+        assert_eq!(plan.table[1].rand_len, 0);
+        assert_eq!(plan.table[1].zero_len, 2 * (NUM_FAULTS + 1), "one gate over a group takes two");
+        assert_eq!(plan.table[2].rand_offset, GROUP, "masks skip the masked depth");
+        assert_eq!(plan.table[2].zero_offset, 3 * (NUM_FAULTS + 1), "zero sharings do not");
+        assert_eq!(plan.rand_total(), 2 * GROUP);
+        assert_eq!(plan.zero_total(), 4 * (NUM_FAULTS + 1));
+    }
+
+    /// The masked profile may be shorter than the plain one, or longer.
+    #[test]
+    fn masked_profile_length_is_independent() {
+        let shorter = planned_with_masked(vec![1, 1, 1], vec![1]);
+        assert_eq!(shorter.num_depths(), 3);
+        assert_eq!(shorter.table[0].rand_len, GROUP);
+        assert_eq!(shorter.table[0].zero_len, 2 * (NUM_FAULTS + 1), "plain and masked on one depth: charged for both");
+
+        let longer = planned_with_masked(vec![1], vec![0, 1]);
+        assert_eq!(longer.num_depths(), 2);
+        assert_eq!(longer.table[1].rand_len, 0);
+        assert_eq!(longer.table[1].zero_len, NUM_FAULTS + 1);
+    }
+
+    #[test]
+    fn a_masked_depth_hands_out_its_zero_slice() {
+        let mut plan = planned_with_masked(vec![GROUP, 0], vec![0, 3]);
+        let zero = (0..plan.zero_total() as u64).map(FieldElement::<F>::from).collect();
+        plan.fill((0..plan.rand_total() as u64).map(FieldElement::<F>::from).collect(), zero);
+
+        let zeros = plan.for_masked_depth(2, 3).unwrap();
+        assert_eq!(zeros.len(), NUM_FAULTS + 1);
+        assert_eq!(zeros[0], FieldElement::<F>::from((NUM_FAULTS + 1) as u64), "after depth 1's group");
+        assert_eq!(plan.for_masked_depth(2, 1).unwrap(), zeros, "prefix rule");
+        assert!(plan.for_masked_depth(2, GROUP + 1).unwrap_err().contains("declared zero sharings for"));
+        assert!(plan.for_masked_depth(3, 1).unwrap_err().contains("outside the 2 depths"));
+        // A plain request at a masked depth has no masks to give.
+        assert!(plan.for_depth(2, 1).unwrap_err().contains("declared room for 0"));
     }
 
     /// A purely linear circuit declares no depths and reserves nothing.

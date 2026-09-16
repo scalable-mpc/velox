@@ -550,6 +550,7 @@ mod tests {
                             x.into_iter().zip(y.into_iter()).map(|(x, y)| x * y).collect();
                         depth_input = self.app.on_depth_complete(depth, results).await.unwrap();
                     }
+                    other => panic!("the circuit only multiplies, got {:?}", other),
                 }
             }
         }

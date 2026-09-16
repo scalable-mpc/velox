@@ -78,7 +78,7 @@ pub struct BtxSetup<F: ProtocolField> {
     /// computed only over [`BLS381`]; other fields are for benchmarking the
     /// circuit and stop at printing the shares.
     field: String,
-    
+
     circuit_started: bool,
 
     /// `powers[i]` is this party's share `⟨τ^i⟩_j`, `i = 1..=2B`. Index 0 is
@@ -410,6 +410,7 @@ mod tests {
                             x.into_iter().zip(y.into_iter()).map(|(x, y)| x * y).collect();
                         depth_input = self.app.on_depth_complete(depth, results).await.unwrap();
                     }
+                    other => panic!("the setup only multiplies, got {:?}", other),
                 }
             }
         }

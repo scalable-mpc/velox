@@ -201,8 +201,15 @@ One PR each. Ask before every commit.
   (`Ext` = the existing Fp8 tower, `CONV_RATIO` 8) and for
   `Degree8ExtensionField` (Tonelli–Shanks `sqrt`, 32-byte serialization),
   plus `--field m31` / `m31base` arms in every binary.
-- **T2 — `application`: `DepthInput::Reveal` + `on_reveal_complete`**
-  (default `Err`), docs. Pure data; both apps compile unchanged.
+- **T2 — `application`: `DepthInput::{Reveal, MaskedMultiply}` +
+  `on_reveal_complete`** (default `Err`), `PreprocessingCounts::
+  masked_gates_per_depth` (additive; `mult_gates()` counts both kinds since
+  both are verified tuples, `plain_gates()` sizes the masks), and the
+  charging in `ApplicationPreprocessing::plan` — a masked depth reserves
+  zero-sharings and no masks — with `for_masked_depth` for T5b to draw from.
+  The engine's dispatcher gets two stub arms that log an error until T3 /
+  T5b replace them. Application protocol code compiles unchanged; only the
+  apps' exhaustive test matches gain a wildcard arm.
 - **T3 — `mpc`: reveal primitive (E1).** Factor the L1/L2 machinery,
   once-guards, hash agreement, record pairs. Regression via the existing
   fixture since `lin_mult` / `rand_bit` route through it.
@@ -232,8 +239,8 @@ T0 so that no later task rediscovers a shortfall at depth 5005.
 | New consumer | Where the budget lives | Change, and in which task |
 |---|---|---|
 | `Reveal` depth | `plan` charges a depth `groups·(2t+1)` masks and `groups·(t+1)` zero sharings from its gate count | Declares 0 gates → reserves nothing, which is right: L1/L2 reconstruction consumes no preprocessing. T3 confirms. |
-| `MaskedMultiply` depth | same table | Draws the 2t zero-sharing like a multiplication but **not** a pool mask. `DepthReservation` ties both counts to one gate number, so the per-depth profile needs a kind (plain vs. masked) and `plan` must charge zero sharings but no masks for masked depths. Shape decided in T2, charged in T5b. |
-| Verification of `MaskedMultiply` tuples | `num_tuples = rand_bit_batch_size·(t+1) + num_mult_gates` drives `compression_levels` and hence `verification_groups` | Masked gates must count in `mult_gates()`. T5b. |
+| `MaskedMultiply` depth | same table | Draws the 2t zero-sharing like a multiplication but **not** a pool mask. Done in T2: `masked_gates_per_depth`, `plan` charges zero sharings only, `for_masked_depth` hands them out. T5b consumes. |
+| Verification of `MaskedMultiply` tuples | `num_tuples = rand_bit_batch_size·(t+1) + num_mult_gates` drives `compression_levels` and hence `verification_groups` | Done in T2: `mult_gates()` counts plain and masked gates. |
 | E2 reveal check | one coin (`total_sharings_for_coins = 10n`) and one robust opening through the output-mask path (`output_mask_size = batch_size_for(num_outputs) + 1`) | One more mask than output wires; check whether the existing `+ 1` is spare. T5. |
 | Solved bits | `rand_bit_batch_size = batch_size_for(num_rand_bits + group)`, from `random_wires().bits` | The adapter adds `ℓ·(#compares + #truncs + #fixed_muls)` to the bits it reports. Surplus bits from the `t+1` rounding are already squared and verified. T4. |
 
