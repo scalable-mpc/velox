@@ -5,7 +5,7 @@
 //! [`Application`] trait, [`FieldElement`], the [`Node`] config type — so an
 //! application takes a single dependency rather than five spread across two
 //! repositories, each rev-pinned separately and free to skew. That matters most
-//! once applications live in their own repositories: `application`, `fields` and
+//! once applications live in their own repositories: `planner`, `fields` and
 //! `mpc` come from velox, but `Node`, `Replica` and `util::io` come from
 //! `secure-distributed-computing-protocols`, and an application should not have
 //! to know that.
@@ -65,7 +65,13 @@ pub use syncer::Syncer;
 // ---------------------------------------------------------------------------
 
 /// The trait an application implements, and the data model its hooks exchange.
-pub use application::{Application, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires};
+pub use planner::{Application, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires};
+
+/// The Planner: comparison, min/max, truncation and fixed-point
+/// multiplication as single operations over a Mersenne-prime field. An
+/// application implements `PlannerApplication` and is run as
+/// `Planner::new(app)`, which is an `Application` the engine can host.
+pub use planner::{self, OpParams, EdaBit, Op, OpDepthInput, OpType, OpResult, Planner, PlannerApplication, PlannerCounts};
 
 /// The field abstraction the whole protocol is generic over, and the concrete
 /// fields `--field` selects between (`fields::{DefaultField, Mersenne61Field,

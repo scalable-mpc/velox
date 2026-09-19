@@ -13,7 +13,7 @@
 //! the L2 step has no redundancy, so a corrupt party could otherwise shift a
 //! revealed value consistently at every honest party.
 
-use application::Application;
+use planner::api::engine::Application;
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 

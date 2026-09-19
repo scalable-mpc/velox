@@ -1,5 +1,5 @@
 use anyhow::Result;
-use application::{Application, DepthInput};
+use planner::api::engine::{Application, DepthInput};
 use fields::ProtocolField;
 use crate::{Context};
 use lambdaworks_math::field::element::FieldElement;

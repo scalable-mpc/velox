@@ -12,14 +12,14 @@
 //! rules out fast-forwarding past a depth whose reconstruction has already
 //! arrived. So the layout is computed up front instead: the application declares
 //! how many gates sit at each depth
-//! ([`PreprocessingCounts::gates_per_depth`](application::PreprocessingCounts::gates_per_depth)),
+//! ([`PreprocessingCounts::gates_per_depth`](planner::api::engine::PreprocessingCounts::gates_per_depth)),
 //! and the table below turns that into a fixed offset per depth. Depth `d` then
 //! reads the same slice at every party, whenever it happens to run.
 //!
 //! Slices are read, not drained, so re-running a depth — a replayed termination,
 //! a fast-forward that revisits one — consumes exactly the same material.
 
-use application::PreprocessingCounts;
+use planner::api::engine::PreprocessingCounts;
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 

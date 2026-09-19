@@ -10,7 +10,7 @@
 //! `a_k · b_k + r_k` are back and agreed on, subtracting `[r_k]` gives the
 //! degree-`t` product sharing.
 
-use application::Application;
+use planner::api::engine::Application;
 
 use crate::{
     protocol::public_reconstruction::{ReconConfig, ReconKind},

@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 fields = { package = "fields", path="../fields"}
-application = { package = "application", path="../application"}
+planner = { package = "planner", path = "../planner" }
 
 consensus = {package = "consensus", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 config = { package = "config", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}

@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use application::{Application, PreprocessingCounts, RandomWires};
+use planner::api::engine::{Application, PreprocessingCounts, RandomWires};
 use config::Node;
 
 use fnv::FnvHashMap;

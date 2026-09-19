@@ -8,7 +8,7 @@
 //! depth, and until we have started one our own L1 messages are not out
 //! either, so nobody is waiting on us to be faster than that.
 
-use application::Application;
+use planner::api::engine::Application;
 use bincode::Result as BincodeResult;
 use crypto::hash::Hash;
 use fields::{rayon_async, FieldSer, LargeFieldSer, ProtocolField};

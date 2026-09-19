@@ -1,0 +1,24 @@
+[package]
+name = "planner"
+version = "0.1.0"
+edition = "2021"
+
+# The Planner: the engine's application API (`Application`, `DepthInput`,
+# the preprocessing declaration) and, above it, comparison, min/max,
+# truncation and fixed-point multiplication as single operations for
+# applications that program against the Planner. Everything here is
+# arithmetic on sharings the caller holds; nothing touches the network.
+
+[dependencies]
+fields = { path = "../fields" }
+
+anyhow = "1"
+async-trait = "0"
+log = "*"
+lambdaworks-math = "=0.13.0"
+rand = "0.6"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt"] }
+rand_core = "0.6.4"
+rand_chacha = "0.3.1"

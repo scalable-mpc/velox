@@ -1,4 +1,4 @@
-use application::Application;
+use planner::api::engine::Application;
 use lambdaworks_math::{polynomial::Polynomial};
 use fields::{LargeFieldSer, inverse_vandermonde_from_points, matrix_matrix_multiply, powers_matrix, rayon_async, ProtocolField, FieldSer};
 use rayon::prelude::{ParallelIterator, IntoParallelRefIterator};

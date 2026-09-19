@@ -13,9 +13,9 @@ edition = "2021"
 # parsing, config loading, the syncer, the tokio runtime and signal handling.
 
 [dependencies]
-application = { package = "application", path = "../application" }
 fields = { package = "fields", path = "../fields" }
 mpc = { package = "mpc", path = "../mpc" }
+planner = { package = "planner", path = "../planner" }
 
 config = { package = "config", git = "https://github.com/scalable-mpc/secure-distributed-computing-protocols.git" }
 types = { package = "types", git = "https://github.com/scalable-mpc/secure-distributed-computing-protocols.git" }
