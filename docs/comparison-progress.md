@@ -10,7 +10,7 @@ Status legend: `todo` · `in progress` · `in review` · `done` · `blocked`.
 | T1 — `fields`: `MersennePrimeField` | done | | Both M61 and M31 base fields. Scope grew on request: `ProtocolField` for M31 base + Fp8 tower, `--field m31`/`m31base`; fixture runs clean over both. |
 | T2 — `application`: `Reveal`, `MaskedMultiply`, `on_reveal_complete` | done | | Counts shape and `plan` charging included; engine stub arms until T3/T5b. Also fixed the stale `mpc` lib-test helper left by the BTX merge. |
 | T3 — `mpc`: public reconstruction overhaul + reveal (E1) | done | | `public_reconstruction/` module (degree/privacy options, hash agreement, state on the depth object); `lin_mult` + `rand_bit` rewired; `apps/reveal_probe` e2e over m61/m61base/m31base; every fixture clean. |
-| T4 — `ops` crate (offline) | todo | | |
+| T4 — the Planner (`planner/`, offline) | done | | edaBits, carry tree, op vocabulary, layout, executors, `Planner: Application`; 16 tests incl. a plaintext engine running every op at ℓ = 61 and 31. Nothing on the network until T5b/T6. |
 | T5 — `mpc`: reveal verification (E2), derived `delinearization_depth` (E3) | todo | | |
 | T5b — `mpc`: `MaskedMultiply` (E4) | todo | | |
 | T6 — Bristol app on `OpsApplication` | todo | | |
@@ -28,6 +28,16 @@ Status legend: `todo` · `in progress` · `in review` · `done` · `blocked`.
   dropped.
 - 2026-09-15 — Reveal robustness: deferred coin-weighted check in the
   verification phase (E2). Approved.
+- 2026-09-16 — The ops layer is the **Planner**: a crate bridging
+  application and engine, hooks of the same shape as `Application`
+  returning `OpDepthInput` with ops Mul, Add, Compare, ComparePub, Max, Min,
+  MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul (values, not wire
+  ids); one `Ops` per op-depth; per-op-depth `OpProfile` declared up front;
+  the Planner manages edaBits. Bristol moves to it in T6; other apps stay.
+- 2026-09-18 — One operation per op-depth in the Planner (no mixing of kinds
+  in a batch); an application needing two kinds side by side schedules two
+  op-depths. Removes the contribution merging, per-op offsets and the
+  twelve-field profile.
 - 2026-09-16 — T3 is an overhaul, not an add-alongside: one
   `public_reconstruction` module with degree (t / 2t) and privacy (zero
   term) options, its state attached to each depth's state object; module
@@ -38,6 +48,10 @@ Status legend: `todo` · `in progress` · `in review` · `done` · `blocked`.
 - 2026-09-14 — Branch created; plan and this file written. No code changes yet.
 - 2026-09-15 — Rebased onto master after PR #14 (BTX setup) merged. E2 approved; FixedMul v2 chosen.
 - 2026-09-15 — T0: undercount found already fixed (`fb45d90`); three fixture runs clean. `TODO.md` note dropped, budget audit recorded in the plan.
+- 2026-09-18 — Plan vocabulary: `OpStep` (per-element step an op declares), `EngineRound` (a step placed at an engine depth), `OpDepthPlan`, `Plan` (`plan.rs`, was `layout.rs`); `Plan::compile`, `Planner::plan()`, `ops::steps_of`.
+- 2026-09-18 — The `application` crate is folded into the Planner as `planner::api::engine` — the engine's API lives beside the application API it is built under; `mpc` and `velox` now depend on `planner`. `Kind` renamed `Type` throughout the Planner.
+- 2026-09-18 — Planner reorganised into api/ (application, engine), planner core, layout, ops/ (one file per op on one template: `operands` / `on_step_complete` / `into_result`), primitives/; then simplified to one operation per op-depth, each type owning its schedule. 16 tests unchanged in coverage.
+- 2026-09-16 — T4 implemented: `planner/` crate, re-exported from `velox`. Ops Mul/Add/Compare/ComparePub/Max/Min/MaxPub/MinPub/Reveal/MaskReveal/Truncate/FixedMul; rounds table verified by tests; comparison exhaustive on small values and randomised over the domain; Truncate/FixedMul within ±2.
 - 2026-09-16 — T3 implemented: module + 7 offline tests, `lin_mult`/`rand_bit` on it, `Reveal` live, `reveal_probe` (10/10 parties verify) over three fields; anonymous_broadcast (comp 10/64, m31base), bristol and btx fixtures clean. `mpc` gains dev-deps `rand_core`/`rand_chacha`.
 - 2026-09-15 — T2 implemented: two `DepthInput` variants with constructors, `on_reveal_complete` (default `Err`), `masked_gates_per_depth` + `plan` charging + `for_masked_depth`, stub dispatcher arms; 62 tests across application/mpc/apps pass; m61 fixture clean.
 - 2026-09-15 — T1 implemented. `MersennePrimeField` for M61 + M31; `ProtocolField` for M31 base and Fp8 (Tonelli–Shanks sqrt); 50 field tests pass; `testdata/10` fixture completes over `m31` and `m31base`. Caveat recorded: tuple verification is 2^-31-sound over M31.

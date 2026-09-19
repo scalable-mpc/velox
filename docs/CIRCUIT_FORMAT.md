@@ -1,7 +1,7 @@
 # Arithmetic Circuit Format
 
 Velox evaluates arithmetic circuits given as text files with the `.arith`
-extension, through the [`BristolCircuit`](../application/src/bristol_circuit/app.rs)
+extension, through the [`BristolCircuit`](../apps/bristol_circuit/src/lib.rs)
 application. The format is inspired by
 [Bristol Fashion](https://nigelsmart.github.io/MPC-Circuits/) but simplified for
 arithmetic MPC over a finite field: gates are `ADD` and `MUL` rather than

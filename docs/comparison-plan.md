@@ -74,18 +74,20 @@ elements per gate per party in the linear protocol (`2n/(2t+1)`).
 ## Architecture
 
 ```
-apps/*              implements OpsApplication:  Op::{Mul, Compare, Lt, Relu, Max, Trunc, FixedMul}
-   │                per op-depth; one result per op back
-   ▼
-ops crate           OpsAdapter<F: MersennePrimeField, A: OpsApplication<F>> — implements Application<F>
-                    compiles OpCounts into a flat engine depth layout, runs the per-op state
-                    machines, assembles solved bits from the engine's signs
+apps/*                        implement PlannerApplication:  one Op per op-depth, one OpResult back
    │
    ▼
-application crate   Application trait, unchanged except DepthInput::Reveal + on_reveal_complete
+planner::api::application     Op, OpType, OpParams, PlannerCounts, OpDepthInput, OpResult, PlannerApplication
+planner (core), ops/, layout  Planner<F: MersennePrimeField, A>: schedules an op-depth, runs its steps
+planner::bridge               … as an engine Application
    │
    ▼
-mpc engine          Multiply (existing) + Reveal (new) at flat, numbered depths; verifies both
+planner::api::engine          the engine's own API (was the `application` crate, moved 2026-09-18):
+                              Application, DepthInput::{Multiply, Reveal, MaskedMultiply}, PreprocessingCounts,
+                              RandomWires — implementable directly by apps that need only the engine's batches
+   │
+   ▼
+mpc engine                    Multiply + Reveal (+ MaskedMultiply, T5b) at flat, numbered depths; verifies both
 ```
 
 The engine's view is what it is today: a flat sequence of depths, each one
@@ -131,53 +133,52 @@ new preprocessing types.
   cannot open a degree-2t value on its own (no zero-sharings, no path into
   verification).
 
-### The ops layer
+### The Planner (the ops layer)
+
+Decided 2026-09-16, simplified 2026-09-18: **one operation per op-depth.**
+A new crate `planner/`, a bridge between an application and the engine: it
+implements `Application<F>` towards the engine and offers applications a
+hook trait of the same shape, `PlannerApplication<F>`, whose hooks return
+an `OpDepthInput`:
 
 ```rust
-pub enum Op<F> {
-    Mul(x, y), Compare(x) /* [x ≥ 0] */, Lt(a, b), Relu(x), Max(a, b),
-    Trunc { x, d }, FixedMul { x, y, d },
+pub enum Op<F> {                       // one vector op per op-depth
+    Mul { x, y }, Add { x, y },        // Add is local, 0 rounds
+    Compare { a, b },                  // [a < b]         8 rounds at ℓ = 61
+    ComparePub { a, c },               // [a < c], c public
+    Max { a, b }, Min { a, b },        // select on the comparison bit, 9 rounds
+    MaxPub { a, c }, MinPub { a, c },  // one operand public; Relu = MaxPub(x, 0)
+    Reveal { x },                      // public values; x must be fresh-masked
+    MaskReveal { x },                  // c = x + r public, plus r's edaBit
+    Truncate { x, d }, FixedMul { x, y, d },   // Liu §3, ±2 error, |x| < 2^{ℓ−2}
 }
-pub struct OpBatch<F> { pub depth: usize, pub ops: Vec<Op<F>> }
-pub struct OpCounts { pub ops_per_depth: Vec<OpProfile>, pub rand_bits: usize, pub output: usize }
-
-pub trait OpsApplication<F>: Send + 'static {
-    fn preprocessing_count(&self) -> OpCounts;
-    async fn inputs(&mut self) -> Vec<FieldElement<F>>;
-    async fn input_sharing_termination(&mut self, party, shares) -> Result<OpInput<F>>;
-    async fn on_preprocessing_complete(&mut self, rand_bits) -> Result<OpInput<F>>;
-    async fn on_depth_complete(&mut self, depth, results: Vec<FieldElement<F>>) -> Result<OpInput<F>>;
-}
-// OpInput = Waiting | Batch(OpBatch) | Done(outputs)
+pub enum OpDepthInput<F> { Waiting, Op { depth, op: Op<F> }, Done(Vec<F>) }
+pub enum OpResult<F>     { Shares(Vec<F>), Public(Vec<F>), Masked { public, mask: Vec<EdaBit<F>> } }
+pub struct OpParams      { op_type: OpType, elements: usize }  // an op minus its operands; declared per op-depth, up front
 ```
 
-`Program::plan(&OpCounts) -> Layout` runs once at every party from the
-agreed profile and fixes, per op-depth, its span of engine depths and what
-each engine depth is. The span depends only on which kinds are present:
+Every op type owns a fixed list of *steps* (`OpStep`: reveal / multiply /
+masked multiply, with gates per element); `Plan::compile` places the
+declared op-depths' steps end to end as `EngineRound`s at consecutive
+engine depths (an `OpDepthPlan` per op-depth) and reads the engine's
+preprocessing profile off the result. An op is a small state
+machine on one template — `operands(step)`, `on_step_complete(step,
+results)`, `into_result()` — one file each under `planner/src/ops/`, with
+the comparison front (`drelu`) and the truncation back (`fixed_point`)
+shared. `Compare` is the primitive (it returns the bit); `Max`/`Min` are
+`Compare` plus one select multiplication. An application wanting a `Mul`
+next to a `Compare` schedules two op-depths — one extra round, nothing
+else; mixing kinds in one op-depth is a possible additive layer later.
 
-| op-depth contains | engine depths | rounds |
-|---|---|---|
-| `Mul` only | M | 1 |
-| `Trunc` only | R | 1 |
-| `Compare` (± `Mul`, `Lt`) | R, M×6 (tree), M (final XOR) | 8 |
-| `Relu` / `Max` | Compare + M | 9 |
-| `Trunc` + `Mul` | R, M | 2 |
-| `FixedMul` | MM (masked multiply) | 1 |
+| op | rounds |
+|---|---|
+| `Add` | 0 |
+| `Mul`, `Reveal`, `MaskReveal`, `Truncate`, `FixedMul` | 1 |
+| `Compare`, `ComparePub` | 2 + carry-tree levels (8 at ℓ = 61, 7 at 31) |
+| `Max`, `Min`, `MaxPub`, `MinPub` | one more |
 
-Rule: one engine depth of reveals first (all ops' `y` / `c` values), then
-multiplication depths; plain `Mul`s ride in the first multiplication depth of
-the batch. Mixing kinds costs at most one extra round for the `Mul`s, never
-for the long op. `gates_per_depth` for the engine comes from this table and
-`CarryTree`'s level widths.
-
-`OpsAdapter` holds the `Layout`, a cursor into the current op-depth's span,
-and per-op state (the `(P, G)` slot vectors for comparisons; `[r]`,
-`[r_msb]`, `[r']` for truncations). Each `on_depth_complete` /
-`on_reveal_complete` from the engine advances every in-flight op one engine
-depth and returns the next engine batch; when the span ends it calls the inner
-app's `on_depth_complete(op_depth, results)` with one result per op in order.
-The adapter keeps `ℓ × (#ops needing bits)` of the engine's random bits and
-passes the rest to the inner app.
+The Planner holds no applications; existing applications stay on the raw
+`Application` trait, and Bristol moves to the Planner in T6.
 
 ### Testing without a network
 
@@ -209,7 +210,7 @@ One PR each. Ask before every commit.
   (`Ext` = the existing Fp8 tower, `CONV_RATIO` 8) and for
   `Degree8ExtensionField` (Tonelli–Shanks `sqrt`, 32-byte serialization),
   plus `--field m31` / `m31base` arms in every binary.
-- **T2 — `application`: `DepthInput::{Reveal, MaskedMultiply}` +
+- **T2 — engine API (then the `application` crate, now `planner::api::engine`): `DepthInput::{Reveal, MaskedMultiply}` +
   `on_reveal_complete`** (default `Err`), `PreprocessingCounts::
   masked_gates_per_depth` (additive; `mult_gates()` counts both kinds since
   both are verified tuples, `plain_gates()` sizes the masks), and the
@@ -227,10 +228,10 @@ One PR each. Ask before every commit.
   `quad_mult` left as is: unreachable (`multiplication_switch_threshold` is
   0). Regression: the fixture over `m61` (comp 10/64), `m31base`,
   `bristol_circuit`, `btx_setup`; the probe over `m61`, `m61base`, `m31base`.
-- **T4 — `ops` crate, offline.** `CarryTree`, solved-bit assembly,
-  ΠTrunc / ΠFixed-Mult local steps, `Op` / `OpBatch` / `OpCounts`,
-  `Program::plan`, per-op state machines, `OpsAdapter`, plaintext fake-engine
-  test suite. The bulk of the work; reviewable without running parties.
+- **T4 — the Planner, offline.** `planner/`: edaBits, `CarryTree`, the op
+  vocabulary, `Layout`, per-op executors, `Planner: Application`, and a
+  plaintext fake engine running every op against its integer reference at
+  ℓ = 61 and 31. The bulk of the work; reviewable without running parties.
 - **T5 — `mpc`: reveal verification (E2)** and the derived
   `delinearization_depth` (E3).
 - **T5b — `mpc`: `MaskedMultiply` (E4).** Caller-supplied mask in
