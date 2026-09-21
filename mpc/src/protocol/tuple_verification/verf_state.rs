@@ -26,6 +26,19 @@ pub struct VerificationState<F: ProtocolField>{
     /// verification phase checks a coin-weighted combination of
     /// `[v_i] − v_i` before the output is unmasked.
     pub revealed: HashMap<usize, (Vec<FieldElement<F>>, Vec<FieldElement<F>>)>,
+    /// Set once this party has folded its own reveals into `[Δ]` and broadcast
+    /// its share; until then shares from faster parties are only collected.
+    pub reveal_check_sent: bool,
+    /// Set once `[Δ]` has been opened, so the check runs exactly once.
+    pub reveal_check_done: bool,
+    /// The shares of `[Δ]` received so far: evaluation points and shares.
+    pub reveal_check_shares: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
+
+    /// The two halves of verification run side by side; the output waits
+    /// for both. `verification_finished` makes the handover run once.
+    pub tuples_verified: bool,
+    pub reveals_verified: bool,
+    pub verification_finished: bool,
 }
 
 impl<F: ProtocolField> VerificationState<F>{
@@ -38,6 +51,12 @@ impl<F: ProtocolField> VerificationState<F>{
             delinearization_ready: false,
             delinearized: false,
             revealed: HashMap::new(),
+            reveal_check_sent: false,
+            reveal_check_done: false,
+            reveal_check_shares: (Vec::new(), Vec::new()),
+            tuples_verified: false,
+            reveals_verified: false,
+            verification_finished: false,
         }
     }
 

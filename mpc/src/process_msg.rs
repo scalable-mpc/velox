@@ -66,6 +66,10 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                     log::debug!("Received ReconstructVerfOutputSharing message");
                     self.handle_reconstruct_verf_output_sharing(ser_x_share, ser_y_share, ser_z_share, wrapper_msg.sender).await;
                 },
+                ProtMsg::RevealCheckShare(ser_share) => {
+                    log::debug!("Received RevealCheckShare message from node : {}", wrapper_msg.sender);
+                    self.handle_reveal_check_share(ser_share, wrapper_msg.sender).await;
+                },
                 ProtMsg::ReconstructMaskedOutput(ser_shares) =>{
                     log::debug!("Received ReconstructMaskedOutput message");
                     self.handle_reconstruct_masked_output(ser_shares, wrapper_msg.sender).await;

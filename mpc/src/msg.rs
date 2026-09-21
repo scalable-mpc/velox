@@ -23,6 +23,9 @@ pub enum ProtMsg{
     ReconstructCoin(LargeFieldSer, usize),
 
     ReconstructVerfOutputSharing(LargeFieldSer, LargeFieldSer, LargeFieldSer),
+    /// This party's share of `[Δ]`, the coin-weighted fold of every reveal;
+    /// see `protocol::tuple_verification::reveal_check`.
+    RevealCheckShare(LargeFieldSer),
     ReconstructMaskedOutput(Vec<LargeFieldSer>),
 
     ReconstructOutputMasks(Replica, Vec<LargeFieldSer>, LargeFieldSer, LargeFieldSer),
