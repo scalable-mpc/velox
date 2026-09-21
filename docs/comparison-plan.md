@@ -112,16 +112,26 @@ new preprocessing types.
   recorded in `verf_state.revealed` for E2. Contract: reveal only values
   blinded by a fresh random sharing (what a party learns at L1 is the
   sharing polynomial of a public combination of the revealed values).
-- **E2.** Reveal verification: in the verification phase, open one
-  coin-weighted combination `Σ ρ_i ([y_i] − y_i)` through the O(n²)
-  degree-checked path the output layer uses; abort if nonzero. Privacy does
+- **E2.** Reveal verification: in the verification phase, alongside the
+  tuple compression — started the moment the delinearization coin `c` is
+  known — open `[Δ] = Σ c^i ([y_i] − y_i)` over every reveal of the run
+  (ascending depth, operand order); one share per party, `2t+1` checked to
+  lie on a degree-t polynomial, abort unless `Δ = 0`. The output is
+  unmasked once both checks have passed, so the reveal check adds no round. Privacy does
   not depend on it (`y` is uniform and everything downstream stays shared),
   correctness does: without it a corrupt party can shift a revealed `y`
   consistently at every honest party via the redundancy-free L2 step.
   Alternative considered: chunks of `t+1` read as a degree-t polynomial so L1
   and L2 both detect errors — ~6 elements/value, no verification hook.
+  Implemented in T5 (`tuple_verification/reveal_check.rs`,
+  `ProtMsg::RevealCheckShare`, flags `tuples_verified` / `reveals_verified`
+  gating `try_finish_verification`); a run without reveals sends nothing.
 - **E3.** `delinearization_depth` derived from the declared profile instead of
-  the hard-coded 5000.
+  the hard-coded 5000: `APPLICATION_DEPTH_OFFSET + depth + 1`, rounded up to
+  even because a compression level's two batches are told apart by parity.
+  Set in `Context::spawn`, where the declaration is now read once, so that a
+  faster party's coin share arriving before this party's start still
+  compares against the right depth. Implemented in T5.
 - **E4.** `DepthInput::MaskedMultiply { depth, x, y, mask }` — the existing
   multiplication protocol with the caller's `[mask]` (the solved-bits `[r]`
   plus the `2^{ℓ−2}` offset, supplied by the ops layer) in place of a
@@ -256,7 +266,7 @@ T0 so that no later task rediscovers a shortfall at depth 5005.
 | `Reveal` depth | `plan` charges a depth `groups·(2t+1)` masks and `groups·(t+1)` zero sharings from its gate count | Declares 0 gates → reserves nothing, which is right: the reconstruction pads with zero shares and draws nothing. Confirmed in T3 (`reveal_probe` declares `[1, 0]`). |
 | `MaskedMultiply` depth | same table | Draws the 2t zero-sharing like a multiplication but **not** a pool mask. Done in T2: `masked_gates_per_depth`, `plan` charges zero sharings only, `for_masked_depth` hands them out. T5b consumes. |
 | Verification of `MaskedMultiply` tuples | `num_tuples = rand_bit_batch_size·(t+1) + num_mult_gates` drives `compression_levels` and hence `verification_groups` | Done in T2: `mult_gates()` counts plain and masked gates. |
-| E2 reveal check | one coin (`total_sharings_for_coins = 10n`) and one robust opening through the output-mask path (`output_mask_size = batch_size_for(num_outputs) + 1`) | One more mask than output wires; check whether the existing `+ 1` is spare. T5. |
+| E2 reveal check | none | Done in T5: the fold reuses the delinearization coin and `[Δ]` is opened unmasked (its polynomial is a combination of the fresh-blinded reveal sharings, independent of every secret), so no coin and no mask are drawn. |
 | Solved bits | `rand_bit_batch_size = batch_size_for(num_rand_bits + group)`, from `random_wires().bits` | The adapter adds `ℓ·(#compares + #truncs + #fixed_muls)` to the bits it reports. Surplus bits from the `t+1` rounding are already squared and verified. T4. |
 
 ## Follow-ups (out of scope)
