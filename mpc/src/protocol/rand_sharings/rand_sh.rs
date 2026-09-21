@@ -22,13 +22,13 @@ pub const NUM_SH2T_BATCHES: usize = 1;
 
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     pub async fn init_rand_sh(&mut self){
-        // How much preprocessing the circuit needs is the application's call.
-        // Read once and cached: everything downstream — the ACSS/Sh2t batch
-        // sizes here, the handover in `hand_preprocessing_to_application` — has
-        // to work off the same answer.
-        let counts = self.app.preprocessing_count();
-        // Number of random wires the circuit requires. 
-        let wires = self.app.random_wires();
+        // How much preprocessing the circuit needs is the application's call,
+        // read once at construction (see `Context::spawn`): everything
+        // downstream — the ACSS/Sh2t batch sizes here, the handover in
+        // `hand_preprocessing_to_application` — works off the same answer.
+        let counts = self.preprocessing_counts.clone();
+        // Number of random wires the circuit requires.
+        let wires = self.random_wires.clone();
         let num_mult_gates = counts.mult_gates();
         let num_rand_bits = wires.bits;
         let num_wire_sharings = wires.sharings;
@@ -44,8 +44,6 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         self.app_preprocessing = ApplicationPreprocessing::plan(&counts, t);
         let app_rand_total = self.app_preprocessing.rand_total();
         let app_zero_total = self.app_preprocessing.zero_total();
-        self.preprocessing_counts = counts;
-        self.random_wires = wires;
         // Combining the ACS-agreed dealers' contributions through the Vandermonde
         // matrix turns each raw value a party deals into `t+1` random sharings.
         let sharings_per_value = t + 1;
