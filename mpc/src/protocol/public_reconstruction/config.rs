@@ -15,6 +15,9 @@ pub enum SharingDegree {
 pub enum ReconKind {
     /// The linear multiplication protocol: masked products, degree `2t`.
     Multiplication,
+    /// An application's `DepthInput::MaskedMultiply`: products under the
+    /// application's own mask, degree `2t`, handed back public.
+    MaskedMultiplication,
     /// Random bit generation: the squares of random sharings, degree `t`.
     RandBit,
     /// An application's `DepthInput::Reveal`: degree `t`.

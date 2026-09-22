@@ -61,14 +61,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             DepthInput::Reveal { depth, values } => {
                 Box::pin(self.init_reveal(depth, values)).await;
             }
-            // Declared ahead of its protocol so applications can be written
-            // against it; until that lands, scheduling one is an application
-            // error like any other, surfaced here rather than as a hang.
-            DepthInput::MaskedMultiply { depth, x, .. } => {
-                log::error!(
-                    "Application scheduled a masked multiplication of {} gates at depth {}, which this engine does not implement yet",
-                    x.len(), depth
-                );
+            DepthInput::MaskedMultiply { depth, x, y, mask } => {
+                Box::pin(self.multiply_masked_application_batch(x, y, mask, depth)).await;
             }
             DepthInput::Done(output_wires) => {
                 self.handle_application_output(output_wires).await;

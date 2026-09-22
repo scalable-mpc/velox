@@ -305,6 +305,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
         // re-enters this module.
         match kind {
             ReconKind::Multiplication => Box::pin(self.complete_linear_multiplication(depth, values)).await,
+            ReconKind::MaskedMultiplication => Box::pin(self.complete_masked_multiplication(depth, values)).await,
             ReconKind::RandBit => Box::pin(self.complete_rand_bit_reconstruction(values)).await,
             ReconKind::Reveal => Box::pin(self.complete_reveal(depth, values)).await,
         }

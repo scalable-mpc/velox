@@ -3,9 +3,10 @@ name = "reveal_probe"
 version = "0.1.0"
 edition = "2021"
 
-# An end-to-end check of the engine's public reveal: every party reveals its
-# own inputs blinded by random sharings, has the blinds reconstructed as the
-# circuit's output, and verifies that revealed − blind is what it dealt. A
+# An end-to-end check of the engine's public reveal and masked
+# multiplication: every party reveals its own inputs blinded by random
+# sharings, masked-multiplies two of them, has the blinds reconstructed as
+# the circuit's output, and verifies both against what it dealt. A
 # development application; it exists because no other application reveals.
 
 [dependencies]

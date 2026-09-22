@@ -7,4 +7,6 @@ mod quad_mult;
 
 mod lin_mult;
 
+mod masked_mult;
+
 mod output;

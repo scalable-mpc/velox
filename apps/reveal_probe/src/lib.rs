@@ -1,19 +1,23 @@
-//! An end-to-end check of the engine's public reveal.
+//! An end-to-end check of the engine's public reveal and masked
+//! multiplication.
 //!
-//! Every party deals `k` inputs. The circuit is three depths:
+//! Every party deals `k` inputs. The circuit is three rounds and `Done`:
 //!
 //! 1. `Multiply` the first two input wires — one gate, so the run also has a
 //!    verified tuple and the multiplication path runs alongside the reveal.
 //! 2. `Reveal` every input wire blinded by a random sharing, `[x_i] + [r_i]`,
 //!    with the `[r_i]` drawn as random wires. This is the only thing in the
 //!    workspace that reveals.
-//! 3. `Done` with the blinds `[r_i]` and the product as output wires.
+//! 3. `MaskedMultiply` each dealer's first two inputs under that dealer's
+//!    first blind: `c_d = x_{d,0} · x_{d,1} + r_{d·k}`, one gate per dealer.
+//! 4. `Done` with the blinds `[r_i]` and the product as output wires.
 //!
 //! When the output is reconstructed — verified and agreed, which is when
 //! `on_output` fires — each party checks its own block: `revealed_i − r_i`
-//! must be the input it dealt, and dealer 0 checks the product. The result is
-//! one log line, `reveal_probe: N reveals verified`, which the fixture greps
-//! for; a mismatch is an error naming the wire.
+//! must be the input it dealt, `c_d − r_{d·k}` must be the product of its
+//! first two inputs, and dealer 0 checks the plain product. The result is one
+//! log line, `reveal_probe: N reveals and the masked product verified`, which
+//! the fixture greps for; a mismatch is an error naming the wire.
 
 use std::collections::HashMap;
 
@@ -35,6 +39,8 @@ pub struct RevealProbe<F: ProtocolField> {
     blinds: Option<Vec<FieldElement<F>>>,
     /// The public values the reveal returned.
     revealed: Option<Vec<FieldElement<F>>>,
+    /// The public masked products, one per dealer.
+    masked: Option<Vec<FieldElement<F>>>,
     /// The depth-1 product, kept until it goes out as the last output wire.
     product: Option<FieldElement<F>>,
     circuit_started: bool,
@@ -53,6 +59,7 @@ impl<F: ProtocolField> RevealProbe<F> {
             input_wires: HashMap::new(),
             blinds: None,
             revealed: None,
+            masked: None,
             product: None,
             circuit_started: false,
         })
@@ -76,12 +83,14 @@ impl<F: ProtocolField> RevealProbe<F> {
     }
 
     /// The check, as a function of what the run produced. `outputs` are the
-    /// `n·k` blinds followed by the product.
+    /// `n·k` blinds followed by the product; `masked` has one value per
+    /// dealer.
     pub fn check(
         my_id: usize,
         k: usize,
         my_inputs: &[FieldElement<F>],
         revealed: &[FieldElement<F>],
+        masked: &[FieldElement<F>],
         outputs: &[FieldElement<F>],
     ) -> Result<usize> {
         let total = revealed.len();
@@ -102,6 +111,12 @@ impl<F: ProtocolField> RevealProbe<F> {
         if my_id == 0 && *product != &my_inputs[0] * &my_inputs[1] {
             bail!("the product wire does not match x_0 · x_1");
         }
+        let Some(c) = masked.get(my_id) else {
+            bail!("no masked product for dealer {} among {}", my_id, masked.len());
+        };
+        if c - &blinds[my_id * k] != &my_inputs[0] * &my_inputs[1] {
+            bail!("masked product {} (party {}): c − mask does not match x_0 · x_1", my_id, my_id);
+        }
         Ok(verified)
     }
 }
@@ -109,8 +124,10 @@ impl<F: ProtocolField> RevealProbe<F> {
 #[async_trait]
 impl<F: ProtocolField> Application<F> for RevealProbe<F> {
     fn preprocessing_count(&self) -> PreprocessingCounts {
-        // Depth 1 multiplies one gate; depth 2 reveals, which consumes nothing.
-        PreprocessingCounts::new(vec![1, 0], self.num_nodes * self.k + 1)
+        // Depth 1 multiplies one gate; depth 2 reveals, which consumes nothing;
+        // depth 3 runs one masked gate per dealer.
+        PreprocessingCounts::new(vec![1, 0, 0], self.num_nodes * self.k + 1)
+            .with_masked_gates(vec![0, 0, self.num_nodes])
     }
 
     fn random_wires(&self) -> RandomWires {
@@ -154,26 +171,48 @@ impl<F: ProtocolField> Application<F> for RevealProbe<F> {
     }
 
     async fn on_reveal_complete(&mut self, depth: usize, values: Vec<FieldElement<F>>) -> Result<DepthInput<F>> {
-        if depth != 2 || values.len() != self.num_nodes * self.k {
-            bail!("unexpected reveal completion: depth {}, {} values", depth, values.len());
+        match depth {
+            2 => {
+                if values.len() != self.num_nodes * self.k {
+                    bail!("unexpected reveal completion: {} values", values.len());
+                }
+                self.revealed = Some(values);
+                // Each dealer's first two inputs, under that dealer's first blind.
+                let wires = self.wires();
+                let blinds = self.blinds.as_ref().unwrap();
+                let (mut x, mut y, mut mask) = (Vec::new(), Vec::new(), Vec::new());
+                for dealer in 0..self.num_nodes {
+                    x.push(wires[dealer * self.k].clone());
+                    y.push(wires[dealer * self.k + 1].clone());
+                    mask.push(blinds[dealer * self.k].clone());
+                }
+                log::info!("reveal_probe: reveal complete, masked-multiplying {} gates", x.len());
+                DepthInput::masked_multiply(3, x, y, mask)
+            }
+            3 => {
+                if values.len() != self.num_nodes {
+                    bail!("unexpected masked multiplication completion: {} values", values.len());
+                }
+                self.masked = Some(values);
+                let Some(product) = self.product.take() else {
+                    bail!("the masked multiplication completed before the multiplication did");
+                };
+                let mut outputs = self.blinds.clone().unwrap();
+                outputs.push(product);
+                log::info!("reveal_probe: masked products in, reconstructing {} blinds and the product", outputs.len() - 1);
+                Ok(DepthInput::Done(outputs))
+            }
+            _ => bail!("unexpected reveal completion at depth {}", depth),
         }
-        self.revealed = Some(values);
-        let Some(product) = self.product.take() else {
-            bail!("the reveal completed before the multiplication did");
-        };
-        let mut outputs = self.blinds.clone().unwrap();
-        outputs.push(product);
-        log::info!("reveal_probe: reveal complete, reconstructing {} blinds and the product", outputs.len() - 1);
-        Ok(DepthInput::Done(outputs))
     }
 
     async fn on_output(&mut self, outputs: Vec<FieldElement<F>>) -> Result<()> {
-        let Some(revealed) = self.revealed.as_ref() else {
-            bail!("output reconstructed before the reveal completed");
+        let (Some(revealed), Some(masked)) = (self.revealed.as_ref(), self.masked.as_ref()) else {
+            bail!("output reconstructed before the reveal and the masked multiplication completed");
         };
-        match Self::check(self.my_id, self.k, &self.my_inputs, revealed, &outputs) {
+        match Self::check(self.my_id, self.k, &self.my_inputs, revealed, masked, &outputs) {
             Ok(n) => {
-                log::info!("reveal_probe: {} reveals verified", n);
+                log::info!("reveal_probe: {} reveals and the masked product verified", n);
                 Ok(())
             }
             Err(err) => {
@@ -199,7 +238,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runs_the_three_depths_and_verifies() {
+    async fn runs_the_depths_and_verifies() {
         let (n, k) = (3, 2);
         let mut app = RevealProbe::<F>::new(n, 1, k).unwrap();
         let mine = app.inputs().await;
@@ -221,8 +260,15 @@ mod tests {
         };
         assert_eq!((depth, values.len()), (2, n * k));
 
-        let DepthInput::Done(outputs) = app.on_reveal_complete(2, values).await.unwrap() else {
-            panic!("the reveal should finish the circuit");
+        let DepthInput::MaskedMultiply { depth, x, y, mask } = app.on_reveal_complete(2, values).await.unwrap() else {
+            panic!("the reveal should trigger the masked multiplication");
+        };
+        assert_eq!((depth, x.len()), (3, n));
+        assert_eq!(mask, vec![blinds[0].clone(), blinds[2].clone(), blinds[4].clone()]);
+        let masked: Vec<_> = x.iter().zip(y.iter()).zip(mask.iter()).map(|((x, y), m)| x * y + m).collect();
+
+        let DepthInput::Done(outputs) = app.on_reveal_complete(3, masked).await.unwrap() else {
+            panic!("the masked products should finish the circuit");
         };
         assert_eq!(outputs.len(), n * k + 1);
         assert_eq!(outputs[n * k], product);
@@ -237,15 +283,22 @@ mod tests {
         let mut revealed: Vec<_> = vec![&mine[0] + &blinds[0], &mine[1] + &blinds[1], elem(0), elem(0)];
         let mut outputs = blinds.clone();
         outputs.push(elem(15));
-        assert_eq!(RevealProbe::<F>::check(my_id, k, &mine, &revealed, &outputs).unwrap(), 2);
+        // c_0 = 3 · 5 + blinds[0]; dealer 1's gate is not checked by party 0.
+        let mut masked = vec![elem(15) + &blinds[0], elem(0)];
+        assert_eq!(RevealProbe::<F>::check(my_id, k, &mine, &revealed, &masked, &outputs).unwrap(), 2);
 
         revealed[1] = &revealed[1] + elem(1);
-        let err = RevealProbe::<F>::check(my_id, k, &mine, &revealed, &outputs).unwrap_err();
+        let err = RevealProbe::<F>::check(my_id, k, &mine, &revealed, &masked, &outputs).unwrap_err();
         assert!(err.to_string().contains("wire 1"), "{err}");
 
         revealed[1] = &revealed[1] - elem(1);
+        masked[0] = &masked[0] + elem(1);
+        let err = RevealProbe::<F>::check(my_id, k, &mine, &revealed, &masked, &outputs).unwrap_err();
+        assert!(err.to_string().contains("masked product 0"), "{err}");
+
+        masked[0] = &masked[0] - elem(1);
         outputs[4] = elem(16);
-        assert!(RevealProbe::<F>::check(my_id, k, &mine, &revealed, &outputs).unwrap_err().to_string().contains("product"));
-        assert!(RevealProbe::<F>::check(1, k, &mine, &revealed, &outputs).is_err(), "party 1's block is zeros here");
+        assert!(RevealProbe::<F>::check(my_id, k, &mine, &revealed, &masked, &outputs).unwrap_err().to_string().contains("product"));
+        assert!(RevealProbe::<F>::check(1, k, &mine, &revealed, &masked, &outputs).is_err(), "party 1's block is zeros here");
     }
 }
