@@ -87,7 +87,7 @@ planner::api::engine          the engine's own API (was the `application` crate,
                               RandomWires — implementable directly by apps that need only the engine's batches
    │
    ▼
-mpc engine                    Multiply + Reveal (+ MaskedMultiply, T5b) at flat, numbered depths; verifies both
+mpc engine                    Multiply + Reveal + MaskedMultiply at flat, numbered depths; verifies all
 ```
 
 The engine's view is what it is today: a flat sequence of depths, each one
@@ -141,7 +141,10 @@ new preprocessing types.
   `(x, y, c − [mask])` for tuple verification, so the malicious guarantee is
   unchanged. This is what makes ΠFixed-Mult one round: the application layer
   cannot open a degree-2t value on its own (no zero-sharings, no path into
-  verification).
+  verification). Implemented in T5b (`multiplication/masked_mult.rs`,
+  `ReconKind::MaskedMultiplication`): the `c` need no place in the reveal
+  check, since the tuple check binds `c − [mask] = xy` and `[mask]` is the
+  application's own sharing.
 
 ### The Planner (the ops layer)
 
@@ -264,7 +267,7 @@ T0 so that no later task rediscovers a shortfall at depth 5005.
 | New consumer | Where the budget lives | Change, and in which task |
 |---|---|---|
 | `Reveal` depth | `plan` charges a depth `groups·(2t+1)` masks and `groups·(t+1)` zero sharings from its gate count | Declares 0 gates → reserves nothing, which is right: the reconstruction pads with zero shares and draws nothing. Confirmed in T3 (`reveal_probe` declares `[1, 0]`). |
-| `MaskedMultiply` depth | same table | Draws the 2t zero-sharing like a multiplication but **not** a pool mask. Done in T2: `masked_gates_per_depth`, `plan` charges zero sharings only, `for_masked_depth` hands them out. T5b consumes. |
+| `MaskedMultiply` depth | same table | Draws the 2t zero-sharing like a multiplication but **not** a pool mask. Done in T2: `masked_gates_per_depth`, `plan` charges zero sharings only, `for_masked_depth` hands them out. Consumed in T5b. |
 | Verification of `MaskedMultiply` tuples | `num_tuples = rand_bit_batch_size·(t+1) + num_mult_gates` drives `compression_levels` and hence `verification_groups` | Done in T2: `mult_gates()` counts plain and masked gates. |
 | E2 reveal check | none | Done in T5: the fold reuses the delinearization coin and `[Δ]` is opened unmasked (its polynomial is a combination of the fresh-blinded reveal sharings, independent of every secret), so no coin and no mask are drawn. |
 | Solved bits | `rand_bit_batch_size = batch_size_for(num_rand_bits + group)`, from `random_wires().bits` | The adapter adds `ℓ·(#compares + #truncs + #fixed_muls)` to the bits it reports. Surplus bits from the `t+1` rounding are already squared and verified. T4. |

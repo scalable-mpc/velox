@@ -603,14 +603,13 @@ cargo test -p planner
 ```
 
 End-to-end on the real engine: `apps/reveal_probe` exercises the engine's
-reveal; a Planner-hosted circuit app is task T6 (`docs/comparison-plan.md`).
+reveal and masked multiplication; a Planner-hosted circuit app is task T6
+(`docs/comparison-plan.md`).
 
 ## 7. Status
 
-- `MaskedMultiply` is declared in the engine API and used by `FixedMul`, but
-  the engine does not run it yet (`mpc/src/protocol/online_phase/online_phase.rs`
-  logs an error for it). `FixedMul` therefore passes the plaintext tests but
-  cannot run on the network until task T5b lands.
-- The engine's verification of revealed values (task T5) is the remaining
-  piece of the reveal's malicious-security argument; the Planner's use of
-  `Reveal` is unchanged by it.
+Every engine primitive the Planner uses — `Multiply`, `Reveal`,
+`MaskedMultiply` — runs on the network, and the verification phase checks
+multiplication tuples (plain and masked) and revealed values. No Planner-hosted
+application exists yet; the Bristol circuit app on `PlannerApplication` is
+task T6 (`docs/comparison-plan.md`).
