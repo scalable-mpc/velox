@@ -1,6 +1,12 @@
 //! Arithmetic circuits: the typed model, levelisation by multiplicative depth,
 //! and a cleartext evaluator.
 //!
+//! The gate set is `ADD`, `SUB`, `MUL` and the Planner's operations — `LT`,
+//! `DRELU`, `RELU`, `MAX`, `MIN`, `TRUNC d`, `FMUL d` — whose semantics are
+//! over signed integers read out of a Mersenne-prime field
+//! (`fields::MersennePrimeField`): `(p−1)/2` and below is non-negative, above
+//! it is `x − p`.
+//!
 //! This is the IR, not a file format. [`Circuit::from_gates`] takes gates in
 //! topological order and groups them into the levels the protocol evaluates one
 //! round at a time; [`evaluate_circuit`] runs a circuit in the clear as the
@@ -30,11 +36,11 @@ mod gate;
 pub use gate::{Gate, GateType};
 
 mod depth;
-pub use depth::Depth;
+pub use depth::{Depth, OpGroup};
 
 #[allow(clippy::module_inception)]
 mod circuit;
 pub use circuit::Circuit;
 
 mod eval;
-pub use eval::evaluate_circuit;
+pub use eval::{evaluate_circuit, from_signed, to_signed, trunc};

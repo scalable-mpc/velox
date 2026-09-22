@@ -16,6 +16,8 @@
 //!     order the format requires), no wire is written twice, and every output
 //!     wire is defined by the end.
 //!
+//! The gate set is `ADD`, `SUB`, `MUL` and the op gates `LT`, `DRELU`,
+//! `RELU`, `MAX`, `MIN`, `TRUNC d`, `FMUL d`; `d` follows the type token.
 //! `INNERP` is still rejected, as it was in the original — but with a
 //! diagnostic saying so rather than a generic parse failure. It needs work on
 //! the engine's verification pipeline, not just here; see
@@ -132,7 +134,7 @@ pub fn parse_circuit(text: &str, source: &str) -> Result<Circuit> {
     let mut gates: Vec<Gate> = Vec::with_capacity(expected_num_gates);
     for line in lines.iter().skip(HEADER_LINES) {
         let gate = parse_gate_line(source, *line, num_wires)?;
-        for input in gate.inputs().iter() {
+        for input in gate.inputs.iter() {
             if !defined[*input] {
                 bail!(
                     "{}:{}: gate reads wire {} before anything writes it; gates must be listed in \
@@ -207,15 +209,15 @@ fn parse_single_usize(source: &str, line: (usize, &str), what: &str) -> Result<u
 }
 
 /// Parses one gate definition:
-/// `<num_inputs> <num_outputs> <input_wires...> <output_wire> <TYPE>`.
+/// `<num_inputs> <num_outputs> <input_wires...> <output_wire> <TYPE> [<d>]`.
 ///
 /// The level is left at 0; [`Circuit::from_gates`] assigns the real one.
 fn parse_gate_line(source: &str, (line_no, line): (usize, &str), num_wires: usize) -> Result<Gate> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 5 {
+    if parts.len() < 4 {
         bail!(
-            "{}:{}: gate line has {} fields, fewer than the 5 a gate needs \
-             (`<num_inputs> <num_outputs> <input_wires...> <output_wire> <TYPE>`)",
+            "{}:{}: gate line has {} fields, fewer than the 4 a gate needs \
+             (`<num_inputs> <num_outputs> <input_wires...> <output_wire> <TYPE> [<d>]`)",
             source,
             line_no,
             parts.len()
@@ -233,22 +235,50 @@ fn parse_gate_line(source: &str, (line_no, line): (usize, &str), num_wires: usiz
         );
     }
 
-    // 2 header fields + num_inputs input wires + 1 output wire + 1 type token.
-    let expected_fields = num_inputs + 4;
-    if parts.len() != expected_fields {
+    // 2 header fields + num_inputs input wires + 1 output wire + 1 type token,
+    // then the parameter a parameterised type takes.
+    let type_index = num_inputs + 3;
+    let Some(type_token) = parts.get(type_index) else {
         bail!(
-            "{}:{}: gate declares {} inputs, so the line should hold {} fields, but it holds {}",
+            "{}:{}: gate declares {} inputs, so the type should be field {}, but the line holds only {}",
             source,
             line_no,
             num_inputs,
-            expected_fields,
+            type_index + 1,
             parts.len()
         );
-    }
+    };
+    let params = &parts[type_index + 1..];
 
-    let gate_type = match parts[parts.len() - 1] {
+    let param = |what: &str| -> Result<usize> {
+        match params {
+            [d] => {
+                let d = parse_field(source, line_no, d, what)?;
+                if d == 0 {
+                    bail!("{}:{}: {} must be at least 1", source, line_no, what);
+                }
+                Ok(d)
+            }
+            _ => bail!(
+                "{}:{}: {} takes one parameter after the type token, the number of bits to drop; got {}",
+                source,
+                line_no,
+                type_token,
+                params.len()
+            ),
+        }
+    };
+    let gate_type = match *type_token {
         "ADD" => GateType::Add,
+        "SUB" => GateType::Sub,
         "MUL" => GateType::Mul,
+        "LT" => GateType::Lt,
+        "DRELU" => GateType::DRelu,
+        "RELU" => GateType::Relu,
+        "MAX" => GateType::Max,
+        "MIN" => GateType::Min,
+        "TRUNC" => GateType::Trunc(param("TRUNC's d")?),
+        "FMUL" => GateType::FMul(param("FMUL's d")?),
         // Part of the format, but not yet runnable here: the engine's tuple
         // verification records one operand pair per gate, so an inner product's
         // output would be checked against its first term alone and an honest run
@@ -260,31 +290,38 @@ fn parse_gate_line(source: &str, (line_no, line): (usize, &str), num_wires: usiz
             line_no
         ),
         other => bail!(
-            "{}:{}: unknown gate type {:?}; expected ADD or MUL",
+            "{}:{}: unknown gate type {:?}; expected one of ADD, SUB, MUL, LT, DRELU, RELU, MAX, MIN, TRUNC, FMUL",
             source,
             line_no,
             other
         ),
     };
-
-    if num_inputs != 2 {
+    if !params.is_empty() && !matches!(gate_type, GateType::Trunc(_) | GateType::FMul(_)) {
         bail!(
-            "{}:{}: {:?} gate declares {} inputs; ADD and MUL take exactly 2",
+            "{}:{}: {} takes no parameter, but {} follow the type token",
             source,
             line_no,
             gate_type,
-            num_inputs
+            params.len()
         );
     }
 
-    let mut wires = [0usize; 3];
-    for (offset, token) in parts[2..5].iter().enumerate() {
-        let what = match offset {
-            0 => "input wire 0",
-            1 => "input wire 1",
-            _ => "output wire",
-        };
-        let wire = parse_field(source, line_no, token, what)?;
+    if num_inputs != gate_type.arity() {
+        bail!(
+            "{}:{}: {} gate declares {} inputs; {} takes exactly {}",
+            source,
+            line_no,
+            gate_type.name(),
+            num_inputs,
+            gate_type.name(),
+            gate_type.arity()
+        );
+    }
+
+    let mut wires = Vec::with_capacity(num_inputs + 1);
+    for (offset, token) in parts[2..type_index].iter().enumerate() {
+        let what = if offset < num_inputs { format!("input wire {}", offset) } else { "output wire".to_string() };
+        let wire = parse_field(source, line_no, token, &what)?;
         if wire >= num_wires {
             bail!(
                 "{}:{}: {} is wire {}, outside the {} wires the header declares",
@@ -295,10 +332,11 @@ fn parse_gate_line(source: &str, (line_no, line): (usize, &str), num_wires: usiz
                 num_wires
             );
         }
-        wires[offset] = wire;
+        wires.push(wire);
     }
+    let output = wires.pop().expect("an output wire follows the inputs");
 
-    Ok(Gate::new(gate_type, wires[0], wires[1], wires[2], 0))
+    Ok(Gate::new(gate_type, wires, output, 0))
 }
 
 /// Parses one numeric field of a gate line.
@@ -375,7 +413,8 @@ mod tests {
         let level_one_outputs: Vec<usize> = circuit
             .level(1)
             .unwrap()
-            .mult_gates
+            .op_groups[0]
+            .gates
             .iter()
             .map(|gate| gate.output)
             .collect();
@@ -432,6 +471,25 @@ mod tests {
         assert_eq!(circuit.num_input_parties(), 3);
     }
 
+    /// Every gate type parses, with `d` after the type token, and the op
+    /// gates are levelised and grouped like multiplications.
+    #[test]
+    fn op_gates_parse_and_group() {
+        let circuit = parse_fixture("comparison.arith").unwrap();
+
+        assert_eq!(circuit.num_gates(), 11);
+        assert_eq!((circuit.num_mult_gates(), circuit.num_mul_gates(), circuit.num_add_gates()), (9, 1, 2));
+        assert_eq!(circuit.multiplicative_depth(), 2);
+        let level_one: Vec<GateType> = circuit.level(1).unwrap().op_groups.iter().map(|g| g.gate_type).collect();
+        assert_eq!(
+            level_one,
+            vec![GateType::Mul, GateType::Lt, GateType::Relu, GateType::Max, GateType::Min, GateType::FMul(4), GateType::DRelu]
+        );
+        assert_eq!(circuit.level(1).unwrap().op_groups[1].len(), 2, "both LT gates in one group");
+        assert_eq!(circuit.level(2).unwrap().op_groups[0].gate_type, GateType::Trunc(4));
+        assert_eq!(circuit.num_op_groups(), 8);
+    }
+
     /// Outputs come back in file order, so the order has to survive parsing —
     /// the original stored them in a hash set.
     #[test]
@@ -465,7 +523,11 @@ mod tests {
             ("not_topological.arith", "topological order"),
             ("duplicate_wire_write.arith", "written more than once"),
             ("unknown_gate_type.arith", "unknown gate type"),
-            ("binary_gate_arity.arith", "ADD and MUL take exactly 2"),
+            ("binary_gate_arity.arith", "MUL takes exactly 2"),
+            ("unary_gate_arity.arith", "RELU takes exactly 1"),
+            ("trunc_without_d.arith", "takes one parameter"),
+            ("trunc_zero_d.arith", "at least 1"),
+            ("add_with_param.arith", "takes no parameter"),
             ("multi_output_gate.arith", "exactly one"),
             ("non_numeric_field.arith", "input wire 0"),
             ("undefined_output_wire.arith", "which no gate or party writes"),

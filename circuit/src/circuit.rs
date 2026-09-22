@@ -16,6 +16,8 @@
 //! dealer by dealer in the order of [`Circuit::inputs_per_party`].
 
 use crate::{Depth, Gate, Wire};
+#[cfg(test)]
+use crate::GateType;
 
 /// An arithmetic circuit levelised by multiplicative depth.
 #[derive(Debug, Clone)]
@@ -55,12 +57,13 @@ impl Circuit {
     /// Builds a circuit from gates in topological order, grouping them into
     /// multiplicative levels.
     ///
-    /// A wire's level is the longest chain of multiplication gates on any path
-    /// reaching it: input wires sit at level 0, a multiplication gate is one past
+    /// A wire's level is the longest chain of round-costing gates on any path
+    /// reaching it: input wires sit at level 0, a round-costing gate is one past
     /// the highest of its inputs, and a linear gate inherits the highest of its
-    /// inputs without advancing. So a level's multiplication gates all become
-    /// evaluable at the same round, and its linear gates are the ones that round
-    /// unblocks. One pass suffices because the gates are in topological order,
+    /// inputs without advancing. So a level's round-costing gates all become
+    /// evaluable at the same point, and its linear gates are the ones that
+    /// level unblocks. Within a level the gates are grouped by type
+    /// ([`Depth::op_groups`]); a level of one type costs one round of its op. One pass suffices because the gates are in topological order,
     /// which is the caller's to guarantee — `bristol_circuit`'s parser checks it
     /// while reading the file.
     ///
@@ -78,7 +81,7 @@ impl Circuit {
         let mut multiplicative_depth = 0;
 
         for mut gate in gates.into_iter() {
-            let inputs_level = wire_levels[gate.input_left].max(wire_levels[gate.input_right]);
+            let inputs_level = gate.inputs.iter().map(|wire| wire_levels[*wire]).max().unwrap_or(0);
             gate.level = if gate.is_multiplicative() {
                 inputs_level + 1
             } else {
@@ -138,10 +141,21 @@ impl Circuit {
         self.levels.iter().map(|d| d.num_add_gates()).sum()
     }
 
-    /// Total number of gates costing a multiplication. This is what the
-    /// multiplication preprocessing is sized against.
+    /// Total number of `MUL` gates.
     pub fn num_mul_gates(&self) -> usize {
         self.levels.iter().map(|d| d.num_mul_gates()).sum()
+    }
+
+    /// Total number of round-costing gates, of every type.
+    pub fn num_mult_gates(&self) -> usize {
+        self.levels.iter().map(|d| d.num_mult_gates()).sum()
+    }
+
+    /// Number of vector operations the circuit runs: one per op group, over
+    /// every level. Equal to the multiplicative depth when no level mixes
+    /// types.
+    pub fn num_op_groups(&self) -> usize {
+        self.levels.iter().map(|d| d.op_groups.len()).sum()
     }
 
     /// Total number of wires the file declares.
@@ -215,6 +229,7 @@ mod tests {
         assert_eq!(circuit.num_gates(), 1);
         assert_eq!(circuit.num_mul_gates(), 1);
         assert_eq!(circuit.num_add_gates(), 0);
+        assert_eq!(circuit.num_op_groups(), 1);
         assert_eq!(circuit.num_inputs(), 2);
         assert_eq!(circuit.num_outputs(), 1);
         assert_eq!(circuit.inputs_of_party(0), 1);
@@ -238,6 +253,27 @@ mod tests {
 
         assert_eq!(circuit.multiplicative_depth(), 0);
         assert_eq!(circuit.num_levels(), 1);
+    }
+
+    /// `w4 = relu(w0 − w1)` and `w5 = w2 · w3`: the SUB is level 0, the RELU
+    /// and the MUL share level 1 as two op groups.
+    #[test]
+    fn op_gates_level_like_multiplications_and_group_by_type() {
+        let gates = vec![
+            Gate::binary(GateType::Sub, 0, 1, 6, 0),
+            Gate::unary(GateType::Relu, 6, 4, 0),
+            Gate::mul(2, 3, 5, 0),
+            Gate::unary(GateType::Trunc(4), 5, 7, 0),
+        ];
+        let circuit = Circuit::from_gates(gates, 8, vec![2, 2], vec![4, 7]);
+
+        assert_eq!(circuit.multiplicative_depth(), 2);
+        assert_eq!(circuit.level(0).unwrap().num_add_gates(), 1);
+        let level_one: Vec<GateType> = circuit.level(1).unwrap().op_groups.iter().map(|g| g.gate_type).collect();
+        assert_eq!(level_one, vec![GateType::Relu, GateType::Mul]);
+        assert_eq!(circuit.level(2).unwrap().op_groups[0].gate_type, GateType::Trunc(4));
+        assert_eq!(circuit.num_op_groups(), 3);
+        assert_eq!((circuit.num_mult_gates(), circuit.num_mul_gates()), (3, 1));
     }
 
     #[test]
