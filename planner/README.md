@@ -603,13 +603,15 @@ cargo test -p planner
 ```
 
 End-to-end on the real engine: `apps/reveal_probe` exercises the engine's
-reveal and masked multiplication; a Planner-hosted circuit app is task T6
-(`docs/comparison-plan.md`).
+reveal and masked multiplication; `apps/bristol_circuit` over `m61base` or
+`m31base` runs a `.arith` circuit on the Planner (`docs/CIRCUIT_FORMAT.md`,
+`testdata/circuits/comparison.arith` uses every op).
 
 ## 7. Status
 
 Every engine primitive the Planner uses — `Multiply`, `Reveal`,
 `MaskedMultiply` — runs on the network, and the verification phase checks
-multiplication tuples (plain and masked) and revealed values. No Planner-hosted
-application exists yet; the Bristol circuit app on `PlannerApplication` is
-task T6 (`docs/comparison-plan.md`).
+multiplication tuples (plain and masked) and revealed values.
+`apps/bristol_circuit` is the Planner-hosted application: a `.arith` circuit
+with `LT`/`DRELU`/`RELU`/`MAX`/`MIN`/`TRUNC`/`FMUL` gates, one op-depth per
+group of gates of one type (`circuit::OpGroup`).

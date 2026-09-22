@@ -251,10 +251,12 @@ One PR each. Ask before every commit.
   `lin_mult` / `quad_mult`, public `c` returned via `on_reveal_complete`,
   tuple `(x, y, c − [mask])` into `verf_state`. Its `DepthInput` variant is
   added in T2 alongside `Reveal`.
-- **T6 — Bristol app onto `OpsApplication`.** Gate types `DRELU`, `LT`,
-  `RELU`, `MAX`, `TRUNC d`, `FMUL d`; leveliser emits `OpCounts`;
-  `docs/CIRCUIT_FORMAT.md`; test circuit under `testdata/circuits/`;
-  end-to-end on `testdata/10` with `--field m61base`.
+- **T6 — Bristol app onto the Planner.** Gate types `SUB`, `DRELU`, `LT`,
+  `RELU`, `MAX`, `MIN`, `TRUNC d`, `FMUL d`; the leveliser groups gates by
+  type (`OpGroup`) and the app declares one op-depth per group; the app talks only to the
+  Planner (its engine `Application` impl is gone); `docs/CIRCUIT_FORMAT.md`; `comparison.arith`
+  under `testdata/circuits/`; end-to-end on `testdata/10` over `m61base`
+  and `m31base`. Done 2026-09-22.
 - **T7 — benchmark + `docs/comparison.md`** (carry-tree derivation, layout
   table, why nothing is opened), in the style of `docs/simd-m61-avx2.md`.
 
