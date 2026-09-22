@@ -9,7 +9,13 @@ TESTDIR=${TESTDIR:="testdata/$1"}
 TYPE=${TYPE:="release"}
 
 # Finite field to run over: m61 (default), m61base, m31, m31base, stark252, or bn254.
-FIELD=${FIELD:="m61"}
+# A circuit runs on the Planner, which needs a Mersenne-prime field, so its
+# default is m61base.
+if [ -n "${CIRCUIT:-}" ]; then
+    FIELD=${FIELD:="m61base"}
+else
+    FIELD=${FIELD:="m61"}
+fi
 
 # Optional 4th arg: number of random-sharing sub-batches (--rand-batches).
 # When omitted, the node falls back to mpc::NUM_RAND_BATCHES.
