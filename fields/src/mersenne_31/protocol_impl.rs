@@ -19,7 +19,7 @@ use rand_core::RngCore;
 use crate::{byte_conv::ByteConversion, protocol_field::ProtocolField};
 
 use super::{
-    extension_fp8::{Degree8ExtensionField, Fp, Mersenne31Field},
+    extension_fp8::{Degree2ExtensionField, Degree8ExtensionField, Fp, Mersenne31Field},
     ser::fp8_from_limbs,
     sqrt::sqrt_fp8,
 };
@@ -99,6 +99,22 @@ impl ProtocolField for Mersenne31Field {
         FieldElement::new(<Self as IsSubFieldOf<Degree8ExtensionField>>::embed(*elem.value()))
     }
 
+    /// 31 bits is too narrow for the verification checks; they run in Fp2 =
+    /// Fp[i]/(i² + 1), 62 bits.
+    type StatisticalExt = Degree2ExtensionField;
+    const STATISTICAL_DEGREE: usize = 2;
+
+    /// `a + b·i` is `[a, b]`.
+    fn statistical_coeff(elem: &FieldElement<Degree2ExtensionField>, k: usize) -> FieldElement<Self> {
+        elem.value()[k].clone()
+    }
+
+    fn from_statistical_coeffs(coeffs: &[FieldElement<Self>]) -> FieldElement<Degree2ExtensionField> {
+        debug_assert!(coeffs.len() <= 2, "more coefficients than the extension's degree");
+        let coeff = |i: usize| coeffs.get(i).cloned().unwrap_or_else(FieldElement::zero);
+        FieldElement::new([coeff(0), coeff(1)])
+    }
+
     fn rand() -> FieldElement<Self> {
         limb_from(random::<u64>())
     }
@@ -167,6 +183,18 @@ impl ProtocolField for Degree8ExtensionField {
         elem.clone()
     }
 
+    /// 248 bits: the verification checks run here as they are.
+    type StatisticalExt = Self;
+    const STATISTICAL_DEGREE: usize = 1;
+
+    fn statistical_coeff(elem: &FieldElement<Self>, _k: usize) -> FieldElement<Self> {
+        elem.clone()
+    }
+
+    fn from_statistical_coeffs(coeffs: &[FieldElement<Self>]) -> FieldElement<Self> {
+        coeffs.first().cloned().unwrap_or_else(FieldElement::zero)
+    }
+
     fn rand() -> FieldElement<Self> {
         fp8_from_limbs(std::array::from_fn(|_| limb_from(random::<u64>())))
     }
@@ -224,6 +252,21 @@ mod tests {
 
     type Base = Mersenne31Field;
     type Ext8 = Degree8ExtensionField;
+
+    /// Fp2 round-trips through its coefficients, the embedding is a ring
+    /// homomorphism (verification multiplies embedded tuples), and `i² = −1`.
+    #[test]
+    fn statistical_ext_coefficients_round_trip_and_embed_homomorphically() {
+        let (a, b) = (Base::rand(), Base::rand());
+        let x = Base::from_statistical_coeffs(&[a, b]);
+        assert_eq!((Base::statistical_coeff(&x, 0), Base::statistical_coeff(&x, 1)), (a, b));
+        let embed = |v: Fp| Base::from_statistical_coeffs(&[v]);
+        assert_eq!(embed(a) * embed(b), embed(a * b));
+        assert_eq!(embed(a) + embed(b), embed(a + b));
+        let i = Base::from_statistical_coeffs(&[Fp::zero(), Fp::one()]);
+        assert_eq!(&i * &i, embed(-Fp::one()));
+        assert!(Base::STATISTICAL_DEGREE * 31 >= 60);
+    }
 
     #[test]
     fn serialization_is_exactly_ser_bytes_wide() {
