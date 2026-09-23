@@ -308,7 +308,7 @@ documented in full in [`planner/README.md`](../planner/README.md). In short:
   rounds before preprocessing, which is what sizes the engine's per-depth
   reservations and the edaBit slices.
 - **Every application goes through it.** `anonymous_broadcast`, `btx_setup`,
-  `reveal_probe` and `bristol_circuit` are all `PlannerApplication`s. The
+  `reveal_probe`, `bristol_circuit` and `erc20` are all `PlannerApplication`s. The
   Planner runs over every protocol field: `Mul`, `Add` and `Reveal` anywhere
   (BTX over BLS12-381, anonymous broadcast over the Fp4 extension), the rest
   over `m61base`/`m31base`, refused by name elsewhere when the plan is
@@ -451,6 +451,52 @@ Two things the harness saw beyond the numbers.
   output-agreement BA exhausted its hybrid-model coins at every party and
   `on_output` never fired. That is the consensus-library behaviour in §11;
   across all 150 runs the coin exhaustion was logged in 10 and stopped 1.
+
+### An application: private ERC20 payments
+
+[`apps/erc20`](../apps/erc20/src/lib.rs) runs an ERC20 token with secret
+balances and amounts and public senders and receivers. A transfer is two
+comparisons in one op-depth — `[bal_from < amount]` and `[amount < 0]` — then
+`ok = (1 − x)(1 − y)` and `δ = ok · amount`, and a local move of `δ`. A
+rejected transfer moves nothing, and nobody learns it was rejected.
+Transfers are grouped into epochs that share those three op-depths — a new
+epoch starts when a sender has already sent or received in the current one,
+which keeps the result exactly that of running the transfers one by one — so
+an epoch costs **10 rounds at ℓ = 61 and 9 at ℓ = 31**, whatever its width.
+
+`scripts/bench_erc20.py` generates a ledger of `T` transfers per epoch over
+`2T` accounts (senders and receivers disjoint), balances in `[0, 2^20)`, and
+amounts of which ~80 % are funded, ~10 % overdraw and ~10 % are negative;
+runs it on the same 10-party laptop fixture; and checks every party's final
+balances against the transfers run one by one. **30 runs, 3 per point: every
+party's balances matched in every run.** Median milliseconds:
+
+| field | transfers / epoch × epochs | rounds | edaBits | tuples verified | preprocessing | online | verification | output | total |
+|---|---|---|---|---|---|---|---|---|---|
+| m61base | 1 × 1 | 10 | 2 | 306 | 588 | 63 | 47 | 110 | 804 |
+| m61base | 64 × 1 | 10 | 128 | 18,952 | 1,437 | 178 | 117 | 128 | 1,884 |
+| m61base | 1024 × 1 | 10 | 2,048 | 303,112 | 10,968 | 1,149 | 397 | 357 | 12,854 |
+| m61base | 4096 × 1 | 10 | 8,192 | 1,212,424 | 40,741 | 4,314 | 1,268 | 1,072 | 47,361 |
+| m61base | 1024 × 4 | 40 | 8,192 | 1,212,424 | 40,754 | 4,728 | 1,274 | 310 | 47,065 |
+| m31base | 1 × 1 | 9 | 2 | 158 | 481 | 47 | 42 | 85 | 654 |
+| m31base | 64 × 1 | 9 | 128 | 9,480 | 807 | 88 | 64 | 94 | 1,078 |
+| m31base | 1024 × 1 | 9 | 2,048 | 151,560 | 4,588 | 503 | 200 | 235 | 5,532 |
+| m31base | 4096 × 1 | 9 | 8,192 | 606,216 | 16,542 | 1,800 | 519 | 749 | 19,583 |
+| m31base | 1024 × 4 | 36 | 8,192 | 606,216 | 16,485 | 2,098 | 525 | 239 | 19,331 |
+
+- **A transfer costs two comparisons**, so it is priced like `LT` at twice the
+  width: 4096 transfers verify 1.2 M tuples, the same as 8192 `LT` gates would.
+  As there, the preprocessing — ℓ random bits per comparison — is the bulk:
+  40.7 s of 47.4 s at ℓ = 61.
+- **Online, 4096 transfers take 4.3 s at ℓ = 61 and 1.8 s at ℓ = 31**, about
+  950 and 2,300 transfers per second once preprocessing is done.
+- **Epochs are cheap on one machine.** The same 4096 transfers as four epochs
+  of 1024 — 40 rounds instead of 10 — take 4.7 s online instead of 4.3 s:
+  locally a round costs milliseconds and the work is in the multiplications.
+  Over a WAN each extra epoch adds 10 round trips, and the epoch grouping is
+  what keeps a batch of non-conflicting transfers at one epoch.
+- The BA coin exhaustion was logged in 3 of the 30 runs; all 3 delivered the
+  output to every party.
 
 ## 11. Caveats
 

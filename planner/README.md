@@ -35,7 +35,7 @@ run over any of them; the comparison family, `Truncate`, `FixedMul` and
 `ProtocolField::MERSENNE_BITS` and refuses those ops by name over any other
 field — when the plan is compiled, before preprocessing. Every application in
 the workspace — `anonymous_broadcast`, `btx_setup` (over BLS12-381),
-`reveal_probe`, `bristol_circuit` — is a `PlannerApplication`; none
+`reveal_probe`, `bristol_circuit`, `erc20` — is a `PlannerApplication`; none
 implements the engine's `Application` itself.
 
 Contents:
