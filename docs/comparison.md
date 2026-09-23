@@ -500,13 +500,14 @@ party's balances matched in every run.** Median milliseconds:
 
 ## 11. Caveats
 
-- **Verification soundness is bounded by the sharing field.** The
-  delinearization coin — and so the tuple check and the reveal check — lives
-  in `F`, not in an extension. Over `m61base` that is `~2^{−61}` per check,
-  times the number of tuples or reveals; over `m31base` it is `~2^{−31}`,
-  which is a benchmark configuration, not a secure one. (The ACSS proofs are
-  lifted to an extension; the verification phase is not — see
-  `ProtocolField::Ext`.)
+- **Verification is statistically sound, to about 2^−30.** The tuple check
+  and the reveal check run over the field's statistical extension
+  (`ProtocolField::StatisticalExt`): Fp2 over `m31base` (62 bits), the base
+  field over `m61base` (61 bits). A cheat survives with probability about
+  `#checked values / |K|`, so up to 2^30 multiplication gates keep it near
+  2^−30, one run in a billion. The ACSS proofs stay cryptographic, in
+  `ProtocolField::Ext` (≥ 240 bits). Neither level is an application choice:
+  the field implementation fixes both.
 - **The end-of-protocol agreement can run out of coins.** The
   output-agreement MVBA's binary BA runs on 15 deterministic hybrid-model
   coins and sometimes exhausts them (`Coins unavailable, abandoning BBA

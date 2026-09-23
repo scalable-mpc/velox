@@ -280,11 +280,9 @@ T0 so that no later task rediscovers a shortfall at depth 5005.
 - `DepthInput::Parallel` so a batch's reveals and plain `Mul`s share a round.
 - Folding the final XOR into the tree root with the two-layer DN trick
   (Liu et al. §5.2, Π2L-DN): 8 → 7 rounds for DReLU.
-- Verification soundness over Mersenne-31: the delinearization coin stays in
-  the sharing field, so tuple verification is `2^{-31}`-sound there
-  (`ProtocolField::Ext` covers the DZK only). Fine for benchmarking the
-  ℓ = 31 carry tree, not for deployment. Also note the `2^{-31}`
-  per-comparison probability of `r ≡ 0`, which reveals `a`.
+- Verification soundness over Mersenne-31 — done in #17: the checks run in
+  `ProtocolField::StatisticalExt` (Fp2 over M31, 62 bits). Still open: the
+  `2^{-31}` per-comparison probability of `r ≡ 0`, which reveals `a`.
 
 ## Decisions taken
 
