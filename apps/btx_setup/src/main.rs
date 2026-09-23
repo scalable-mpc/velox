@@ -2,7 +2,8 @@
 //!
 //! The application owns its binary: velox supplies argument parsing, config
 //! loading, the tokio runtime, the syncer and signal handling, and this file
-//! supplies what is specific to this application — the batch size.
+//! supplies what is specific to this application — the batch size and, for
+//! the indexed variant, the index radius.
 
 use btx_setup::BtxSetup;
 use velox::{bail, ArgMatches, EngineOptions, ExitSender, Node, ProtocolField, Result};
@@ -14,6 +15,12 @@ fn main() -> Result<()> {
             "B",
             "the scheme's batch size B; shares of tau^1..tau^{2B} are generated",
             true,
+        ))
+        .arg(velox::arg(
+            "delta",
+            "d",
+            "the index radius delta <= B of Policharla's indexed BTE variant; omit for the base scheme",
+            false,
         ))
         .get_matches();
 
@@ -58,7 +65,11 @@ fn start<F: ProtocolField>(config: Node, matches: &ArgMatches, field: &str) -> R
         .ok_or_else(|| anyhow::anyhow!("--batch_size is required"))?
         .parse::<usize>()
         .map_err(|_| anyhow::anyhow!("--batch_size must be a positive integer"))?;
-    let app = BtxSetup::<F>::new(config.num_nodes, config.num_faults, config.id, batch_size, field)?;
+    let delta = matches
+        .value_of("delta")
+        .map(|d| d.parse::<usize>().map_err(|_| anyhow::anyhow!("--delta must be a positive integer")))
+        .transpose()?;
+    let app = BtxSetup::<F>::new(config.num_nodes, config.num_faults, config.id, batch_size, delta, field)?;
 
     // The application talks to the Planner, which is what the engine hosts.
     velox::spawn(config, velox::Planner::new(app)?, &EngineOptions::from_matches(matches)?)

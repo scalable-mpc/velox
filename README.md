@@ -152,7 +152,7 @@ run through `scripts/test.sh` (`APP_BIN=<name>`):
 |---|---|---|
 | `anonymous_broadcast` | a butterfly mixing network: `k` messages shuffled anonymously | any (`m61` default) |
 | `bristol_circuit` | any `.arith` circuit, including comparison, ReLU, max/min, truncation and fixed-point gates ([`docs/CIRCUIT_FORMAT.md`](docs/CIRCUIT_FORMAT.md)) | `m61base`, `m31base` |
-| `btx_setup` | the key setup of batched threshold encryption: shares of `τ¹ … τ^{2B}` | any (`bls381` default) |
+| `btx_setup` | the key setup of batched threshold encryption: shares of `τ¹ … τ^{2B}`; with `--delta`, Policharla's indexed variant (shares of `sk·τ^d`, `sk⁻¹·τ^i`, `β`) | any (`bls381` default) |
 | `erc20` | private ERC20 payments: secret balances and amounts, every transfer checked for funds with secure comparisons (`apps/erc20/src/lib.rs`) | `m61base`, `m31base` |
 | `reveal_probe` | an end-to-end check of the public reveal | any |
 
