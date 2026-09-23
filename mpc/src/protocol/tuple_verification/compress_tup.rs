@@ -1,18 +1,20 @@
 use planner::api::engine::Application;
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::{LargeFieldSer, inverse_vandermonde_from_points, matrix_matrix_multiply, powers_matrix, rayon_async, ProtocolField, FieldSer};
+use fields::{LargeFieldSer, inverse_vandermonde_from_points, matrix_matrix_multiply, powers_matrix, rayon_async, ProtocolField};
 use rayon::prelude::{ParallelIterator, IntoParallelRefIterator};
 
 use crate::{Context, msg::ProtMsg};
 
-use super::ex_compr_state::ExComprState;
+use super::{
+    ex_compr_state::ExComprState, StatisticalElement, deser_statistical, inner_products_over_base, join_coeff_rows,
+    join_coeffs, open_statistical_sharings, ser_statistical, split_into_coeff_rows,
+};
 
-use fields::poly::check_if_all_points_lie_on_degree_x_polynomial;
 use lambdaworks_math::field::element::FieldElement;
 
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This method starts compression from the second level onwards
-    pub async fn init_compression_level(&mut self, x_vector: Vec<FieldElement<F>>, y_vector: Vec<FieldElement<F>>, agg_val: FieldElement<F>, depth: usize){
+    pub async fn init_compression_level(&mut self, x_vector: Vec<StatisticalElement<F>>, y_vector: Vec<StatisticalElement<F>>, agg_val: StatisticalElement<F>, depth: usize){
         // Split into chunks for compression
         let elements_per_chunk;
         if x_vector.len() >= self.compression_factor{
@@ -27,21 +29,21 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         else{
             elements_per_chunk = 1;
         }
-        let mut x_vec_chunks: Vec<Vec<FieldElement<F>>> = x_vector.chunks(elements_per_chunk).into_iter().map(|chunk| chunk.to_vec()).collect();
-        let mut y_vec_chunks: Vec<Vec<FieldElement<F>>> = y_vector.chunks(elements_per_chunk).into_iter().map(|chunk| chunk.to_vec()).collect();
+        let mut x_vec_chunks: Vec<Vec<StatisticalElement<F>>> = x_vector.chunks(elements_per_chunk).into_iter().map(|chunk| chunk.to_vec()).collect();
+        let mut y_vec_chunks: Vec<Vec<StatisticalElement<F>>> = y_vector.chunks(elements_per_chunk).into_iter().map(|chunk| chunk.to_vec()).collect();
         let mult_value = agg_val;
 
         // Ensure each vector is of the same size for polynomial interpolation
         x_vec_chunks.iter_mut().for_each(|x|{
             if x.len() < elements_per_chunk{
-                let new_chunk = vec![FieldElement::<F>::zero(); elements_per_chunk - x.len()];
+                let new_chunk = vec![StatisticalElement::<F>::zero(); elements_per_chunk - x.len()];
                 x.extend(new_chunk);
             }
         });
 
         y_vec_chunks.iter_mut().for_each(|x|{
             if x.len() < elements_per_chunk{
-                let new_chunk = vec![FieldElement::<F>::zero(); elements_per_chunk - x.len()];
+                let new_chunk = vec![StatisticalElement::<F>::zero(); elements_per_chunk - x.len()];
                 x.extend(new_chunk);
             }
         });
@@ -74,8 +76,9 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             ex_compr_state.y_sharings.push(y_rand_mask);   
         }
         log::info!("Starting tuple compression at depth {} with tuple depth {} and num tuples {}", depth,x_vec_chunks[0].len(), x_vec_chunks.len());
-        // Multiply these tuples using ex_mult
-        self.choose_multiplication_protocol(x_vec_chunks, y_vec_chunks, depth).await;
+        // Multiply these tuples using ex_mult, as inner products over `F`
+        let (x_base, y_base) = inner_products_over_base::<F>(&x_vec_chunks, &y_vec_chunks);
+        self.choose_multiplication_protocol(x_base, y_base, depth).await;
     }
 
     // This function takes a two-layered vector: 
@@ -103,13 +106,13 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         }
         let (rem_x, rem_y, rem_mult) = ex_compr_state.rem_mult_tup.clone().unwrap();
         
-        let mut mult_value_last_round = FieldElement::<F>::zero();
+        let mut mult_value_last_round = StatisticalElement::<F>::zero();
         if x_vectors[0].len() == 1{
             log::info!("Final level of compression, removing random mask from the set of multiplication tuples");
             mult_value_last_round = mult_vec.last().clone().unwrap().clone();
         }
 
-        let sum_mult: FieldElement<F> = mult_vec.clone().into_iter().sum();
+        let sum_mult: StatisticalElement<F> = mult_vec.clone().into_iter().sum();
         let sub_mult = rem_mult - sum_mult + mult_value_last_round;
         
         // If this round is the last round, mask the output with a random sharing to ensure adversary does not know any thing about the inputs or gates
@@ -168,26 +171,32 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
         let (x_polynomials, y_polynomials, x_poly_evals_ss, y_poly_evals_ss) =
             rayon_async(move || {
+                // The evaluations are over extension field `K` and the points over base field `F`, 
+                // so the interpolation and the evaluation act on each coefficient on
+                // its own: every row goes through the GEMMs as `d` rows over
+                // `F` and is joined back afterwards.
                 let inv_vdm_first_set =
                     inverse_vandermonde_from_points(&first_set_eval_points);
                 let x_coeffs_mat =
-                    matrix_matrix_multiply(&inv_vdm_first_set, &x_polynomial_evaluations_vector, false);
+                    matrix_matrix_multiply(&inv_vdm_first_set, &split_into_coeff_rows::<F>(&x_polynomial_evaluations_vector), false);
                 let y_coeffs_mat =
-                    matrix_matrix_multiply(&inv_vdm_first_set, &y_polynomial_evaluations_vector, false);
+                    matrix_matrix_multiply(&inv_vdm_first_set, &split_into_coeff_rows::<F>(&y_polynomial_evaluations_vector), false);
 
                 // Evaluate every recovered polynomial at every second-set point
                 // in one GEMM: row `i` of the result is
-                // `[poly_0(p_i), .., poly_{d-1}(p_i)]`, which is the row layout
-                // the per-polynomial loop used to build by pushing.
+                // `[poly_0(p_i), .., poly_{d-1}(p_i)]`, each value as its
+                // coefficients over `F`, one after the other.
                 let second_powers = powers_matrix(&second_set, num_coeffs);
-                let x_evals = matrix_matrix_multiply(&second_powers, &x_coeffs_mat, true);
-                let y_evals = matrix_matrix_multiply(&second_powers, &y_coeffs_mat, true);
+                let x_evals: Vec<Vec<StatisticalElement<F>>> = matrix_matrix_multiply(&second_powers, &x_coeffs_mat, true)
+                    .iter().map(|row| join_coeffs::<F>(row)).collect();
+                let y_evals: Vec<Vec<StatisticalElement<F>>> = matrix_matrix_multiply(&second_powers, &y_coeffs_mat, true)
+                    .iter().map(|row| join_coeffs::<F>(row)).collect();
 
-                let x_polynomials: Vec<Polynomial<FieldElement<F>>> = x_coeffs_mat
+                let x_polynomials: Vec<Polynomial<StatisticalElement<F>>> = join_coeff_rows::<F>(&x_coeffs_mat)
                     .par_iter()
                     .map(|row| Polynomial::new(row))
                     .collect();
-                let y_polynomials: Vec<Polynomial<FieldElement<F>>> = y_coeffs_mat
+                let y_polynomials: Vec<Polynomial<StatisticalElement<F>>> = join_coeff_rows::<F>(&y_coeffs_mat)
                     .par_iter()
                     .map(|row| Polynomial::new(row))
                     .collect();
@@ -197,14 +206,14 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 // pushed the evaluations after them. Preserved here so this stays
                 // a pure shape change - see the note in TODO.md about whether the
                 // prefill was intended.
-                let pad_rows = |leading: usize, evals: Vec<Vec<FieldElement<F>>>| {
+                let pad_rows = |leading: usize, evals: Vec<Vec<StatisticalElement<F>>>| {
                     evals.into_iter()
                         .map(|row| {
-                            let mut out = vec![FieldElement::<F>::zero(); leading];
+                            let mut out = vec![StatisticalElement::<F>::zero(); leading];
                             out.extend(row);
                             out
                         })
-                        .collect::<Vec<Vec<FieldElement<F>>>>()
+                        .collect::<Vec<Vec<StatisticalElement<F>>>>()
                 };
                 let x_poly_evals_ss = pad_rows(x_leading, x_evals);
                 let y_poly_evals_ss = pad_rows(y_leading, y_evals);
@@ -230,11 +239,15 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             self.handle_level_mult_termination(depth).await;
         }
         else{
-            self.choose_multiplication_protocol(x_poly_evals_ss, y_poly_evals_ss, depth+1).await;
+            let (x_base, y_base) = inner_products_over_base::<F>(&x_poly_evals_ss, &y_poly_evals_ss);
+            self.choose_multiplication_protocol(x_base, y_base, depth+1).await;
         }
     }
 
     pub async fn verify_ex_mult_termination_verification(&mut self, depth: usize, mult_result: Vec<FieldElement<F>>){
+        // The multiplication protocol returns each product over `K` as its
+        // `d` coefficients (see `inner_products_over_base`).
+        let mult_result = join_coeffs::<F>(&mult_result);
         if depth % 2 == 0{
             // This is the first level of ex_mult termination, initiate second level of ex_mult at this depth here
             let ex_compr_state = self.verf_state.ex_compr_state.entry(depth).or_insert_with(|| ExComprState::<F>::new(depth));
@@ -300,8 +313,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // Single-poly interpolation: the 50k-element bailout will keep it on CPU
         // regardless, but the call site lives on the GEMM pipeline for uniformity.
         let h_inv_vdm = inverse_vandermonde_from_points(&evaluation_points);
-        let h_coeffs_mat = matrix_matrix_multiply(&h_inv_vdm, &[h_shares], false);
-        let h_polynomial = Polynomial::new(&h_coeffs_mat[0]);
+        let h_coeffs_mat = matrix_matrix_multiply(&h_inv_vdm, &split_into_coeff_rows::<F>(&[h_shares]), false);
+        let h_polynomial = Polynomial::new(&join_coeff_rows::<F>(&h_coeffs_mat)[0]);
         log::info!("Interpolated H polynomial with degree {} at ExCompr at depth {}", h_polynomial.degree(), depth);
 
         // Evaluate x,y,h polynomials at a random point to get final value at this level
@@ -334,8 +347,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
         let coin_eval_point = ex_compr_state.coin_output.clone().unwrap();
         let h_point = h_polynomial.evaluate(&coin_eval_point);
-        let x_points: Vec<FieldElement<F>> = x_poly_vec.par_iter().map(|poly| poly.evaluate(&coin_eval_point)).collect();
-        let y_points: Vec<FieldElement<F>> = y_poly_vec.par_iter().map(|poly| poly.evaluate(&coin_eval_point)).collect();
+        let x_points: Vec<StatisticalElement<F>> = x_poly_vec.par_iter().map(|poly| poly.evaluate(&coin_eval_point)).collect();
+        let y_points: Vec<StatisticalElement<F>> = y_poly_vec.par_iter().map(|poly| poly.evaluate(&coin_eval_point)).collect();
         if x_points.len() == 1{
             // Last level of compression, reconstruct sharings here
             log::info!("Last level of compression at depth {} with size of vectors {}, proceeding to reconstruct sharings",depth,x_points.len());
@@ -350,7 +363,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         log::info!("Terminated compression at depth {} with size of xvector {}, yvector {} hpoint {:?}, proceeding to next depth",depth,x_points.len(),y_points.len(),h_point);
         if x_points.len() == 1{
             log::info!("Last level of compression, reconstructing secrets");
-            let prot_msg = ProtMsg::ReconstructVerfOutputSharing(x_points[0].ser_be(), y_points[0].ser_be(), h_point.ser_be());
+            let prot_msg = ProtMsg::ReconstructVerfOutputSharing(
+                ser_statistical::<F>(&x_points[0]), ser_statistical::<F>(&y_points[0]), ser_statistical::<F>(&h_point));
             self.broadcast(prot_msg).await;
         }
         else{
@@ -377,10 +391,15 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         z_share: LargeFieldSer, 
         sender: usize){
         log::info!("handle_reconstruct_verf_output_sharing: Received shares from sender {}", sender);
+        let (Some(x_share), Some(y_share), Some(z_share)) =
+            (deser_statistical::<F>(&x_share), deser_statistical::<F>(&y_share), deser_statistical::<F>(&z_share)) else {
+            log::warn!("handle_reconstruct_verf_output_sharing: undecodable shares from sender {}", sender);
+            return;
+        };
         self.verf_state.output_verf_reconstruction_shares.0.push(Self::get_share_evaluation_point(sender, self.use_fft, self.roots_of_unity.clone()));
-        self.verf_state.output_verf_reconstruction_shares.1.push(F::from_bytes_be(&x_share).unwrap());
-        self.verf_state.output_verf_reconstruction_shares.2.push(F::from_bytes_be(&y_share).unwrap());
-        self.verf_state.output_verf_reconstruction_shares.3.push(F::from_bytes_be(&z_share).unwrap());
+        self.verf_state.output_verf_reconstruction_shares.1.push(x_share);
+        self.verf_state.output_verf_reconstruction_shares.2.push(y_share);
+        self.verf_state.output_verf_reconstruction_shares.3.push(z_share);
         
         if self.verf_state.output_verf_reconstruction_shares.0.len() == 2*self.num_faults + 1{
             // Reconstruct points and check if all 2t+1 points lie on the degree t polynomial
@@ -390,26 +409,16 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 self.verf_state.output_verf_reconstruction_shares.2.clone(),
                 self.verf_state.output_verf_reconstruction_shares.3.clone()];
             
-            let verify_polynomials = check_if_all_points_lie_on_degree_x_polynomial(evaluation_indices, vec_eval_points, self.num_faults+1);
-            if !verify_polynomials.0{
+            let Some(secrets) = open_statistical_sharings::<F>(evaluation_indices, &vec_eval_points, self.num_faults) else {
                 log::error!("handle_reconstruct_verf_output_sharing: Verification failed. Points do not lie on the polynomial.");
                 return;
-            }
+            };
             log::info!("handle_reconstruct_verf_output_sharing: Verification passed. Points on all three polynomials lie on degree-t polynomials.");
             log::info!("Checking if the multiplication constraint holds");
 
-            let verf_polys = verify_polynomials.1.unwrap();
-            let a_poly = &verf_polys[0];
-            let b_poly = &verf_polys[1];
-            let c_poly = &verf_polys[2];
+            let (a_sec, b_sec, c_sec) = (&secrets[0], &secrets[1], &secrets[2]);
 
-            let eval_point = FieldElement::<F>::zero();
-
-            let a_sec = a_poly.evaluate(&eval_point);
-            let b_sec = b_poly.evaluate(&eval_point);
-            let c_sec = c_poly.evaluate(&eval_point);
-
-            if a_sec.clone()*b_sec.clone() == c_sec{
+            if a_sec * b_sec == *c_sec{
                 log::info!("handle_reconstruct_verf_output_sharing: Multiplication constraint holds.");
                 // The tuples are good; the output follows once the reveal
                 // check, running alongside, has passed too.

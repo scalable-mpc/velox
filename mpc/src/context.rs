@@ -290,7 +290,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
 
                 input_acss_id_offset: 500,
 
-                total_sharings_for_coins: 10*config.num_nodes,
+                // A coin over the statistical extension opens `d` sharings.
+                total_sharings_for_coins: 10 * config.num_nodes * F::STATISTICAL_DEGREE,
                 
                 acss_ab_send: acss_ab_send,
                 acss_ab_out_recv: acss_ab_out_recv,

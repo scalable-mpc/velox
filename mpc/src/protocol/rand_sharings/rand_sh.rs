@@ -79,17 +79,16 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             remaining_tuples = remaining_tuples.div_ceil(compression_factor);
             compression_levels += 1;
         }
-        // A level runs two multiplication batches — the chunked tuples in
-        // `init_compression_level`, then the extended polynomial evaluations in
-        // `init_ex_compression_tuples` — and neither exceeds `k+1` gates:
-        // chunking `T` elements into pieces of `ceil(T/k)` yields at most `k`
-        // chunks whatever `T` is, and the second batch adds the remainder tuple.
+        // Each of the verification gates is an inner product over the statistical
+        // extension, which runs as `d` inner products over `F`.
         // The linear protocol charges whole groups of `2t+1` gates, at `2t+1`
         // random and `t+1` zero sharings per group.
+        let d = F::STATISTICAL_DEGREE;
         let verification_groups =
-            compression_levels * 2 * (compression_factor + 1).div_ceil(group);
-        // Two extra masks: the random beaver mask `delinearize_mult_tuples` pops.
-        let verification_rand = verification_groups * group + 2;
+            compression_levels * 2 * (d * (compression_factor + 1)).div_ceil(group);
+        // Plus the random beaver mask `delinearize_mult_tuples` pops: two
+        // sharings over the extension, `d` over `F` each.
+        let verification_rand = verification_groups * group + 2 * d;
 
         self.mult_batch_size = batch_size_for(
             app_rand_total
@@ -100,7 +99,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             + self.total_sharings_for_coins
         );
         // Zero sharings: the linear protocol draws `t+1` of them for every group
-        // of 2t+1 gates — more than half a sharing per gate, so budgeting half
+        // of 2t+1 multiplication gates — more than half a sharing per gate, so budgeting half
         // underfeeds it and the protocol aborts partway through.
         //
         // Every batch rounds up to whole groups on its own, and a depth holding

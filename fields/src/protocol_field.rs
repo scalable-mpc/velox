@@ -20,7 +20,7 @@
 //! | ASCII input encoding/decoding | `mpc::input` reading party inputs, and the output layer printing them back |
 //! | GPU GEMM dispatch | the optional CUDA path, which is layout-specific |
 //! | SIMD GEMM dispatch | the AVX2 path, which needs a lane type per field |
-//! | lifting to a wider field | DZK proofs and verification coins, whose soundness is bounded by field size |
+//! | lifting to a wider field | DZK proofs (cryptographic) and the verification checks (statistical), whose soundness is bounded by field size |
 //!
 //! Serialization is exposed as trait methods rather than a
 //! `where FieldElement<Self>: ByteConversion` bound on purpose: a where-clause
@@ -110,14 +110,10 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
     ///
     /// # Scope
     ///
-    /// The lift covers the ACSS DZK proof. The multiplication-verification
-    /// phase — the delinearization coin and the compression levels it feeds —
-    /// deliberately stays in `Self`: its challenge is a reconstructed sharing,
-    /// so lifting it would make the whole compression pipeline `Ext`-valued and
-    /// require `Ext`-valued preprocessing and multiplication. That phase
-    /// instead *assumes* `Self` is large enough for statistical security on its
-    /// own. Choosing a `Self` small enough to need this lift therefore leaves
-    /// verification bounded by `|Self|`, not by `|Ext|`.
+    /// The *cryptographic* extension, at least 240 bits: it covers the ACSS
+    /// DZK proof, whose challenge is a hash an adversary can grind. The
+    /// multiplication verification and the reveal check need only statistical
+    /// soundness and run in [`StatisticalExt`](ProtocolField::StatisticalExt).
     type Ext: ProtocolField<Ext = Self::Ext>;
 
     /// How many `Self` elements pack into one [`Ext`](ProtocolField::Ext)
@@ -145,6 +141,39 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
     /// what evaluation points and other scalars need. `embed_ext(x) + embed_ext(y)
     /// == embed_ext(x + y)`; `lift` makes no such promise.
     fn embed_ext(elem: &FieldElement<Self>) -> FieldElement<Self::Ext>;
+
+    // -- Statistical soundness --------------------------------------------
+    //
+    // The multiplication verification and the reveal check draw their
+    // challenges from shared coins, which no one can grind, so they need only
+    // statistical soundness. A cheat survives them with probability about
+    // `#checked values / |StatisticalExt|`; at least 60 bits of field and at
+    // most 2^30 multiplication gates keep that near 2^-30, one run in a
+    // billion. The shares stay in `Self`: verification embeds them into the
+    // extension and computes there, and an extension element travels and is
+    // multiplied as its coefficients over `Self`.
+
+    /// The field the verification phase's checks live in: `Self` when it has
+    /// at least 60 bits, otherwise an extension of `Self` that does.
+    type StatisticalExt: IsField<BaseType: Send + Sync> + Send + Sync + 'static;
+
+    /// The degree of [`StatisticalExt`](ProtocolField::StatisticalExt) over
+    /// `Self`, and `1` when it is `Self`.
+    const STATISTICAL_DEGREE: usize;
+
+    /// Coefficient `k` of `elem` over `Self` in the extension's power basis,
+    /// `k = 0` being the constant term, for `k < STATISTICAL_DEGREE`. One at a
+    /// time rather than as a `Vec`: verification reads every coefficient of
+    /// every tuple, and an allocation per element dominated it.
+    fn statistical_coeff(elem: &FieldElement<Self::StatisticalExt>, k: usize) -> FieldElement<Self>;
+
+    /// The element with these coefficients, constant term first. A short slice
+    /// is zero-padded, so `from_statistical_coeffs(&[x])` embeds `x`.
+    ///
+    /// Both directions are `Self`-linear, which is what lets a sharing over the
+    /// extension be interpolated, degree-checked and sent coefficient by
+    /// coefficient with the base field's machinery.
+    fn from_statistical_coeffs(coeffs: &[FieldElement<Self>]) -> FieldElement<Self::StatisticalExt>;
 
     // -- Mersenne capability ------------------------------------------------
     //

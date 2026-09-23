@@ -132,6 +132,18 @@ where
         elem.clone()
     }
 
+    /// Wide enough for statistical checks too: verification runs here as it is.
+    type StatisticalExt = Self;
+    const STATISTICAL_DEGREE: usize = 1;
+
+    fn statistical_coeff(elem: &FieldElement<Self>, _k: usize) -> FieldElement<Self> {
+        elem.clone()
+    }
+
+    fn from_statistical_coeffs(coeffs: &[FieldElement<Self>]) -> FieldElement<Self> {
+        coeffs.first().cloned().unwrap_or_else(FieldElement::zero)
+    }
+
     fn rand() -> FieldElement<Self> {
         sample_from::<M, _>(&mut ThreadDraws)
     }

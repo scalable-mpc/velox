@@ -55,6 +55,18 @@ impl ProtocolField for Mersenne61Degree4ExtensionField {
         elem.clone()
     }
 
+    /// 244 bits: the verification checks run here as they are.
+    type StatisticalExt = Self;
+    const STATISTICAL_DEGREE: usize = 1;
+
+    fn statistical_coeff(elem: &FieldElement<Self>, _k: usize) -> FieldElement<Self> {
+        elem.clone()
+    }
+
+    fn from_statistical_coeffs(coeffs: &[FieldElement<Self>]) -> FieldElement<Self> {
+        coeffs.first().cloned().unwrap_or_else(FieldElement::zero)
+    }
+
     fn rand() -> FieldElement<Self> {
         fp4_from_limbs(random::<[u64; 4]>())
     }
@@ -209,6 +221,19 @@ impl ProtocolField for Mersenne61Field {
         FieldElement::new(
             <Self as IsSubFieldOf<Mersenne61Degree4ExtensionField>>::embed(elem.value().clone()),
         )
+    }
+
+    /// 61 bits is enough for the statistical checks: verification runs in the
+    /// base field, at no extension cost.
+    type StatisticalExt = Self;
+    const STATISTICAL_DEGREE: usize = 1;
+
+    fn statistical_coeff(elem: &FieldElement<Self>, _k: usize) -> FieldElement<Self> {
+        elem.clone()
+    }
+
+    fn from_statistical_coeffs(coeffs: &[FieldElement<Self>]) -> FieldElement<Self> {
+        coeffs.first().cloned().unwrap_or_else(FieldElement::zero)
     }
 
     fn rand() -> FieldElement<Self> {

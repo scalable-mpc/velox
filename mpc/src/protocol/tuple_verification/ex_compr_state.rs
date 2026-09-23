@@ -2,18 +2,21 @@ use lambdaworks_math::polynomial::Polynomial;
 use lambdaworks_math::field::element::FieldElement;
 use fields::ProtocolField;
 
+use super::StatisticalElement;
+
+/// One compression level, all of it over the statistical extension `K`.
 pub struct ExComprState<F: ProtocolField>{
     pub depth: usize,
 
-    pub x_sharings: Vec<Vec<FieldElement<F>>>,
-    pub y_sharings: Vec<Vec<FieldElement<F>>>,
-    pub mult_sharings: Vec<FieldElement<F>>,
+    pub x_sharings: Vec<Vec<StatisticalElement<F>>>,
+    pub y_sharings: Vec<Vec<StatisticalElement<F>>>,
+    pub mult_sharings: Vec<StatisticalElement<F>>,
     
-    pub rem_mult_tup: Option<(Vec<FieldElement<F>>, Vec<FieldElement<F>>, FieldElement<F>)>,
+    pub rem_mult_tup: Option<(Vec<StatisticalElement<F>>, Vec<StatisticalElement<F>>, StatisticalElement<F>)>,
 
-    pub x_polys: Option<Vec<Polynomial<FieldElement<F>>>>,
-    pub y_polys: Option<Vec<Polynomial<FieldElement<F>>>>,
-    pub h_poly: Option<Polynomial<FieldElement<F>>>,
+    pub x_polys: Option<Vec<Polynomial<StatisticalElement<F>>>>,
+    pub y_polys: Option<Vec<Polynomial<StatisticalElement<F>>>>,
+    pub h_poly: Option<Polynomial<StatisticalElement<F>>>,
 
     /// Whether the extended x/y evaluations have been produced and sent to
     /// multiplication.
@@ -24,11 +27,11 @@ pub struct ExComprState<F: ProtocolField>{
     /// second copy of them - the largest allocation of the first compression
     /// level - to answer a yes/no question is what this flag replaces.
     pub extended_sharings_generated: bool,
-    pub extended_mult_sharings: Vec<FieldElement<F>>,
+    pub extended_mult_sharings: Vec<StatisticalElement<F>>,
 
     // Tuple represents ordered evaluation indices as well as the shares
-    pub coin_toss_shares: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
-    pub coin_output: Option<FieldElement<F>>,
+    pub coin_toss_shares: (Vec<FieldElement<F>>, Vec<StatisticalElement<F>>),
+    pub coin_output: Option<StatisticalElement<F>>,
 
     pub ex_compr_terminated: bool,
 }
