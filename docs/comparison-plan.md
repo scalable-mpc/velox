@@ -78,8 +78,7 @@ apps/*                        implement PlannerApplication:  one Op per op-depth
    │
    ▼
 planner::api::application     Op, OpType, OpParams, PlannerCounts, OpDepthInput, OpResult, PlannerApplication
-planner (core), ops/, layout  Planner<F: MersennePrimeField, A>: schedules an op-depth, runs its steps
-planner::bridge               … as an engine Application
+planner, ops/, plan           Planner<F, A>: the engine's Application; starts each op-depth, runs its steps
    │
    ▼
 planner::api::engine          the engine's own API (was the `application` crate, moved 2026-09-18):
@@ -257,7 +256,9 @@ One PR each. Ask before every commit.
   Planner (its engine `Application` impl is gone); `docs/CIRCUIT_FORMAT.md`; `comparison.arith`
   under `testdata/circuits/`; end-to-end on `testdata/10` over `m61base`
   and `m31base`. Done 2026-09-22.
-- **T7 — benchmark + `docs/comparison.md`** (carry-tree derivation, layout
+- **T7 — benchmark + `docs/comparison.md`** (done 2026-09-22; also: the
+  Planner relaxed to every protocol field and every application ported onto
+  it) (carry-tree derivation, layout
   table, why nothing is opened), in the style of `docs/simd-m61-avx2.md`.
 
 ## Preprocessing budget: what each new consumer must touch

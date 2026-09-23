@@ -1,5 +1,9 @@
 # The Planner
 
+The design — why the comparison opens nothing, the truncation formula, what
+the engine gained — is in [`docs/comparison.md`](../docs/comparison.md); this
+file is the API.
+
 The Planner is the layer between an application and the Velox MPC engine. The
 engine (`mpc`) speaks three batch types — *multiply*, *reveal*, *masked
 multiply* — one batch per circuit depth. The Planner turns those into richer
@@ -23,12 +27,16 @@ nothing here touches the network. The engine hosts the Planner as one of its
     mpc::Context           (the engine: preprocessing, multiplication, reveal, verification, output)
 ```
 
-The crate is generic over a Mersenne-prime field (`fields::MersennePrimeField`,
-`p = 2^ℓ − 1`, ℓ = 61 or 31): the comparison and truncation tricks depend on
-`bits(p − b) = ¬bits(b)` and `msb(v) = lsb(2v)`. The engine's own API
-(`planner::api::engine`) is bound only by `ProtocolField`, and an application
-that needs nothing beyond the engine's batches may implement that trait
-directly instead (`anonymous_broadcast`, `btx_setup`, `reveal_probe` do).
+The Planner is generic over every protocol field. `Mul`, `Add` and `Reveal`
+run over any of them; the comparison family, `Truncate`, `FixedMul` and
+`MaskReveal` need a Mersenne prime field `p = 2^ℓ − 1` (ℓ = 61 or 31, i.e.
+`m61base` / `m31base`), because they depend on `bits(p − b) = ¬bits(b)` and
+`msb(v) = lsb(2v)`. The Planner reads that at runtime through
+`ProtocolField::MERSENNE_BITS` and refuses those ops by name over any other
+field — when the plan is compiled, before preprocessing. Every application in
+the workspace — `anonymous_broadcast`, `btx_setup` (over BLS12-381),
+`reveal_probe`, `bristol_circuit` — is a `PlannerApplication`; none
+implements the engine's `Application` itself.
 
 Contents:
 
@@ -38,11 +46,10 @@ Contents:
 4. [Struct and trait reference](#4-struct-and-trait-reference)
    - [`api::application`](#41-apiapplication--the-application-facing-api)
    - [`api::engine`](#42-apiengine--the-engine-facing-api)
-   - [`planner`](#43-planner--the-core)
-   - [`bridge`](#44-bridge--the-planner-as-an-engine-application)
-   - [`plan`](#45-plan--the-compiled-schedule)
-   - [`ops`](#46-ops--the-operations)
-   - [`primitives`](#47-primitives--edabits-and-the-carry-tree)
+   - [`planner`](#43-planner--the-planner-as-the-engines-application)
+   - [`plan`](#44-plan--the-compiled-schedule)
+   - [`ops`](#45-ops--the-operations)
+   - [`primitives`](#46-primitives--edabits-and-the-carry-tree)
 5. [Adding an operation](#5-adding-an-operation)
 6. [Tests](#6-tests)
 7. [Status](#7-status)
@@ -100,12 +107,12 @@ than as raw products.
 ```rust
 use anyhow::Result;
 use async_trait::async_trait;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 use planner::{Op, OpDepthInput, OpResult, PlannerApplication, PlannerCounts, RandomWireShares};
 
 #[async_trait]
-impl<F: ProtocolField + MersennePrimeField> PlannerApplication<F> for MyApp<F> {
+impl<F: ProtocolField> PlannerApplication<F> for MyApp<F> {
     fn preprocessing_count(&self) -> PlannerCounts { /* as above */ }
 
     // Secrets this party deals to the circuit's input wires (default: none).
@@ -169,8 +176,9 @@ let planner = planner::Planner::new(MyApp::<F>::new(config.num_nodes, config.id)
 velox::spawn(config, planner, &EngineOptions::from_matches(matches)?)
 ```
 
-Field selection is the app's (`--field m61base` / `m31base` select the
-Mersenne base fields that satisfy `MersennePrimeField`).
+Field selection is the app's. A declaration that uses a Mersenne-only op
+over another field makes `Planner::new` fail with a message naming the op;
+`--field m61base` / `m31base` are the fields that run everything.
 
 ### 1.4 Read results: `OpResult`
 
@@ -252,26 +260,26 @@ with `[Trunc_d(r)]` and `[r_msb]` read off the edaBit's bits.
 The engine drives; the Planner translates each hook in both directions.
 
 ```
-engine                          Planner (bridge + core)                      application
-──────                          ───────────────────────                      ───────────
+engine                          Planner                                       application
+──────                          ───────                                       ───────────
 preprocessing_count()  ───────► plan.preprocessing_counts()  ◄─── compiled from app.preprocessing_count()
 random_wires()         ───────► plan.random_wires()                  (= app's wires + ℓ bits per edaBit)
 inputs()               ───────────────────────────────────────────► app.inputs()
 input_sharing_termination(p,s) ────────────────────────────────────► app.input_sharing_termination(p,s)
-                                drive(OpDepthInput) ◄──────────────── returns OpDepthInput
+                                start_scheduled_op_depth ◄─────────── returns OpDepthInput
 on_preprocessing_complete(w) ─► take planner_bits() off w.bits, fill EdaBitPool
                                 ──────────────────────────────────► app.on_preprocessing_complete(rest)
-                                drive(OpDepthInput) ◄──────────────── returns OpDepthInput
-                                   Op{depth, op}: schedule(depth, op)
-                                                  next_batch() → Batch → DepthInput
-◄──── DepthInput::{Multiply|Reveal|MaskedMultiply}{engine_depth,…}
-on_depth_complete(d, products) ─► deliver(d, products); next_batch() …
-on_reveal_complete(d, values)  ─► deliver(d, values);   next_batch() …
-                                   None: complete() → (op_depth, OpResult)
+                                start_scheduled_op_depth ◄─────────── returns OpDepthInput
+                                   Op{depth, op}: check, draw edaBits, build the Operation
+                                   next_engine_depth_or_finish_op_depth
+◄──── DepthInput::{Multiply|Reveal|MaskedMultiply}{engine depth, …}
+on_depth_complete(d, results)  ─► results to the op's step;
+on_reveal_complete(d, values)  ─►   next_engine_depth_or_finish_op_depth …
+                                   no steps left: the op's OpResult
                                 ──────────────────────────────────► app.on_depth_complete(op_depth, result)
-                                drive(OpDepthInput) ◄──────────────── returns the next Op / Waiting / Done
+                                start_scheduled_op_depth ◄─────────── returns the next Op / Waiting / Done
 ◄──── DepthInput::Done(outputs)
-   [tuple verification, output reconstruction]
+   [tuple and reveal verification, output reconstruction]
 on_output(outputs)     ───────────────────────────────────────────► app.on_output(outputs)
 ```
 
@@ -285,7 +293,7 @@ binds an op's step to the same masks everywhere.
 
 ### 4.1 `api::application` — the application-facing API
 
-**`trait PlannerApplication<F: ProtocolField + MersennePrimeField>: Send + 'static`**
+**`trait PlannerApplication<F: ProtocolField>: Send + 'static`**
 
 | Hook | Required | Returns | When |
 |---|---|---|---|
@@ -325,11 +333,13 @@ bits dropped.
 
 Methods: `op_type() -> OpType`; `len()` / `is_empty()` (elements, from the
 first operand); `params() -> OpParams` (type + width, what a declaration is
-compared to); `validate(ell) -> Result<()>` (operand vectors agree in length;
+compared to); `validate(ell: Option<usize>) -> Result<()>` (operand vectors
+agree in length; the field can run the op — `ell` is `F::MERSENNE_BITS`;
 `d ∈ 1..=ℓ−3`). `Debug` prints `Type(n elements[, d=…])`.
 
 **`enum OpType`** — `Mul, Add, Compare, ComparePub, Max, Min, MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul`.
-`Copy + Eq + Hash`. `edabits_per_element()` is 0 for `Mul`, `Add`, `Reveal`
+`Copy + Eq + Hash`. `needs_mersenne()` is false for `Mul`, `Add`, `Reveal` and
+true for the rest; `edabits_per_element()` is 0 for `Mul`, `Add`, `Reveal`
 and 1 for everything else.
 
 **`struct OpParams { op_type: OpType, elements: usize }`** — an op without its
@@ -396,55 +406,48 @@ application reads as sharings; `new(bits, sharings)`.
 **`struct DefaultApplication<F>`** — a no-op application (10 depths × 1000
 gates, 100 outputs, 10 000 random bits) for benchmarking the bare engine.
 
-### 4.3 `planner` — the core
+### 4.3 `planner` — the Planner as the engine's `Application`
+
+One file: the struct, its two functions, and the engine hooks.
 
 **`struct Planner<F, A: PlannerApplication<F>>`**
 
 | Field | Role |
 |---|---|
 | `app: A` | the hosted application |
-| `plan: Plan` | the compiled schedule |
-| `pool: EdaBitPool<F>` | edaBits, sliced per op-depth |
-| `run: Option<DepthRun<F>>` | the op-depth in flight, if any |
+| `execution_plan: Plan` | the compiled schedule |
+| `edabit_pool: EdaBitPool<F>` | edaBits, sliced per op-depth |
+| `current_engine_run: Option<DepthRun<F>>` | the op-depth in flight, if any |
 | `completed: usize` | highest op-depth completed |
 
-Public: `new(app) -> Result<Self>` (compiles the plan, logs its size);
-`plan()`; `app()`. Crate-internal, in the order they fire:
-
-1. `schedule(depth, op)` — rejects a concurrent or out-of-order op-depth,
-   validates the op, checks the declaration `covers` it, draws the depth's
-   edaBits, builds the `Operation`.
-2. `next_batch() -> Result<Option<Batch>>` — the op's operands for its next
-   step, tagged with the round's engine depth; checks the operands' batch type
-   against the round's; steps with no operands are skipped. `None` once the
-   steps are exhausted.
-3. `deliver(engine_depth, results)` — checks the depth and result count
-   against the batch that is out, hands the results to the op.
-4. `complete() -> Result<(usize, OpResult)>` — the op-depth's number and
-   result.
-
-**`struct Batch<F> { engine_depth: usize, operands: EngineOperands<F> }`** —
-one engine step's batch.
-
 **`struct DepthRun<F>`** (private) — `op_depth`, `op: Box<dyn Operation<F>>`,
-`step` (next step index), `out: Option<(engine_depth, len)>` (the step whose
-batch is out).
+`step` (the op's next step), `out: Option<(engine_depth, len)>` (the step
+whose engine depth is out, and how many results it returns).
 
-### 4.4 `bridge` — the Planner as an engine `Application`
+Public: `new(app) -> Result<Self>` (compiles the plan, logs its size);
+`plan()`; `app()`. Private, each called from more than one place:
 
-`impl Application<F> for Planner<F, A>`. Each hook is a short translation:
-`preprocessing_count` / `random_wires` read the plan; `inputs`,
-`input_sharing_termination`, `on_output` pass through;
-`on_preprocessing_complete` takes `plan.planner_bits()` off the front of the
-delivered bits, fills the edaBit pool and passes the rest on;
-`on_depth_complete` and `on_reveal_complete` both `deliver` and continue.
-Two private helpers: `drive(OpDepthInput)` acts on the application's answer
-(`Waiting`/`Done` pass straight through; `Op` is scheduled and run) and
-`continue_run()` returns the next batch or, when the op-depth is done, calls
-the application's `on_depth_complete` and drives its answer. `to_depth_input`
-maps `EngineOperands` to `DepthInput`.
+- `start_scheduled_op_depth(app_input)` — acts on what an application hook
+  returned. `Waiting` and `Done` go straight to the engine. For an `Op` it
+  rejects a concurrent or out-of-order op-depth, validates the op, checks
+  the declaration `covers` it, draws the op-depth's edaBits, builds the
+  `Operation`, and returns its first engine depth.
+- `next_engine_depth_or_finish_op_depth()` — the running op's operands for
+  its next step, checked against the batch type the plan expects and
+  returned as a `DepthInput` at that step's engine depth (steps with no
+  operands are passed over). When the op has no steps left, it hands the
+  op's `OpResult` to the application's `on_depth_complete` and passes the
+  answer to `start_scheduled_op_depth`.
 
-### 4.5 `plan` — the compiled schedule
+`impl Application<F> for Planner<F, A>`: `preprocessing_count` /
+`random_wires` read the plan; `inputs`, `input_sharing_termination` and
+`on_output` pass through to the application; `on_preprocessing_complete`
+takes `plan.planner_bits()` off the front of the delivered random bits,
+fills the edaBit pool and passes the rest on; `on_depth_complete` checks the
+engine depth and result count against the step that is out, gives the
+results to the op and moves on; `on_reveal_complete` is the same hook.
+
+### 4.4 `plan` — the compiled schedule
 
 **`struct EngineRound { step: OpStep, engine_depth: usize, gates: usize }`** —
 one engine depth: a step of an op, placed and sized to the declared width
@@ -458,17 +461,17 @@ application's own `rand_bits` / `sharings`.
 
 | Method | Returns |
 |---|---|
-| `compile(&PlannerCounts, ell) -> Result<Plan>` | the plan; errors on an op-depth of zero elements |
+| `compile(&PlannerCounts, ell: Option<usize>) -> Result<Plan>` | the plan; errors on an op-depth of zero elements, and on a Mersenne-only op when `ell` is `None` |
 | `op_depth(d) -> Option<&OpDepthPlan>` | op-depth `d` (from 1) |
 | `op_depths() -> &[OpDepthPlan]` | all |
-| `ell()` | the field's bit length |
+| `ell()` | `Some(ℓ)` over a Mersenne prime field, `None` otherwise |
 | `engine_depths()` | total engine depths |
 | `edabits_per_depth() -> Vec<usize>` / `edabits_total()` | edaBit layout |
 | `planner_bits()` | engine random bits the Planner keeps: `ℓ × edabits_total` |
 | `preprocessing_counts() -> PreprocessingCounts` | the engine profile: plain gates at multiply rounds, masked at masked-multiply rounds, 0 at reveals |
 | `random_wires() -> RandomWires` | `planner_bits + app bits`, app sharings |
 
-### 4.6 `ops` — the operations
+### 4.5 `ops` — the operations
 
 **`enum EngineOperationType`** — `Reveal`, `Multiply`, `MaskedMultiply`: the
 three things the engine can run.
@@ -522,30 +525,35 @@ Shared pipelines (not `Operation`s themselves):
   with the template's shape so `Compare`/`Max`/`Min` delegate their leading
   steps. `fn steps(ell) -> Vec<OpStep>` gives reveal, one multiply per tree
   level of that level's width, one multiply.
-- `fixed_point.rs` — the local half of ΠTrunc: `trunc_public(c, d)`
-  (`Trunc_d` of a public element), `pow2(exp)`, `offset()` (`2^{ℓ−2}`),
-  `unmask(c, eda, d)` (steps 6–8 of Protocol 3.1).
+- `fixed_point.rs` — the local half of ΠTrunc: `pow2(exp)`, `offset()`
+  (`2^{ℓ−2}`), and `unmask(c, eda, d)` (steps 6–8 of Protocol 3.1, `Trunc_d`
+  of the public `c` included).
 
 `E<F>` is the crate's shorthand for `FieldElement<F>`; `no_such_step(op_type,
 step)` is the error an op returns for a step outside its list.
 
-### 4.7 `primitives` — edaBits and the carry tree
+### 4.6 `primitives` — edaBits and the carry tree
 
-**`struct EdaBit<F: MersennePrimeField> { value: FieldElement<F>, bits: Vec<FieldElement<F>> }`** —
+**`mod mersenne`** — `ell::<F>()`, `canonical::<F>(e)`,
+`bit::<F>(e, i)`: the Mersenne arithmetic the ops need, read through
+`ProtocolField::MERSENNE_BITS` / `mersenne_canonical`. They panic over a
+non-Mersenne field, which cannot happen past `Plan::compile` and
+`Op::validate`, the two places that refuse Mersenne-only ops cleanly.
+
+**`struct EdaBit<F: ProtocolField> { value: FieldElement<F>, bits: Vec<FieldElement<F>> }`** —
 a random `r` with sharings of its bits, LSB first. Assembled locally from ℓ
 engine sign bits: `[b] = (1 + [s]) / 2`, `[r] = Σ 2^i [b_i]`.
 
 | Method | |
 |---|---|
-| `from_signs(&[±1 sharings]) -> Result<Self>` | needs exactly ℓ |
-| `from_bits(bits)` | composes the value |
+| `from_signs(&[±1 sharings]) -> Result<Self>` | needs exactly ℓ; composes the value from the bits |
 | `msb()` | `[r_{ℓ−1}]` |
 | `trunc_shift(d)` | `[Trunc_d(r)]` from the bits (Theorem 3.1) |
 
 **`struct EdaBitPool<F>`** — the circuit's edaBits, laid out per op-depth in
 fixed slices so op-depth `d` draws the same material at every party.
 `plan(&per_depth)`, `bits_needed()` (ℓ per edaBit), `fill(&signs)`,
-`is_filled()`, `for_depth(depth, count)` (the first `count` of the depth's
+`for_depth(depth, count)` (the first `count` of the depth's
 slice; read, not drained).
 
 **`struct CarryTree { k, levels: Vec<Vec<Node>> }`** — `CarryOutL`
@@ -602,8 +610,8 @@ The plan and the preprocessing budget follow automatically from `steps()`.
 cargo test -p planner
 ```
 
-End-to-end on the real engine: `apps/reveal_probe` exercises the engine's
-reveal and masked multiplication; `apps/bristol_circuit` over `m61base` or
+End-to-end on the real engine: `apps/reveal_probe` exercises `Mul` and
+`Reveal` over any field; `apps/bristol_circuit` over `m61base` or
 `m31base` runs a `.arith` circuit on the Planner (`docs/CIRCUIT_FORMAT.md`,
 `testdata/circuits/comparison.arith` uses every op).
 

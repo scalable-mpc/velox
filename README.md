@@ -131,7 +131,10 @@ mpc/
 │   ├── avid_ab/       # Asynchronous Verifiable Information Dispersal with Abort
 │   └── sh2t/          # Degree-2t sharing with Abort
 │
-├── mpc/               # Main MPC protocols (multiplication, online phase, verification)
+├── mpc/               # Main MPC protocols (multiplication, reveal, online phase, verification)
+├── planner/           # The Planner: comparison, min/max, truncation, fixed-point ops over the engine
+├── circuit/           # The .arith circuit IR (docs/CIRCUIT_FORMAT.md)
+├── apps/              # Applications, each a PlannerApplication with its own binary
 ├── node/              # Executable node implementation and coordination logic
 ├── benchmark/         # AWS benchmarking infrastructure and analysis tools
 ├── testdata/          # Configuration files and test inputs for different node setups
@@ -139,6 +142,11 @@ mpc/
 ├── logs/              # Runtime logs from protocol execution
 └── images/            # Project assets (logo, etc.)
 ```
+
+Secure comparison, truncation and fixed-point multiplication (issue #5) are
+described in [`docs/comparison.md`](docs/comparison.md); the Planner's API in
+[`planner/README.md`](planner/README.md); circuits with those operations as
+gates in [`docs/CIRCUIT_FORMAT.md`](docs/CIRCUIT_FORMAT.md).
 
 # Running in AWS
 Please refer to the `benchmark/` directory for instructions to run benchmarks on AWS.
