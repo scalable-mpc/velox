@@ -111,28 +111,6 @@ impl<F: ProtocolField> ReconState<F> {
     pub fn accepts_l2(&self) -> bool {
         !self.terminated && !self.l2_started
     }
-
-    /// Claim the L1 interpolation and hand its inputs over. Callers set no
-    /// other flag: `l1_started` is what turns every later L1 message into an
-    /// early return.
-    pub fn take_l1(&mut self) -> (Vec<FieldElement<F>>, Vec<Vec<FieldElement<F>>>) {
-        self.l1_started = true;
-        std::mem::take(&mut self.l1_shares)
-    }
-
-    pub fn take_l2(&mut self) -> (Vec<FieldElement<F>>, Vec<Vec<FieldElement<F>>>) {
-        self.l2_started = true;
-        std::mem::take(&mut self.l2_shares)
-    }
-
-    /// Termination: hand the values out and free whatever a path that never
-    /// reached its interpolation left behind. The bookkeeping stays.
-    pub fn take_values(&mut self) -> Vec<FieldElement<F>> {
-        self.terminated = true;
-        self.l1_shares = (Vec::new(), Vec::new());
-        self.l2_shares = (Vec::new(), Vec::new());
-        std::mem::take(&mut self.values)
-    }
 }
 
 impl<F: ProtocolField> Default for ReconState<F> {

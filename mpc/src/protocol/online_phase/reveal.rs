@@ -35,14 +35,15 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
             return;
         }
         let engine_depth = depth + APPLICATION_DEPTH_OFFSET;
-        self.verf_state.add_reveal_sharings(engine_depth, values.clone());
+        // The sharings opened here, kept for the reveal check.
+        self.verf_state.revealed.entry(engine_depth).or_default().0 = values.clone();
         self.init_public_reconstruction(engine_depth, ReconKind::Reveal, values, ReconConfig::REVEAL, None).await;
     }
 
     /// The reconstruction at `engine_depth` has terminated with the public
     /// values: record them for verification and hand them to the application.
     pub async fn complete_reveal(&mut self, engine_depth: usize, values: Vec<FieldElement<F>>) {
-        self.verf_state.add_reveal_values(engine_depth, values.clone());
+        self.verf_state.revealed.entry(engine_depth).or_default().1 = values.clone();
         let depth = engine_depth - APPLICATION_DEPTH_OFFSET;
         log::info!("Reveal terminated at application depth {}, handing {} values back to the application", depth, values.len());
         self.deliver_reveal(depth, values).await;

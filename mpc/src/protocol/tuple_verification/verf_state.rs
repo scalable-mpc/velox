@@ -60,31 +60,6 @@ impl<F: ProtocolField> VerificationState<F>{
         }
     }
 
-    /// The sharings a reveal at `depth` opens, recorded when it starts.
-    pub fn add_reveal_sharings(&mut self, depth: usize, sharings: Vec<FieldElement<F>>) {
-        self.revealed.entry(depth).or_insert_with(|| (Vec::new(), Vec::new())).0 = sharings;
-    }
-
-    /// The public values a reveal at `depth` produced, recorded when it ends.
-    pub fn add_reveal_values(&mut self, depth: usize, values: Vec<FieldElement<F>>) {
-        self.revealed.entry(depth).or_insert_with(|| (Vec::new(), Vec::new())).1 = values;
-    }
-
-    /// Every recorded reveal, in ascending depth order so all parties combine
-    /// the same sequence. Takes, like `take_verified_tuples`.
-    pub fn take_reveals(&mut self) -> (Vec<FieldElement<F>>, Vec<FieldElement<F>>) {
-        let mut depths: Vec<usize> = self.revealed.keys().copied().collect();
-        depths.sort();
-        let (mut sharings, mut values) = (Vec::new(), Vec::new());
-        for depth in depths {
-            if let Some((mut s, mut v)) = self.revealed.remove(&depth) {
-                sharings.append(&mut s);
-                values.append(&mut v);
-            }
-        }
-        (sharings, values)
-    }
-
     /// Move every verified depth's `(a, b, a·b)` triple out of `mult_tuples`, in
     /// ascending depth order so all parties delinearize the same sequence.
     ///

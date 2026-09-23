@@ -189,8 +189,10 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
             return;
         }
         let degree = recon.config.unwrap().degree;
-        // Claimed before the job: `take_l1` sets `l1_started`.
-        let (indices, shares) = recon.take_l1();
+        // Claimed before the job: `l1_started` turns every later L1 message
+        // into an early return.
+        recon.l1_started = true;
+        let (indices, shares) = std::mem::take(&mut recon.l1_shares);
 
         log::info!("Attempting L1 reconstruction at depth {}", depth);
         let points = rayon_async(move || l1_interpolate(indices, shares, degree, num_faults)).await;
@@ -251,7 +253,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
         if !recon.accepts_l2() || !recon.own_init_done() || recon.recv_l2 < threshold {
             return;
         }
-        let (indices, points) = recon.take_l2();
+        recon.l2_started = true;
+        let (indices, points) = std::mem::take(&mut recon.l2_shares);
 
         log::info!("Attempting L2 reconstruction at depth {}", depth);
         let values = rayon_async(move || l2_interpolate(indices, points)).await;
@@ -297,7 +300,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
         }
         let kind = recon.kind.unwrap();
         let padding = recon.padding.unwrap();
-        let mut values = recon.take_values();
+        // Termination: take the values and free whatever a path that never
+        // reached its interpolation left behind. The bookkeeping stays.
+        recon.terminated = true;
+        recon.l1_shares = (Vec::new(), Vec::new());
+        recon.l2_shares = (Vec::new(), Vec::new());
+        let mut values = std::mem::take(&mut recon.values);
         values.truncate(values.len() - padding);
         log::info!("Public reconstruction at depth {} terminated with {} values ({:?})", depth, values.len(), kind);
 

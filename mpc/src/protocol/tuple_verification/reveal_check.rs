@@ -36,7 +36,15 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
     /// fold the reveals and broadcast this party's share of `[Δ]`, or count
     /// the check as passed if there were none.
     pub async fn init_reveal_check(&mut self) {
-        let (sharings, values) = self.verf_state.take_reveals();
+        // Every reveal of the run, in ascending depth order so all parties
+        // fold the same sequence. Taken: this is the records' last reader.
+        let mut revealed: Vec<_> = std::mem::take(&mut self.verf_state.revealed).into_iter().collect();
+        revealed.sort_by_key(|(depth, _)| *depth);
+        let (mut sharings, mut values) = (Vec::new(), Vec::new());
+        for (_, (mut s, mut v)) in revealed {
+            sharings.append(&mut s);
+            values.append(&mut v);
+        }
         if sharings.is_empty() && values.is_empty() {
             log::info!("Reveal check: nothing was revealed, nothing to check");
             self.verf_state.reveals_verified = true;
