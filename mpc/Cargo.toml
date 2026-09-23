@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 fields = { package = "fields", path="../fields"}
-application = { package = "application", path="../application"}
+planner = { package = "planner", path = "../planner" }
 
 consensus = {package = "consensus", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
 config = { package = "config", git="https://github.com/scalable-mpc/secure-distributed-computing-protocols.git"}
@@ -45,3 +45,8 @@ reed_solomon_rs = "0.1.2"
 
 # Efficient Finite fields
 lambdaworks-math = "=0.13.0"
+[dev-dependencies]
+# The public reconstruction's in-process test deals a local Shamir sharing
+# from a seeded generator, the same crates `fields` samples with.
+rand_core = "0.6.4"
+rand_chacha = "0.3.1"

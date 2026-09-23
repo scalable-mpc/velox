@@ -1,4 +1,4 @@
-use application::Application;
+use planner::api::engine::Application;
 use std::sync::Arc;
 
 use crate::{context::Context, msg::ProtMsg};
@@ -33,32 +33,21 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // Verify the message's authenticity before proceeding
         if self.check_proposal(msg) {
             match wrapper_msg.clone().protmsg {
-                ProtMsg::SharesL1(main_msg, depth) => {
-                    // RBC initialized
-                    log::debug!("Received L1 share message for depth {} from node : {}", depth, wrapper_msg.sender);
-                    self.handle_l1_message(main_msg, depth, wrapper_msg.sender).await;
+                ProtMsg::ReconL1(bytes, depth) => {
+                    log::debug!("Received reconstruction L1 shares for depth {} from node : {}", depth, wrapper_msg.sender);
+                    self.handle_recon_l1(bytes, depth, wrapper_msg.sender).await;
                 }
-                ProtMsg::SharesL2(main_msg, depth) => {
-                    // RBC initialized
-                    log::debug!("Received L2 share message for depth {} from node : {}", depth, wrapper_msg.sender);
-                    self.handle_l2_message(main_msg, depth,wrapper_msg.sender).await;
+                ProtMsg::ReconL2(bytes, depth) => {
+                    log::debug!("Received reconstruction L2 points for depth {} from node : {}", depth, wrapper_msg.sender);
+                    self.handle_recon_l2(bytes, depth, wrapper_msg.sender).await;
+                }
+                ProtMsg::ReconHash(hash, depth) => {
+                    log::debug!("Received reconstruction hash for depth {} from node : {}", depth, wrapper_msg.sender);
+                    self.handle_recon_hash(hash, depth, wrapper_msg.sender).await;
                 }
                 ProtMsg::QuadShares(main_msg, depth) => {
-                    // RBC initialized
-                    log::debug!("Received Init for instance id {} from node : {}", depth, wrapper_msg.sender);
+                    log::debug!("Received quadratic shares for depth {} from node : {}", depth, wrapper_msg.sender);
                     self.handle_quadratic_mult_shares(depth,main_msg, wrapper_msg.sender).await;
-                },
-                ProtMsg::RandBitReconL1(shares)=>{
-                    log::debug!("Received RandBitReconL1 message from node : {}", wrapper_msg.sender);
-                    self.handle_rand_bit_recon_l1(shares, wrapper_msg.sender).await;
-                },
-                ProtMsg::RandBitReconL2(points)=>{
-                    log::debug!("Received RandBitReconL2 message from node : {}", wrapper_msg.sender);
-                    self.handle_rand_bit_recon_l2(points, wrapper_msg.sender).await;
-                },
-                ProtMsg::RandBitReconHash(hash)=>{
-                    log::debug!("Received RandBitReconHash message from node : {}", wrapper_msg.sender);
-                    self.handle_rand_bit_recon_hash(hash, wrapper_msg.sender).await;
                 },
                 ProtMsg::ReconstructRandBits(shares)=>{
                     log::debug!("Received ReconstructRandBits message");
@@ -76,6 +65,10 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 ProtMsg::ReconstructVerfOutputSharing(ser_x_share, ser_y_share, ser_z_share)=>{
                     log::debug!("Received ReconstructVerfOutputSharing message");
                     self.handle_reconstruct_verf_output_sharing(ser_x_share, ser_y_share, ser_z_share, wrapper_msg.sender).await;
+                },
+                ProtMsg::RevealCheckShare(ser_share) => {
+                    log::debug!("Received RevealCheckShare message from node : {}", wrapper_msg.sender);
+                    self.handle_reveal_check_share(ser_share, wrapper_msg.sender).await;
                 },
                 ProtMsg::ReconstructMaskedOutput(ser_shares) =>{
                     log::debug!("Received ReconstructMaskedOutput message");

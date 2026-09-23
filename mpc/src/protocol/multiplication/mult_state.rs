@@ -5,13 +5,26 @@ use types::Replica;
 use lambdaworks_math::field::element::FieldElement;
 use fields::ProtocolField;
 
+use crate::protocol::public_reconstruction::ReconState;
+
 pub struct MultState<F: ProtocolField>{
     pub depth_share_map: HashMap<usize, SingleDepthState<F>>,
     pub output_layer: OutputLayerState<F>,
 }
 
+/// Everything the engine keeps about one depth.
+///
+/// The public reconstruction the depth runs — for a linear multiplication,
+/// a random-bit batch or a reveal — is `recon`. The remaining fields are the
+/// linear protocol's masks (`util_rand_sharings`), the depth's termination
+/// flag, and the buffers of the quadratic multiplication protocol, which is
+/// not selected by any current configuration (`multiplication_switch_threshold`
+/// is 0) and keeps its own single-level exchange here.
 pub struct SingleDepthState<F: ProtocolField>{
-    // Each party sends one share from each group. This map is sorted group wise
+    /// The depth's public reconstruction.
+    pub recon: ReconState<F>,
+
+    // Quadratic protocol: each party broadcasts one share per gate.
     pub l1_shares: (Vec<FieldElement<F>>,Vec<Vec<FieldElement<F>>>),
     pub l1_shares_reconstructed: Vec<FieldElement<F>>,
     pub l2_shares: (Vec<FieldElement<F>>,Vec<Vec<FieldElement<F>>>),
@@ -41,6 +54,7 @@ pub struct SingleDepthState<F: ProtocolField>{
 impl<F: ProtocolField> SingleDepthState<F>{
     pub fn new(two_levels: bool) -> Self {
         SingleDepthState{
+            recon: ReconState::new(),
             l1_shares: (Vec::new(),Vec::new()),
             l1_shares_reconstructed: Vec::new(),
             
@@ -161,6 +175,16 @@ impl<F: ProtocolField> MultState<F>{
             depth_share_map: HashMap::new(),
             output_layer: OutputLayerState::<F>::new()   
         }
+    }
+
+    /// The public reconstruction state of `depth`, created on first touch —
+    /// by this party's own init or by a peer's first message, whichever
+    /// comes first.
+    pub fn recon(&mut self, depth: usize) -> &mut ReconState<F> {
+        &mut self.depth_share_map
+            .entry(depth)
+            .or_insert_with(|| SingleDepthState::<F>::new(true))
+            .recon
     }
 
     pub fn get_single_depth_state(&mut self, depth: usize, two_levels: bool, tot_groups_in_level: usize) -> &mut SingleDepthState<F> {

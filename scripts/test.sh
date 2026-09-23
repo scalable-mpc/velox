@@ -1,6 +1,6 @@
 # A script to test quickly
 
-killall anonymous_broadcast bristol_circuit &> /dev/null
+killall anonymous_broadcast bristol_circuit reveal_probe erc20 &> /dev/null
 rm -rf /tmp/*.db &> /dev/null
 vals=(27000 27100 27200 27300)
 
@@ -8,8 +8,14 @@ vals=(27000 27100 27200 27300)
 TESTDIR=${TESTDIR:="testdata/$1"}
 TYPE=${TYPE:="release"}
 
-# Finite field to run over: m61 (default), stark252, or bn254.
-FIELD=${FIELD:="m61"}
+# Finite field to run over: m61 (default), m61base, m31, m31base, stark252, or bn254.
+# A circuit runs on the Planner, which needs a Mersenne-prime field, so its
+# default is m61base.
+if [ -n "${CIRCUIT:-}" ]; then
+    FIELD=${FIELD:="m61base"}
+else
+    FIELD=${FIELD:="m61"}
+fi
 
 # Optional 4th arg: number of random-sharing sub-batches (--rand-batches).
 # When omitted, the node falls back to mpc::NUM_RAND_BATCHES.
@@ -19,7 +25,11 @@ RAND_BATCHES_ARG=${4:+--rand-batches $4}
 # bristol_circuit application; otherwise anonymous_broadcast runs, and `--messages`
 # is its anonymity set size. The syncer role is served by whichever binary is in
 # play, via `--protocol sync`.
-if [ -n "${CIRCUIT:-}" ]; then
+# Set APP_BIN to run another application's binary with the same arguments
+# (e.g. APP_BIN=reveal_probe, whose second argument is --values).
+if [ -n "${APP_BIN:-}" ]; then
+    APP_ARG="${APP_ARG:-}"
+elif [ -n "${CIRCUIT:-}" ]; then
     APP_BIN=bristol_circuit
     APP_ARG="--circuit $CIRCUIT"
 else

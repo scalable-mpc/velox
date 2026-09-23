@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use application::{Application, PreprocessingCounts, RandomWires};
+use planner::api::engine::{Application, PreprocessingCounts, RandomWires};
 use config::Node;
 
 use fnv::FnvHashMap;
@@ -24,7 +24,7 @@ use types::{Replica, WrapperMsg, SyncMsg, SyncState};
 
 use crypto::{aes_hash::HashState, hash::Hash};
 
-use crate::{handlers::{handler::Handler, sync_handler::SyncHandler}, msg::ProtMsg, protocol::{online_phase::mix_circuit_state::MixCircuitState, rand_sharings::{rand_mask::RandomOutputMaskStruct, ApplicationPreprocessing}, MultState, RandSharings, VerificationState}};
+use crate::{handlers::{handler::Handler, sync_handler::SyncHandler}, msg::ProtMsg, protocol::{online_phase::{mix_circuit_state::MixCircuitState, APPLICATION_DEPTH_OFFSET}, rand_sharings::{rand_mask::RandomOutputMaskStruct, ApplicationPreprocessing}, MultState, RandSharings, VerificationState}};
 use lambdaworks_math::field::element::FieldElement;
 
 /// Number of coins sent to the MVBA/ACS instances to facilitate consensus.
@@ -123,7 +123,7 @@ pub struct Context<F: ProtocolField, A: Application<F>> {
 
     pub output_mask_size: usize,
 
-    /// The application's preprocessing demand, read once in `init_rand_sh` and
+    /// The application's preprocessing demand, read once at construction and
     /// reused for the rest of the run. Reading it again later risks sizing the
     /// preprocessing against one answer and spending it against another.
     pub preprocessing_counts: PreprocessingCounts,
@@ -137,7 +137,10 @@ pub struct Context<F: ProtocolField, A: Application<F>> {
     pub app_preprocessing: ApplicationPreprocessing<F>,
 
     pub preprocessing_mult_depth: usize,
-    pub delinearization_depth: usize, 
+    /// The depth verification's own multiplications and coin start at, the
+    /// compression levels following at `+2, +4, …`; even, and derived from
+    /// the declared circuit depth so no application depth reaches it.
+    pub delinearization_depth: usize,
     pub compression_factor: usize,
     pub multiplication_switch_threshold: usize,
 }
@@ -260,9 +263,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
         // canonical p/2). Reworking rand_bit for extension fields is out of scope
         // for the GPU/field-switch slice; placeholder zero keeps the build green.
 
-        // Preprocessing volumes are no longer derived from a circuit baked into
-        // the engine: `init_rand_sh` queries the application for them once the
-        // protocol starts.
+        
+        let preprocessing_counts = app.preprocessing_count();
+        let random_wires = app.random_wires();
+        
+        let above_circuit = APPLICATION_DEPTH_OFFSET + preprocessing_counts.depth() + 1;
+        let delinearization_depth = above_circuit + above_circuit % 2;
         tokio::spawn(async move {
             let mut c = Context {
                 app,
@@ -323,12 +329,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
                 mult_batch_size: 0,
                 zero_batch_size: 0,
                 output_mask_size: 0,
-                preprocessing_counts: PreprocessingCounts::default(),
-                random_wires: RandomWires::default(),
+                preprocessing_counts,
+                random_wires,
                 app_preprocessing: ApplicationPreprocessing::new(),
 
                 preprocessing_mult_depth: 0,
-                delinearization_depth: 5000, 
+                delinearization_depth,
                 compression_factor: compression_factor,
                 multiplication_switch_threshold: 0
             };

@@ -1,0 +1,8 @@
+# TRUNC takes the number of bits to drop after the type token.
+1 3
+2
+1 1
+1
+2
+
+1 1 0 2 TRUNC

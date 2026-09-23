@@ -1,0 +1,16 @@
+# A small token for trying the erc20 application by hand.
+#
+# Six accounts; account a is owned by party a mod n. Each party's
+# testdata/inputs/erc20_input_<id>.txt holds its accounts' balances, then the
+# amounts of the transfers its accounts send, one signed decimal per line.
+# Seven transfers in four epochs: 1 received in epoch 1, so its payment
+# opens epoch 2; 4 received in epoch 2, so its payment opens epoch 3; 5
+# received in epoch 3, so its payment opens epoch 4, which 0 → 2 joins.
+accounts 6
+0 1
+2 3
+1 4
+3 0
+4 5
+5 2
+0 2

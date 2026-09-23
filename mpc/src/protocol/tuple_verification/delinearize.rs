@@ -1,4 +1,4 @@
-use application::Application;
+use planner::api::engine::Application;
 
 use crate::{Context, protocol::online_phase::APPLICATION_DEPTH_OFFSET};
 use lambdaworks_math::field::element::FieldElement;
@@ -59,6 +59,9 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // `verf_state.mult_tuples` doubled the largest long-lived allocation in
         // the engine for the whole of verification.
         self.verf_state.delinearized = true;
+        // The reveal check needs only the coin and this party's finished
+        // circuit, both in hand here: start it now, alongside the compression.
+        self.init_reveal_check().await;
         let is_verified_depth = |depth: usize| {
             depth == self.preprocessing_mult_depth
                 || (depth >= APPLICATION_DEPTH_OFFSET && depth < self.delinearization_depth)

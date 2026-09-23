@@ -6,7 +6,7 @@
 //! giving it this party's input wires.
 
 use bristol_circuit::BristolCircuit;
-use velox::{bail, ArgMatches, EngineOptions, ExitSender, FieldElement, Node, ProtocolField, Result};
+use velox::{bail, ArgMatches, EngineOptions, ExitSender, FieldElement, MersennePrimeField, Node, Planner, ProtocolField, Result};
 
 fn main() -> Result<()> {
     // `--circuit` belongs to this application. It used to sit in the engine's
@@ -35,23 +35,22 @@ fn main() -> Result<()> {
 
 /// Start the circuit over whichever field `--field` names.
 ///
-/// Each arm is the *same* application at a different field. See the note in
-/// `anonymous_broadcast`'s binary for why the arms are spelled out rather than
-/// abstracted behind a trait.
+/// The circuit runs on the Planner, which needs a Mersenne-prime field — the
+/// op gates (`LT`, `RELU`, `TRUNC`, …) are defined over one — so the choice
+/// is `m61base` or `m31base`. The other fields the engine supports are
+/// named in the error so the flag is not mistaken for a typo.
 fn start_over_field(config: Node, matches: &ArgMatches) -> Result<ExitSender> {
-    match matches.value_of("field").unwrap_or("m61") {
-        "m61" | "mersenne61" => start::<velox::fields::DefaultField>(config, matches),
-        "stark252" => start::<velox::fields::Stark252Field>(config, matches),
-        "bn254" => start::<velox::fields::BN254Field>(config, matches),
+    match matches.value_of("field").unwrap_or("m61base") {
         "m61base" => start::<velox::fields::Mersenne61Field>(config, matches),
-        other => bail!(
-            "unknown field {:?}; expected one of m61, m61base, stark252, bn254",
-            other
+        "m31base" => start::<velox::fields::Mersenne31Field>(config, matches),
+        "m61" | "mersenne61" | "m31" | "mersenne31" | "stark252" | "bn254" => bail!(
+            "bristol_circuit runs on the Planner, which needs a Mersenne-prime field: pass --field m61base or m31base"
         ),
+        other => bail!("unknown field {:?}; expected m61base or m31base", other),
     }
 }
 
-fn start<F: ProtocolField>(config: Node, matches: &ArgMatches) -> Result<ExitSender> {
+fn start<F: ProtocolField + MersennePrimeField>(config: Node, matches: &ArgMatches) -> Result<ExitSender> {
     let path = matches
         .value_of("circuit")
         .ok_or_else(|| anyhow::anyhow!("--circuit is required"))?;
@@ -68,7 +67,7 @@ fn start<F: ProtocolField>(config: Node, matches: &ArgMatches) -> Result<ExitSen
         app.with_inputs(read_input_wires::<F>(config.id, wires))
     };
 
-    velox::spawn(config, app, &EngineOptions::from_matches(matches)?)
+    velox::spawn(config, Planner::new(app)?, &EngineOptions::from_matches(matches)?)
 }
 
 /// This party's input wires, read as decimal integers.

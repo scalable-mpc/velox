@@ -41,10 +41,12 @@ fn start_over_field(config: Node, matches: &ArgMatches) -> Result<ExitSender> {
         "bls381" | "bls12-381" => start::<velox::fields::BLS12381ScalarField>(config, matches, field),
         "m61" | "mersenne61" => start::<velox::fields::DefaultField>(config, matches, field),
         "m61base" => start::<velox::fields::Mersenne61Field>(config, matches, field),
+        "m31" | "mersenne31" => start::<velox::fields::Mersenne31Degree8ExtensionField>(config, matches, field),
+        "m31base" => start::<velox::fields::Mersenne31Field>(config, matches, field),
         "stark252" => start::<velox::fields::Stark252Field>(config, matches, field),
         "bn254" => start::<velox::fields::BN254Field>(config, matches, field),
         other => bail!(
-            "unknown field {:?}; expected one of bls381, m61, m61base, stark252, bn254",
+            "unknown field {:?}; expected one of bls381, m61, m61base, m31, m31base, stark252, bn254",
             other
         ),
     }
@@ -58,5 +60,6 @@ fn start<F: ProtocolField>(config: Node, matches: &ArgMatches, field: &str) -> R
         .map_err(|_| anyhow::anyhow!("--batch_size must be a positive integer"))?;
     let app = BtxSetup::<F>::new(config.num_nodes, config.num_faults, config.id, batch_size, field)?;
 
-    velox::spawn(config, app, &EngineOptions::from_matches(matches)?)
+    // The application talks to the Planner, which is what the engine hosts.
+    velox::spawn(config, velox::Planner::new(app)?, &EngineOptions::from_matches(matches)?)
 }

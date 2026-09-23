@@ -5,7 +5,7 @@
 //! [`Application`] trait, [`FieldElement`], the [`Node`] config type — so an
 //! application takes a single dependency rather than five spread across two
 //! repositories, each rev-pinned separately and free to skew. That matters most
-//! once applications live in their own repositories: `application`, `fields` and
+//! once applications live in their own repositories: `planner`, `fields` and
 //! `mpc` come from velox, but `Node`, `Replica` and `util::io` come from
 //! `secure-distributed-computing-protocols`, and an application should not have
 //! to know that.
@@ -65,12 +65,21 @@ pub use syncer::Syncer;
 // ---------------------------------------------------------------------------
 
 /// The trait an application implements, and the data model its hooks exchange.
-pub use application::{Application, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires};
+pub use planner::{Application, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires};
+
+/// The Planner: comparison, min/max, truncation and fixed-point
+/// multiplication as single operations over a Mersenne-prime field. An
+/// application implements `PlannerApplication` and is run as
+/// `Planner::new(app)`, which is an `Application` the engine can host.
+pub use planner::{self, OpParams, EdaBit, Op, OpDepthInput, OpType, OpResult, Planner, PlannerApplication, PlannerCounts};
 
 /// The field abstraction the whole protocol is generic over, and the concrete
 /// fields `--field` selects between (`fields::{DefaultField, Mersenne61Field,
-/// Stark252Field, BN254Field, BLS12381ScalarField}`).
-pub use fields::{self, ProtocolField};
+/// Mersenne31Degree8ExtensionField, Mersenne31Field, Stark252Field, BN254Field,
+/// BLS12381ScalarField}`). `MersennePrimeField` is the extra bound the
+/// comparison/truncation layer needs — Mersenne-61 and Mersenne-31 base fields
+/// only.
+pub use fields::{self, MersennePrimeField, ProtocolField};
 
 /// The element type the trait's data model is built on.
 pub use lambdaworks_math::field::element::FieldElement;
@@ -126,7 +135,7 @@ pub fn engine_args(name: &'static str) -> App<'static, 'static> {
         .arg(arg("syncer", "y", "IPs for the syncer to connect to", false))
         .arg(arg("comp", "o", "compression factor for multiplication gate verification", true))
         .arg(arg("rand_batches", "r", "sub-batches per random-sharing group", false).long("rand-batches"))
-        .arg(arg("field", "f", "field to run over: m61 (default), m61base, stark252, bn254", false))
+        .arg(arg("field", "f", "field to run over: m61 (default), m61base, m31, m31base, stark252, bn254", false))
         .arg(arg("byz", "b", "Byzantine faulty or normal node", false).long("byzantine"))
 }
 

@@ -35,3 +35,6 @@ client.json
 # above; these are the zipped bundles pulled back from remote testbeds, and at
 # tens of MB apiece they do not belong in history.
 *.zip
+testdata/circuits/bench/
+testdata/erc20/bench/
+__pycache__/

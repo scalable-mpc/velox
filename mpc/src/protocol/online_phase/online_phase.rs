@@ -1,5 +1,5 @@
 use anyhow::Result;
-use application::{Application, DepthInput};
+use planner::api::engine::{Application, DepthInput};
 use fields::ProtocolField;
 use crate::{Context};
 use lambdaworks_math::field::element::FieldElement;
@@ -9,6 +9,11 @@ use lambdaworks_math::field::element::FieldElement;
 /// `preprocessing_mult_depth` (random bit squaring) sits below it and
 /// `delinearization_depth` (verification) above.
 pub const APPLICATION_DEPTH_OFFSET: usize = 100;
+
+/// Depth the random-bit reconstruction is keyed at. The squares it opens come
+/// out of the multiplication at `preprocessing_mult_depth` (0), which owns
+/// that depth's reconstruction; a depth carries one, so this is the next.
+pub const RAND_BIT_RECON_DEPTH: usize = 1;
 
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function will be used to run the online phase of the protocol
@@ -52,6 +57,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
                 // batch's position in the circuit rather than its position in
                 // whatever order this party happened to schedule things.
                 self.multiply_application_batch(x, y, depth).await;
+            }
+            DepthInput::Reveal { depth, values } => {
+                Box::pin(self.init_reveal(depth, values)).await;
+            }
+            DepthInput::MaskedMultiply { depth, x, y, mask } => {
+                Box::pin(self.multiply_masked_application_batch(x, y, mask, depth)).await;
             }
             DepthInput::Done(output_wires) => {
                 self.handle_application_output(output_wires).await;

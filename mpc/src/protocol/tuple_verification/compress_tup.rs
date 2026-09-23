@@ -1,4 +1,4 @@
-use application::Application;
+use planner::api::engine::Application;
 use lambdaworks_math::{polynomial::Polynomial};
 use fields::{LargeFieldSer, inverse_vandermonde_from_points, matrix_matrix_multiply, powers_matrix, rayon_async, ProtocolField, FieldSer};
 use rayon::prelude::{ParallelIterator, IntoParallelRefIterator};
@@ -411,10 +411,10 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
             if a_sec.clone()*b_sec.clone() == c_sec{
                 log::info!("handle_reconstruct_verf_output_sharing: Multiplication constraint holds.");
-                // Output from here
-                self.terminate("verification".to_string(),vec![]).await;
-                // Code goes back to the output phase from here
-                self.reconstruct_output().await;
+                // The tuples are good; the output follows once the reveal
+                // check, running alongside, has passed too.
+                self.verf_state.tuples_verified = true;
+                self.try_finish_verification().await;
             }
             else{
                 log::error!("handle_reconstruct_verf_output_sharing: Multiplication constraint does not hold, with {:?} {:?}", a_sec* b_sec, c_sec);

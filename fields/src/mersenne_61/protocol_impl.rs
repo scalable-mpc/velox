@@ -12,7 +12,7 @@ use rand::random;
 use rand_chacha::ChaCha20Rng;
 use rand_core::RngCore;
 
-use crate::{byte_conv::ByteConversion, protocol_field::ProtocolField};
+use crate::{byte_conv::ByteConversion, mersenne_prime::MersennePrimeField, protocol_field::ProtocolField};
 
 use lambdaworks_math::field::traits::IsSubFieldOf;
 
@@ -182,6 +182,12 @@ impl ProtocolField for Mersenne61Field {
     /// 61 bits is far too narrow for a soundness bound, so challenges lift into
     /// the degree-4 extension.
     type Ext = Mersenne61Degree4ExtensionField;
+
+    const MERSENNE_BITS: Option<usize> = Some(<Self as MersennePrimeField>::BITS);
+
+    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u64> {
+        Some(<Self as MersennePrimeField>::to_canonical_u64(elem))
+    }
 
     /// Four base elements are the four coefficients of one Fp4 element.
     const CONV_RATIO: usize = 4;
@@ -451,5 +457,16 @@ mod tests {
         let (a, b) = F::sqrt(&square).expect("a square has a root");
         assert!(a == root || b == root);
         assert_eq!(&a * &a, square);
+    }
+}
+
+impl MersennePrimeField for Mersenne61Field {
+    const BITS: usize = 61;
+
+    /// Through `representative`, not `value()`: the internal word may hold `p`
+    /// itself as a non-canonical zero (`weak_reduce` leaves it, `as_representative`
+    /// folds it).
+    fn to_canonical_u64(elem: &FieldElement<Self>) -> u64 {
+        <Self as lambdaworks_math::field::traits::IsPrimeField>::representative(elem.value())
     }
 }
