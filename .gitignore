@@ -36,3 +36,5 @@ client.json
 # tens of MB apiece they do not belong in history.
 *.zip
 testdata/circuits/bench/
+testdata/erc20/bench/
+__pycache__/
