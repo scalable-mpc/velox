@@ -4,6 +4,8 @@
 #
 #   ./scripts/test_btx.sh {num_parties} {batch_size} {compression_factor}
 #
+# DELTA=<d> runs Policharla's indexed variant with index radius d <= B.
+#
 # Same knobs as test.sh: TESTDIR for the config directory, TYPE for the build
 # profile, FIELD for the field (defaults to bls381, where the scheme lives).
 
@@ -21,7 +23,7 @@ FIELD=${FIELD:="bls381"}
 RAND_BATCHES_ARG=${4:+--rand-batches $4}
 
 APP_BIN=btx_setup
-APP_ARG="--batch_size $2"
+APP_ARG="--batch_size $2${DELTA:+ --delta $DELTA}"
 
 ./target/$TYPE/$APP_BIN \
     --config $TESTDIR/nodes-0.json \
