@@ -42,5 +42,6 @@ fn start<F: ProtocolField>(config: Node, matches: &ArgMatches) -> Result<ExitSen
         .transpose()?
         .unwrap_or(4);
     let app = RevealProbe::<F>::new(config.num_nodes, config.id, values)?;
-    velox::spawn(config, app, &EngineOptions::from_matches(matches)?)
+    // The application talks to the Planner, which is what the engine hosts.
+    velox::spawn(config, velox::Planner::new(app)?, &EngineOptions::from_matches(matches)?)
 }

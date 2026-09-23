@@ -78,7 +78,8 @@ fn start<F: ProtocolField>(config: Node, matches: &ArgMatches) -> Result<ExitSen
     );
     let inputs = read_messages::<F>(config.id, app.inputs_per_party());
 
-    velox::spawn(config, app.with_inputs(inputs), &EngineOptions::from_matches(matches)?)
+    // The application talks to the Planner, which is what the engine hosts.
+    velox::spawn(config, velox::Planner::new(app.with_inputs(inputs))?, &EngineOptions::from_matches(matches)?)
 }
 
 /// This party's messages into the mixing network, read as ASCII payloads through

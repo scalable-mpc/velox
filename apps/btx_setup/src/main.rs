@@ -60,5 +60,6 @@ fn start<F: ProtocolField>(config: Node, matches: &ArgMatches, field: &str) -> R
         .map_err(|_| anyhow::anyhow!("--batch_size must be a positive integer"))?;
     let app = BtxSetup::<F>::new(config.num_nodes, config.num_faults, config.id, batch_size, field)?;
 
-    velox::spawn(config, app, &EngineOptions::from_matches(matches)?)
+    // The application talks to the Planner, which is what the engine hosts.
+    velox::spawn(config, velox::Planner::new(app)?, &EngineOptions::from_matches(matches)?)
 }

@@ -46,16 +46,6 @@ pub use parser::{parse_circuit, parse_circuit_file};
 use circuit::{Circuit, GateType, Wire};
 use velox::{Op, OpDepthInput, OpParams, OpResult, OpType, PlannerApplication, PlannerCounts, RandomWireShares};
 
-/// The op group in flight: where it sits in the circuit and where its results go.
-struct Scheduled {
-    level: usize,
-    /// Index of the op group within its level.
-    group: usize,
-    gate_type: GateType,
-    /// Output wires, in the order the results come back.
-    outputs: Vec<Wire>,
-}
-
 pub struct BristolCircuit<F: ProtocolField + MersennePrimeField> {
     pub num_nodes: usize,
     pub my_id: usize,
@@ -79,10 +69,11 @@ pub struct BristolCircuit<F: ProtocolField + MersennePrimeField> {
     /// Sharing on each wire, indexed by wire number. `None` until written.
     wires: Vec<Option<FieldElement<F>>>,
 
-    /// The op group whose results are awaited.
-    scheduled: Option<Scheduled>,
-    /// The next op group to schedule: `(level, index within the level)`.
+    /// The next op group to run, or the one running: `(level, index within
+    /// the level)`. It moves on when that group's results are written.
     cursor: (usize, usize),
+    /// Set while the op group at `cursor` is running.
+    group_in_flight: bool,
     /// Op groups completed. Groups are numbered from 1 in circuit order: the
     /// group number is the Planner's op-depth.
     completed: usize,
@@ -113,8 +104,8 @@ impl<F: ProtocolField + MersennePrimeField> BristolCircuit<F> {
             circuit_started: false,
             preprocessing_done: false,
             wires: vec![None; num_wires],
-            scheduled: None,
             cursor: (1, 0),
+            group_in_flight: false,
             completed: 0,
         })
     }
@@ -157,113 +148,17 @@ impl<F: ProtocolField + MersennePrimeField> BristolCircuit<F> {
         self.circuit.inputs_of_party(self.my_id)
     }
 
-    /// The secrets this party deals onto its input wires, padded with random
-    /// values if the supplied list is short.
-    pub fn generate_input_sharings(&self) -> Vec<FieldElement<F>> {
-        let num_inputs = self.inputs_per_party();
-        if num_inputs == 0 {
-            return Vec::new();
-        }
-        let mut values = self.my_inputs.clone().unwrap_or_default();
-        if values.len() < num_inputs {
-            log::info!(
-                "BristolCircuit: {} inputs supplied for {} input wires, padding with {} random values",
-                values.len(),
-                num_inputs,
-                num_inputs - values.len()
-            );
-            values.extend((values.len()..num_inputs).map(|_| F::rand()));
-        }
-        values.truncate(num_inputs);
-        values
-    }
-
-    /// The dealers whose input ACSS the circuit waits on: the parties the
-    /// header gives a non-zero input count.
-    ///
-    /// Every one of them must terminate. Unlike anonymous broadcast — which
-    /// takes any `k` of the sharings the honest majority produces — a circuit
-    /// binds wires to dealers positionally, so a missing dealer is a missing
-    /// wire and there is nothing to substitute for it.
-    fn expected_dealers(&self) -> Vec<usize> {
-        (0..self.circuit.num_input_parties())
-            .filter(|party| self.circuit.inputs_of_party(*party) > 0)
-            .collect()
-    }
-
-    /// Record a dealer's shares; `true` once the circuit may start.
-    fn accept_input_sharing(&mut self, party: usize, shares: Vec<FieldElement<F>>) -> Result<bool> {
-        if self.inputs_assembled {
-            log::debug!("BristolCircuit: ignoring input sharing from party {}, input wires already bound", party);
-            return Ok(false);
-        }
-        if self.circuit.inputs_of_party(party) == 0 {
-            log::debug!(
-                "BristolCircuit: party {} supplies no input wires in this circuit; ignoring its {} sharings",
-                party,
-                shares.len()
-            );
-            return Ok(false);
-        }
-        log::info!("BristolCircuit: input sharing from party {} terminated with {} sharings", party, shares.len());
-        self.input_wire_sharings.insert(party, shares);
-        self.try_assemble_input_wires()?;
-        Ok(true)
-    }
-
-    /// Bind each dealer's shares to its block of input wires, once every
-    /// expected dealer has terminated.
-    fn try_assemble_input_wires(&mut self) -> Result<()> {
-        if self.inputs_assembled {
-            return Ok(());
-        }
-        let dealers = self.expected_dealers();
-        if !dealers.iter().all(|party| self.input_wire_sharings.contains_key(party)) {
-            return Ok(());
-        }
-
-        // Wires are numbered party by party in header order: party 0 owns the
-        // first `n_0`, party 1 the next `n_1`, and so on.
-        let mut wire = 0;
-        for party in 0..self.circuit.num_input_parties() {
-            let expected = self.circuit.inputs_of_party(party);
-            if expected == 0 {
-                continue;
-            }
-            let shares = &self.input_wire_sharings[&party];
-            if shares.len() < expected {
-                bail!("dealer {} owns {} input wires but dealt only {} sharings", party, expected, shares.len());
-            }
-            for share in shares[..expected].iter() {
-                self.wires[wire] = Some(share.clone());
-                wire += 1;
-            }
-        }
-
-        log::info!("BristolCircuit: bound {} input wires from {} dealers", wire, dealers.len());
-        self.inputs_assembled = true;
-        // The per-dealer sharings have been copied onto the wires and have no
-        // other reader. Dropping them is safe precisely because
-        // `inputs_assembled` is now set: `accept_input_sharing` bails on that
-        // flag before it would insert a late dealer back into this map, so an
-        // emptied map can never be mistaken for "still waiting for dealers".
-        self.input_wire_sharings.clear();
-        Ok(())
-    }
-
-    /// Start the circuit as soon as both the input wires and the preprocessing
-    /// material are in hand — the two arrive in either order. `true` when it
-    /// starts now: level 0's linear gates are evaluated and the first op group
-    /// is the caller's to schedule.
-    fn try_start(&mut self) -> Result<bool> {
+    /// Start the circuit once both the input wires and the preprocessing are
+    /// in hand — the two arrive in either order — by evaluating level 0's
+    /// linear gates, which read only input wires, and scheduling the first
+    /// op group.
+    fn start_circuit_when_ready(&mut self) -> Result<OpDepthInput<F>> {
         if self.circuit_started || !self.inputs_assembled || !self.preprocessing_done {
-            return Ok(false);
+            return Ok(OpDepthInput::Waiting);
         }
         self.circuit_started = true;
-        // Level 0 holds the linear gates that read only input wires; they are
-        // evaluable before any op group has run.
         self.evaluate_linear_gates(0)?;
-        Ok(true)
+        self.schedule_next_op_group()
     }
 
     fn read_wire(&self, wire: Wire, gate_type: GateType, output: Wire, level: usize) -> Result<FieldElement<F>> {
@@ -297,140 +192,56 @@ impl<F: ProtocolField + MersennePrimeField> BristolCircuit<F> {
         Ok(())
     }
 
-    /// The operands of the next op group — its type, the left inputs and, for
-    /// a binary type, the right inputs — or `None` once every group has run.
-    /// Marks the group as scheduled.
-    fn next_op_group(&mut self) -> Result<Option<(GateType, Vec<FieldElement<F>>, Vec<FieldElement<F>>)>> {
-        if self.scheduled.is_some() {
+    /// The op group at the cursor as the Planner op it runs as, or — once
+    /// every group has run — the circuit's output sharings, in the order the
+    /// file lists them.
+    fn schedule_next_op_group(&mut self) -> Result<OpDepthInput<F>> {
+        if self.group_in_flight {
             bail!("op group {} is still in flight", self.completed + 1);
         }
         let (level, index) = self.cursor;
         if level > self.circuit.multiplicative_depth() {
-            return Ok(None);
+            let mut outputs = Vec::with_capacity(self.circuit.num_outputs());
+            for wire in self.circuit.output_wires().iter() {
+                match self.wires[*wire].clone() {
+                    Some(value) => outputs.push(value),
+                    None => bail!("output wire {} was never written", wire),
+                }
+            }
+            log::info!(
+                "BristolCircuit: circuit complete after {} op groups over {} levels, {} output wires",
+                self.completed,
+                self.circuit.multiplicative_depth(),
+                outputs.len()
+            );
+            // The wire sharings are dead now that the outputs have been copied
+            // out; a large circuit holds one field element per wire.
+            self.wires = Vec::new();
+            return Ok(OpDepthInput::Done(outputs));
         }
         let Some(group) = self.circuit.level(level).and_then(|depth| depth.op_groups.get(index)) else {
             bail!("no op group {} at level {}", index, level);
         };
-        let group = group.clone();
-
+        let gate_type = group.gate_type;
         let mut x = Vec::with_capacity(group.len());
         let mut y = Vec::with_capacity(group.len());
-        let mut outputs = Vec::with_capacity(group.len());
         for gate in group.gates.iter() {
-            x.push(self.read_wire(gate.left(), gate.gate_type, gate.output, level)?);
+            x.push(self.read_wire(gate.left(), gate_type, gate.output, level)?);
             if let Some(right) = gate.right() {
-                y.push(self.read_wire(right, gate.gate_type, gate.output, level)?);
+                y.push(self.read_wire(right, gate_type, gate.output, level)?);
             }
-            outputs.push(gate.output);
         }
-
         log::info!(
             "BristolCircuit: scheduling op group {}/{} — level {}/{}, {} {} gates",
             self.completed + 1,
             self.circuit.num_op_groups(),
             level,
             self.circuit.multiplicative_depth(),
-            outputs.len(),
-            group.gate_type,
+            x.len(),
+            gate_type,
         );
-        self.scheduled = Some(Scheduled { level, group: index, gate_type: group.gate_type, outputs });
-        Ok(Some((group.gate_type, x, y)))
-    }
-
-    /// Write the scheduled group's results onto its output wires; if it was
-    /// the last group of its level, evaluate the linear gates the level
-    /// unblocks and move the cursor to the next level.
-    fn apply_results(&mut self, results: Vec<FieldElement<F>>) -> Result<()> {
-        let Some(scheduled) = self.scheduled.take() else {
-            bail!("results arrived with no op group in flight");
-        };
-        if scheduled.outputs.len() != results.len() {
-            bail!(
-                "op group {} scheduled {} gates but {} results came back",
-                self.completed + 1,
-                scheduled.outputs.len(),
-                results.len()
-            );
-        }
-        for (wire, result) in scheduled.outputs.into_iter().zip(results.into_iter()) {
-            self.wires[wire] = Some(result);
-        }
-        self.completed += 1;
-
-        let groups_at_level = self.circuit.level(scheduled.level).map(|d| d.op_groups.len()).unwrap_or(0);
-        if scheduled.group + 1 < groups_at_level {
-            self.cursor = (scheduled.level, scheduled.group + 1);
-        } else {
-            self.evaluate_linear_gates(scheduled.level)?;
-            self.cursor = (scheduled.level + 1, 0);
-        }
-        Ok(())
-    }
-
-    /// The type of the op group in flight.
-    fn scheduled_type(&self) -> Option<GateType> {
-        self.scheduled.as_ref().map(|s| s.gate_type)
-    }
-
-    /// A completion for op group `number` is the one awaited, or a replay.
-    fn is_next_completion(&self, number: usize) -> bool {
-        if number == self.completed + 1 && self.scheduled.is_some() {
-            return true;
-        }
-        // The engine may replay a termination; op groups advance by one
-        // and only forward, so anything else is a replay or out of order.
-        log::warn!(
-            "BristolCircuit: ignoring completion of op group {}; the circuit has completed {}",
-            number,
-            self.completed
-        );
-        false
-    }
-
-    /// Collect the circuit's output sharings, in the order the file lists them.
-    fn finish(&mut self) -> Result<Vec<FieldElement<F>>> {
-        let mut outputs = Vec::with_capacity(self.circuit.num_outputs());
-        for wire in self.circuit.output_wires().iter() {
-            match self.wires[*wire].clone() {
-                Some(value) => outputs.push(value),
-                None => bail!("output wire {} was never written", wire),
-            }
-        }
-        log::info!(
-            "BristolCircuit: circuit complete after {} op groups over {} levels, {} output wires",
-            self.completed,
-            self.circuit.multiplicative_depth(),
-            outputs.len()
-        );
-        // The wire sharings are dead now that the outputs have been copied out;
-        // a large circuit holds one field element per wire.
-        self.wires = Vec::new();
-        Ok(outputs)
-    }
-
-    // -- one op per op group --------------------------------------------------
-
-    /// The Planner op a gate type runs as. `DRELU` is `1 − [a < 0]`, with
-    /// the complement taken when the results come back.
-    fn op_type_of(gate_type: GateType) -> OpType {
-        match gate_type {
-            GateType::Mul => OpType::Mul,
-            GateType::Lt => OpType::Compare,
-            GateType::DRelu => OpType::ComparePub,
-            GateType::Relu => OpType::MaxPub,
-            GateType::Max => OpType::Max,
-            GateType::Min => OpType::Min,
-            GateType::Trunc(_) => OpType::Truncate,
-            GateType::FMul(_) => OpType::FixedMul,
-            GateType::Add | GateType::Sub => unreachable!("linear gates are not grouped"),
-        }
-    }
-
-    /// The next op group as a Planner op, or the circuit's outputs.
-    fn schedule_op(&mut self) -> Result<OpDepthInput<F>> {
-        let Some((gate_type, x, y)) = self.next_op_group()? else {
-            return Ok(OpDepthInput::Done(self.finish()?));
-        };
+        self.group_in_flight = true;
+        // DRELU is `1 − [a < 0]` and RELU is `max(a, 0)`: against the public 0.
         let zeros = || vec![FieldElement::<F>::zero(); x.len()];
         let op = match gate_type {
             GateType::Mul => Op::Mul { x, y },
@@ -459,7 +270,20 @@ impl<F: ProtocolField + MersennePrimeField> PlannerApplication<F> for BristolCir
             .iter()
             .skip(1)
             .flat_map(|level| level.op_groups.iter())
-            .map(|group| OpParams::new(Self::op_type_of(group.gate_type), group.len()))
+            .map(|group| {
+                let op_type = match group.gate_type {
+                    GateType::Mul => OpType::Mul,
+                    GateType::Lt => OpType::Compare,
+                    GateType::DRelu => OpType::ComparePub,
+                    GateType::Relu => OpType::MaxPub,
+                    GateType::Max => OpType::Max,
+                    GateType::Min => OpType::Min,
+                    GateType::Trunc(_) => OpType::Truncate,
+                    GateType::FMul(_) => OpType::FixedMul,
+                    GateType::Add | GateType::Sub => unreachable!("linear gates are not grouped"),
+                };
+                OpParams::new(op_type, group.len())
+            })
             .collect();
         let counts = PlannerCounts::new(ops, self.circuit.num_outputs());
         log::info!(
@@ -471,13 +295,77 @@ impl<F: ProtocolField + MersennePrimeField> PlannerApplication<F> for BristolCir
         counts
     }
 
+    /// The secrets this party deals onto its input wires, padded with random
+    /// values if the supplied list is short.
     async fn inputs(&mut self) -> Vec<FieldElement<F>> {
-        self.generate_input_sharings()
+        let num_inputs = self.inputs_per_party();
+        if num_inputs == 0 {
+            return Vec::new();
+        }
+        let mut values = self.my_inputs.clone().unwrap_or_default();
+        if values.len() < num_inputs {
+            log::info!(
+                "BristolCircuit: {} inputs supplied for {} input wires, padding with {} random values",
+                values.len(),
+                num_inputs,
+                num_inputs - values.len()
+            );
+            values.extend((values.len()..num_inputs).map(|_| F::rand()));
+        }
+        values.truncate(num_inputs);
+        values
     }
 
+    /// Record a dealer's shares, and once every dealer the header names has
+    /// terminated, bind them to the input wires and try to start.
+    ///
+    /// Every such dealer must terminate. Unlike anonymous broadcast — which
+    /// takes any `k` of the sharings the honest majority produces — a circuit
+    /// binds wires to dealers positionally, so a missing dealer is a missing
+    /// wire and there is nothing to substitute for it.
     async fn input_sharing_termination(&mut self, party: usize, shares: Vec<FieldElement<F>>) -> Result<OpDepthInput<F>> {
-        self.accept_input_sharing(party, shares)?;
-        if self.try_start()? { self.schedule_op() } else { Ok(OpDepthInput::Waiting) }
+        if self.inputs_assembled {
+            log::debug!("BristolCircuit: ignoring input sharing from party {}, input wires already bound", party);
+            return Ok(OpDepthInput::Waiting);
+        }
+        if self.circuit.inputs_of_party(party) == 0 {
+            log::debug!(
+                "BristolCircuit: party {} supplies no input wires in this circuit; ignoring its {} sharings",
+                party,
+                shares.len()
+            );
+            return Ok(OpDepthInput::Waiting);
+        }
+        log::info!("BristolCircuit: input sharing from party {} terminated with {} sharings", party, shares.len());
+        self.input_wire_sharings.insert(party, shares);
+
+        let dealers: Vec<usize> =
+            (0..self.circuit.num_input_parties()).filter(|p| self.circuit.inputs_of_party(*p) > 0).collect();
+        if !dealers.iter().all(|p| self.input_wire_sharings.contains_key(p)) {
+            return Ok(OpDepthInput::Waiting);
+        }
+        // Wires are numbered party by party in header order: party 0 owns the
+        // first `n_0`, party 1 the next `n_1`, and so on.
+        let mut wire = 0;
+        for dealer in dealers.iter() {
+            let expected = self.circuit.inputs_of_party(*dealer);
+            let shares = &self.input_wire_sharings[dealer];
+            if shares.len() < expected {
+                bail!("dealer {} owns {} input wires but dealt only {} sharings", dealer, expected, shares.len());
+            }
+            for share in shares[..expected].iter() {
+                self.wires[wire] = Some(share.clone());
+                wire += 1;
+            }
+        }
+        log::info!("BristolCircuit: bound {} input wires from {} dealers", wire, dealers.len());
+        self.inputs_assembled = true;
+        // The per-dealer sharings have been copied onto the wires and have no
+        // other reader. Dropping them is safe precisely because
+        // `inputs_assembled` is now set: this hook returns on that flag before
+        // it would insert a late dealer back into the map.
+        self.input_wire_sharings.clear();
+        self.start_circuit_when_ready()
     }
 
     async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<OpDepthInput<F>> {
@@ -490,22 +378,45 @@ impl<F: ProtocolField + MersennePrimeField> PlannerApplication<F> for BristolCir
             self.circuit.multiplicative_depth(),
         );
         self.preprocessing_done = true;
-        if self.try_start()? { self.schedule_op() } else { Ok(OpDepthInput::Waiting) }
+        self.start_circuit_when_ready()
     }
 
+    /// Write the op group's results onto its output wires; if it was the last
+    /// group of its level, evaluate the linear gates the level unblocks; then
+    /// schedule the next group.
     async fn on_depth_complete(&mut self, depth: usize, result: OpResult<F>) -> Result<OpDepthInput<F>> {
         log::info!("BristolCircuit: op-depth {} complete — {:?}", depth, result);
-        if !self.is_next_completion(depth) {
+        // The engine may replay a termination; op groups advance by one and
+        // only forward, so anything else is a replay or out of order.
+        if depth != self.completed + 1 || !self.group_in_flight {
+            log::warn!("BristolCircuit: ignoring completion of op group {}; the circuit has completed {}", depth, self.completed);
             return Ok(OpDepthInput::Waiting);
         }
+        let (level, index) = self.cursor;
+        let group = &self.circuit.level(level).expect("the cursor is inside the circuit").op_groups[index];
         let mut results = result.shares()?;
-        if self.scheduled_type() == Some(GateType::DRelu) {
+        if results.len() != group.len() {
+            bail!("op group {} scheduled {} gates but {} results came back", depth, group.len(), results.len());
+        }
+        if group.gate_type == GateType::DRelu {
             // ComparePub gave [a < 0]; DReLU is its complement.
             let one = FieldElement::<F>::one();
             results = results.iter().map(|lt| &one - lt).collect();
         }
-        self.apply_results(results)?;
-        self.schedule_op()
+        for (gate, result) in group.gates.iter().zip(results.into_iter()) {
+            self.wires[gate.output] = Some(result);
+        }
+        self.group_in_flight = false;
+        self.completed += 1;
+
+        let groups_at_level = self.circuit.level(level).map(|d| d.op_groups.len()).unwrap_or(0);
+        if index + 1 < groups_at_level {
+            self.cursor = (level, index + 1);
+        } else {
+            self.evaluate_linear_gates(level)?;
+            self.cursor = (level + 1, 0);
+        }
+        self.schedule_next_op_group()
     }
 
     async fn on_output(&mut self, outputs: Vec<FieldElement<F>>) -> Result<()> {
@@ -866,12 +777,12 @@ mod tests {
 
     /// A short input list is padded rather than rejected, so a party can run the
     /// circuit without a complete input file.
-    #[test]
-    fn short_input_lists_are_padded() {
+    #[tokio::test]
+    async fn short_input_lists_are_padded() {
         let circuit = parse_circuit_file(fixture("polynomial_eval.arith")).unwrap();
-        let app = BristolCircuit::<F>::new(NUM_NODES, 0, circuit).unwrap().with_inputs(vec![elem(3)]);
+        let mut app = BristolCircuit::<F>::new(NUM_NODES, 0, circuit).unwrap().with_inputs(vec![elem(3)]);
 
-        let sharings = app.generate_input_sharings();
+        let sharings = app.inputs().await;
 
         assert_eq!(sharings.len(), 3);
         assert_eq!(sharings[0], elem(3));

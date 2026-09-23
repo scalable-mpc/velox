@@ -34,24 +34,25 @@
 //!
 //! # What the application computes
 //!
-//! Mapped onto the [`Application`] MPC engine interaction API:
+//! Mapped onto the Planner's [`PlannerApplication`] API — each depth one
+//! `Mul` op-depth; nothing Mersenne-specific, so it runs over BLS12-381:
 //!
-//!   - [`Application::random_wires`] asks the engine for one random sharing for exponentiation:
+//!   - [`PlannerApplication::preprocessing_count`] asks for one random sharing for exponentiation:
 //!     `⟨τ⟩` comes out of the preprocessing pool of random double sharings used for multiplication, extracted from whichever
 //!     `n−t` dealers the ACS agreed on. At least `t+1` of those are honest, so
 //!     `τ` is uniform and unknown to any `t`-coalition — the guarantee the
 //!     multiplication masks already rest on — and no party waits on any
 //!     particular dealer. The circuit has no inputs of its own.
-//!   - [`Application::on_preprocessing_complete`] starts the online protocol with depth 1.
-//!   - [`Application::on_depth_complete`] fills a power table by doubling:
+//!   - [`PlannerApplication::on_preprocessing_complete`] starts the online protocol with depth 1.
+//!   - [`PlannerApplication::on_depth_complete`] fills a power table by doubling:
 //!     after depth `k−1` the table holds `⟨τ¹⟩ … ⟨τ^{2^{k−1}}⟩`; depth `k`
 //!     multiplies `⟨τ^{2^{k−1}}⟩` by `⟨τ¹⟩ … ⟨τ^m⟩`, `m = min(2^{k−1}, 2B − 2^{k−1})`,
 //!     in a single batch. `⌈log₂ 2B⌉` depths and `2B − 1` multiplications in
 //!     all — for `B = 512`, ten depths of 1, 2, 4, …, 512 gates.
-//!   - The last depth returns [`DepthInput::Done`] with **no** output wires.
+//!   - The last depth returns [`OpDepthInput::Done`] with **no** output wires.
 //!     Nothing is ever reconstructed: the product of this circuit is the
 //!     sharings `⟨τ¹⟩_j … ⟨τ^{2B}⟩_j` the party still holds.
-//!   - [`Application::on_output`] is the engine saying the multiplication operations performed in the online phase
+//!   - [`PlannerApplication::on_output`] is the engine saying the multiplication operations performed in the online phase
 //!     have been verified and at least t+1 honest parties terminated the protocol successfully. 
 //!     The party then outputs its shares, computes and prints its commitments to them — `g₂^{⟨τ^i⟩_j}` and, for the punctured
 //!     power, `g_T^{⟨τ^{B+1}⟩_j}` (see [`commitments`]) — and is done. 
@@ -59,7 +60,7 @@
 
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use velox::{Application, DepthInput, FieldElement, PreprocessingCounts, ProtocolField, RandomWireShares, RandomWires};
+use velox::{FieldElement, Op, OpDepthInput, OpParams, OpResult, OpType, PlannerApplication, PlannerCounts, ProtocolField, RandomWireShares};
 
 pub mod commitments;
 pub use commitments::Commitments;
@@ -182,10 +183,10 @@ impl<F: ProtocolField> BtxSetup<F> {
     }
 
     /// Start the circuit exactly once, from the `⟨τ⟩` preprocessing delivered.
-    fn start_circuit(&mut self, tau: FieldElement<F>) -> Result<DepthInput<F>> {
+    fn start_circuit(&mut self, tau: FieldElement<F>) -> Result<OpDepthInput<F>> {
         if self.circuit_started {
             log::debug!("BtxSetup: ignoring a repeated preprocessing handover");
-            return Ok(DepthInput::Waiting);
+            return Ok(OpDepthInput::Waiting);
         }
         self.circuit_started = true;
         self.powers[1] = Some(tau);
@@ -195,7 +196,7 @@ impl<F: ProtocolField> BtxSetup<F> {
     /// The batch for depth `k`: `⟨τ^{2^{k−1}}⟩` against `⟨τ¹⟩ … ⟨τ^m⟩`. Past
     /// the last depth the table is full and the circuit is done — with no
     /// output wires, since the shares are the product.
-    fn schedule_depth(&mut self, depth: usize) -> Result<DepthInput<F>> {
+    fn schedule_depth(&mut self, depth: usize) -> Result<OpDepthInput<F>> {
         let reach = 1usize << (depth - 1);
         let max = self.max_power();
         if reach >= max {
@@ -204,7 +205,7 @@ impl<F: ProtocolField> BtxSetup<F> {
                 max,
                 self.depths_completed
             );
-            return Ok(DepthInput::Done(Vec::new()));
+            return Ok(OpDepthInput::Done(Vec::new()));
         }
         let m = reach.min(max - reach);
         let Some(top) = self.power(reach).cloned() else {
@@ -225,27 +226,26 @@ impl<F: ProtocolField> BtxSetup<F> {
             m,
             m
         );
-        DepthInput::multiply(depth, x, y)
+        OpDepthInput::op(depth, Op::Mul { x, y })
     }
 }
 
 #[async_trait]
-impl<F: ProtocolField> Application<F> for BtxSetup<F> {
-    fn preprocessing_count(&self) -> PreprocessingCounts {
-        // The circuit reconstructs nothing, so there are no output wires.
-        let counts = PreprocessingCounts::new(self.gates_per_depth(), 0);
+impl<F: ProtocolField> PlannerApplication<F> for BtxSetup<F> {
+    fn preprocessing_count(&self) -> PlannerCounts {
+        // One `Mul` op-depth per doubling; the circuit reconstructs nothing, so
+        // there are no output wires. One random sharing, `⟨τ⟩`, and no random
+        // bits.
+        let gates = self.gates_per_depth();
+        let counts = PlannerCounts::new(gates.iter().map(|g| OpParams::new(OpType::Mul, *g)).collect(), 0)
+            .with_random_wires(0, 1);
         log::info!(
             "BtxSetup::preprocessing_count -> batch size {}, {} multiplications over {} depths",
             self.batch_size,
-            counts.mult_gates(),
+            gates.iter().sum::<usize>(),
             counts.depth()
         );
         counts
-    }
-
-    /// One random sharing: `⟨τ⟩`. No random bits.
-    fn random_wires(&self) -> RandomWires {
-        RandomWires::new(0, 1)
     }
 
     /// This circuit has no inputs, so the engine runs no input ACSS and this
@@ -254,16 +254,16 @@ impl<F: ProtocolField> Application<F> for BtxSetup<F> {
         &mut self,
         party: usize,
         shares: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
+    ) -> Result<OpDepthInput<F>> {
         log::warn!(
             "BtxSetup: ignoring {} input sharings from party {}; this circuit takes no inputs",
             shares.len(),
             party
         );
-        Ok(DepthInput::Waiting)
+        Ok(OpDepthInput::Waiting)
     }
 
-    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
+    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<OpDepthInput<F>> {
         log::info!(
             "BtxSetup: preprocessing complete ({} random sharings, {} random bits)",
             wires.sharings.len(),
@@ -276,14 +276,11 @@ impl<F: ProtocolField> Application<F> for BtxSetup<F> {
         self.start_circuit(tau)
     }
 
-    async fn on_depth_complete(
-        &mut self,
-        depth: usize,
-        results: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
+    async fn on_depth_complete(&mut self, depth: usize, result: OpResult<F>) -> Result<OpDepthInput<F>> {
+        let results = result.shares()?;
         if depth <= self.depths_completed {
             log::debug!("BtxSetup: ignoring replayed completion of depth {}", depth);
-            return Ok(DepthInput::Waiting);
+            return Ok(OpDepthInput::Waiting);
         }
         if depth != self.depths_completed + 1 {
             bail!(
@@ -390,7 +387,7 @@ mod tests {
         }
 
         /// The engine's handover: the one random sharing asked for, as `τ`.
-        async fn deliver_preprocessing(&mut self) -> DepthInput<F> {
+        async fn deliver_preprocessing(&mut self) -> OpDepthInput<F> {
             self.app
                 .on_preprocessing_complete(RandomWireShares::new(Vec::new(), vec![self.tau.clone()]))
                 .await
@@ -399,16 +396,16 @@ mod tests {
 
         /// Run every depth the application schedules; returns the output wires
         /// it hands back, which must be none.
-        async fn run(&mut self, mut depth_input: DepthInput<F>) -> Vec<FieldElement<F>> {
+        async fn run(&mut self, mut depth_input: OpDepthInput<F>) -> Vec<FieldElement<F>> {
             loop {
                 match depth_input {
-                    DepthInput::Done(outputs) => return outputs,
-                    DepthInput::Waiting => panic!("the application stalled with nothing scheduled"),
-                    DepthInput::Multiply { depth, x, y } => {
+                    OpDepthInput::Done(outputs) => return outputs,
+                    OpDepthInput::Waiting => panic!("the application stalled with nothing scheduled"),
+                    OpDepthInput::Op { depth, op: Op::Mul { x, y } } => {
                         self.batches.push(x.len());
                         let results: Vec<FieldElement<F>> =
                             x.into_iter().zip(y.into_iter()).map(|(x, y)| x * y).collect();
-                        depth_input = self.app.on_depth_complete(depth, results).await.unwrap();
+                        depth_input = self.app.on_depth_complete(depth, OpResult::Shares(results)).await.unwrap();
                     }
                     other => panic!("the setup only multiplies, got {:?}", other),
                 }
@@ -442,7 +439,9 @@ mod tests {
             assert_eq!(app.gates_per_depth().iter().sum::<usize>(), 2 * batch_size - 1, "B = {}", batch_size);
             assert_eq!(app.depth(), ((2 * batch_size) as f64).log2().ceil() as usize, "B = {}", batch_size);
             let counts = app.preprocessing_count();
-            assert_eq!(counts.gates_per_depth, gates);
+            let declared: Vec<usize> = counts.ops.iter().map(|p| p.elements).collect();
+            assert_eq!(declared, gates);
+            assert!(counts.ops.iter().all(|p| p.op_type == OpType::Mul));
             assert_eq!(counts.output, 0);
         }
     }
@@ -452,7 +451,7 @@ mod tests {
         for batch_size in [1, 2, 3, 16] {
             let mut h = Harness::new(batch_size);
             let first = h.deliver_preprocessing().await;
-            assert!(matches!(first, DepthInput::Multiply { depth: 1, .. }), "B = {}: starts on the handover", batch_size);
+            assert!(matches!(first, OpDepthInput::Op { depth: 1, op: Op::Mul { .. } }), "B = {}: starts on the handover", batch_size);
             let outputs = h.run(first).await;
             assert!(outputs.is_empty(), "B = {}: the circuit declares no output wires", batch_size);
             assert_eq!(h.batches, h.app.gates_per_depth(), "B = {}", batch_size);
@@ -467,20 +466,21 @@ mod tests {
             let wires = RandomWireShares::new(Vec::new(), (0..sharings).map(|_| F::rand()).collect());
             assert!(h.app.on_preprocessing_complete(wires).await.is_err(), "{} sharings", sharings);
         }
-        assert_eq!(BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, 4, BLS381).unwrap().random_wires(), RandomWires::new(0, 1));
+        let counts = BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, 4, BLS381).unwrap().preprocessing_count();
+        assert_eq!((counts.rand_bits, counts.sharings), (0, 1));
     }
 
     #[tokio::test]
     async fn replayed_and_stray_events_are_ignored() {
         let mut h = Harness::new(4);
         let first = h.deliver_preprocessing().await;
-        let DepthInput::Multiply { depth, x, y } = first else { panic!("depth 1 not scheduled") };
+        let OpDepthInput::Op { depth, op: Op::Mul { x, y } } = first else { panic!("depth 1 not scheduled") };
         let results: Vec<FieldElement<F>> = x.iter().zip(y.iter()).map(|(x, y)| x * y).collect();
-        let second = h.app.on_depth_complete(depth, results.clone()).await.unwrap();
-        assert!(matches!(second, DepthInput::Multiply { depth: 2, .. }));
+        let second = h.app.on_depth_complete(depth, OpResult::Shares(results.clone())).await.unwrap();
+        assert!(matches!(second, OpDepthInput::Op { depth: 2, .. }));
 
         // A replayed termination of depth 1 schedules nothing.
-        assert!(h.app.on_depth_complete(depth, results).await.unwrap().is_waiting());
+        assert!(h.app.on_depth_complete(depth, OpResult::Shares(results)).await.unwrap().is_waiting());
         // An input sharing belongs to nothing in this circuit.
         assert!(h.app.input_sharing_termination(1, vec![F::rand()]).await.unwrap().is_waiting());
         // Preprocessing arriving twice does not restart the circuit.
@@ -493,15 +493,17 @@ mod tests {
     #[tokio::test]
     async fn wrong_batch_shape_is_an_error() {
         let mut h = Harness::new(4);
-        let DepthInput::Multiply { depth, x, .. } = h.deliver_preprocessing().await else {
+        let OpDepthInput::Op { depth, op: Op::Mul { x, .. } } = h.deliver_preprocessing().await else {
             panic!("depth 1 not scheduled")
         };
         // Depth 1 has one gate; hand back two results.
         let mut results = x.clone();
         results.push(F::rand());
-        assert!(h.app.on_depth_complete(depth, results).await.is_err());
+        assert!(h.app.on_depth_complete(depth, OpResult::Shares(results)).await.is_err());
         // Depth 3 before depth 2 is not this circuit.
-        assert!(h.app.on_depth_complete(3, vec![F::rand()]).await.is_err());
+        assert!(h.app.on_depth_complete(3, OpResult::Shares(vec![F::rand()])).await.is_err());
+        // A public result where shares belong is not this circuit either.
+        assert!(h.app.on_depth_complete(1, OpResult::Public(vec![F::rand()])).await.is_err());
     }
 
     #[tokio::test]
@@ -528,6 +530,37 @@ mod tests {
         // reject wires this circuit never declared.
         h.app.on_output(Vec::new()).await.unwrap();
         assert!(h.app.on_output(vec![F::rand()]).await.is_err());
+    }
+
+    /// The setup hosted by the Planner over BLS12-381, driven by a plaintext
+    /// engine: `⟨τ⟩` is passed through as the one random sharing, each depth
+    /// is one engine multiplication, and the table holds the powers of `τ`.
+    #[tokio::test]
+    async fn the_setup_runs_through_the_planner_over_bls381() {
+        use velox::{Application, DepthInput, Planner};
+        let tau = F::rand();
+        let app = BtxSetup::<F>::new(NUM_NODES, NUM_FAULTS, 0, 5, BLS381).unwrap();
+        let mut planner = Planner::new(app).unwrap();
+        assert_eq!(planner.random_wires(), velox::RandomWires::new(0, 1));
+        assert_eq!(planner.preprocessing_count().gates_per_depth, vec![1, 2, 4, 2]);
+        let mut next = planner.on_preprocessing_complete(RandomWireShares::new(Vec::new(), vec![tau.clone()])).await.unwrap();
+        let mut depths = 0;
+        let outputs = loop {
+            next = match next {
+                DepthInput::Done(outputs) => break outputs,
+                DepthInput::Multiply { depth, x, y } => {
+                    depths += 1;
+                    let products = x.iter().zip(y.iter()).map(|(a, b)| a * b).collect();
+                    planner.on_depth_complete(depth, products).await.unwrap()
+                }
+                other => panic!("the setup only multiplies, got {:?}", other),
+            };
+        };
+        assert!(outputs.is_empty());
+        assert_eq!(depths, 4);
+        let mut acc = FieldElement::<F>::one();
+        let expected: Vec<FieldElement<F>> = (0..10).map(|_| { acc = &acc * &tau; acc.clone() }).collect();
+        assert_eq!(planner.app().shares().unwrap(), expected);
     }
 
     #[tokio::test]

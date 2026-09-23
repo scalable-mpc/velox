@@ -4,7 +4,9 @@
 //! circuit the engine used to hard-code in `mpc/src/protocol/online_phase`
 //! (`init_mixing` / `init_butterfly_mixing_level` /
 //! `verify_mixing_level_termination`), lifted out of the engine and expressed
-//! against the [`Application`] trait.
+//! against the Planner's [`PlannerApplication`] trait: each depth is one
+//! `Mul` op-depth, and the switch bits are random wires the Planner passes
+//! through. It uses nothing Mersenne-specific, so it runs over every field.
 //!
 //! Circuit:
 //!   - `k` input wires are shuffled through `log_k²` depths of butterfly switches.
@@ -31,7 +33,7 @@ use async_trait::async_trait;
 use velox::ProtocolField;
 use velox::FieldElement;
 
-use velox::{Application, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires};
+use velox::{Op, OpDepthInput, OpParams, OpResult, OpType, PlannerApplication, PlannerCounts, RandomWireShares};
 
 pub struct AnonymousBroadcast<F: ProtocolField> {
     pub num_nodes: usize,
@@ -197,9 +199,9 @@ impl<F: ProtocolField> AnonymousBroadcast<F> {
 
     /// Schedule depth 1 as soon as both the input wires and the preprocessing
     /// material are in hand — the two arrive in either order.
-    fn try_start_circuit(&mut self) -> Result<DepthInput<F>> {
+    fn try_start_circuit(&mut self) -> Result<OpDepthInput<F>> {
         if self.circuit_started || !self.inputs_assembled || !self.preprocessing_done {
-            return Ok(DepthInput::Waiting);
+            return Ok(OpDepthInput::Waiting);
         }
         self.circuit_started = true;
         self.init_butterfly_level(1)
@@ -209,13 +211,13 @@ impl<F: ProtocolField> AnonymousBroadcast<F> {
     /// batch it needs: wire differences × random bits.
     ///
     /// Mirrors the engine's `init_butterfly_mixing_level`.
-    fn init_butterfly_level(&mut self, depth: usize) -> Result<DepthInput<F>> {
+    fn init_butterfly_level(&mut self, depth: usize) -> Result<OpDepthInput<F>> {
         let Some(wires) = self.wire_sharings.get(&depth) else {
             log::warn!(
                 "AnonymousBroadcast: wire sharings for depth {} not available yet",
                 depth
             );
-            return Ok(DepthInput::Waiting);
+            return Ok(OpDepthInput::Waiting);
         };
 
         let log_switch_index = ((self.log_k - (depth % self.log_k)) % self.log_k) as u32;
@@ -275,7 +277,7 @@ impl<F: ProtocolField> AnonymousBroadcast<F> {
             *consumed_wires = Vec::new();
         }
 
-        DepthInput::multiply(depth, diffs, bits)
+        OpDepthInput::op(depth, Op::Mul { x: diffs, y: bits })
     }
 
     /// Apply the butterfly switch to a depth's multiplication results and
@@ -287,10 +289,10 @@ impl<F: ProtocolField> AnonymousBroadcast<F> {
         &mut self,
         depth: usize,
         results: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
+    ) -> Result<OpDepthInput<F>> {
         if self.wire_sharings.contains_key(&(depth + 1)) {
             // Already processed — the engine may replay a depth's termination.
-            return Ok(DepthInput::Waiting);
+            return Ok(OpDepthInput::Waiting);
         }
         let Some(sums) = self.wire_pair_sums.remove(&depth) else {
             bail!("no wire pair sums recorded for depth {}", depth);
@@ -326,7 +328,7 @@ impl<F: ProtocolField> AnonymousBroadcast<F> {
             // `max_depth + 1`, so the stored copy would be write-only. The wires
             // themselves are moved into the output below.
             self.wire_sharings.insert(depth + 1, Vec::new());
-            return Ok(DepthInput::Done(next_depth_wires));
+            return Ok(OpDepthInput::Done(next_depth_wires));
         }
 
         self.wire_sharings.insert(depth + 1, next_depth_wires);
@@ -335,27 +337,27 @@ impl<F: ProtocolField> AnonymousBroadcast<F> {
 }
 
 #[async_trait]
-impl<F: ProtocolField> Application<F> for AnonymousBroadcast<F> {
-    fn preprocessing_count(&self) -> PreprocessingCounts {
-        // Every depth pairs the k wires into k/2 switches, one multiplication and
-        // one random bit each — the same shape at every depth, and the same at
-        // every party, which is what lets the engine reserve each depth a fixed
-        // slice of the preprocessing pool.
+impl<F: ProtocolField> PlannerApplication<F> for AnonymousBroadcast<F> {
+    fn preprocessing_count(&self) -> PlannerCounts {
+        // Every depth pairs the k wires into k/2 switches: one `Mul` op-depth
+        // of k/2 elements, the same shape at every depth and at every party,
+        // which is what lets the engine reserve each depth a fixed slice of
+        // the preprocessing pool. One random bit per switch — the sign that
+        // decides whether a wire pair is swapped — is read as a random wire.
         let switches_per_depth = self.k_value / 2;
-        let counts = PreprocessingCounts::new(vec![switches_per_depth; self.max_depth], self.k_value);
+        let counts = PlannerCounts::new(
+            vec![OpParams::new(OpType::Mul, switches_per_depth); self.max_depth],
+            self.k_value,
+        )
+        .with_random_wires(switches_per_depth * self.max_depth, 0);
         log::info!(
-            "AnonymousBroadcast::preprocessing_count -> mult_gates={}, depth={}, output={}",
-            counts.mult_gates(),
+            "AnonymousBroadcast::preprocessing_count -> {} Mul op-depths of {} switches, {} random bits, output={}",
             counts.depth(),
+            switches_per_depth,
+            counts.rand_bits,
             counts.output
         );
         counts
-    }
-
-    /// One random bit per switch: the sign that decides whether a wire pair
-    /// is swapped.
-    fn random_wires(&self) -> RandomWires {
-        RandomWires::new((self.k_value / 2) * self.max_depth, 0)
     }
 
     async fn inputs(&mut self) -> Vec<FieldElement<F>> {
@@ -366,13 +368,13 @@ impl<F: ProtocolField> Application<F> for AnonymousBroadcast<F> {
         &mut self,
         party: usize,
         shares: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
+    ) -> Result<OpDepthInput<F>> {
         if self.inputs_assembled {
             log::debug!(
                 "AnonymousBroadcast: ignoring input sharing from party {}, wires already assembled",
                 party
             );
-            return Ok(DepthInput::Waiting);
+            return Ok(OpDepthInput::Waiting);
         }
         log::info!(
             "AnonymousBroadcast: input sharing from party {} terminated with {} sharings",
@@ -384,7 +386,7 @@ impl<F: ProtocolField> Application<F> for AnonymousBroadcast<F> {
         self.try_start_circuit()
     }
 
-    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
+    async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<OpDepthInput<F>> {
         log::info!(
             "AnonymousBroadcast: preprocessing complete — {} random bits; circuit: k={}, log_k={}, max_depth={}",
             wires.bits.len(),
@@ -397,11 +399,8 @@ impl<F: ProtocolField> Application<F> for AnonymousBroadcast<F> {
         self.try_start_circuit()
     }
 
-    async fn on_depth_complete(
-        &mut self,
-        depth: usize,
-        results: Vec<FieldElement<F>>,
-    ) -> Result<DepthInput<F>> {
+    async fn on_depth_complete(&mut self, depth: usize, result: OpResult<F>) -> Result<OpDepthInput<F>> {
+        let results = result.shares()?;
         log::info!(
             "AnonymousBroadcast: multiplication at depth {} complete — {} results",
             depth,
@@ -427,13 +426,11 @@ mod tests {
     /// The depth and operands of a scheduled batch, or a panic naming what came
     /// instead.
     fn expect_multiply(
-        depth_input: DepthInput<F>,
+        depth_input: OpDepthInput<F>,
     ) -> (usize, Vec<FieldElement<F>>, Vec<FieldElement<F>>) {
         match depth_input {
-            DepthInput::Multiply { depth, x, y } => (depth, x, y),
-            DepthInput::Waiting => panic!("expected a multiplication batch, got Waiting"),
-            DepthInput::Done(_) => panic!("expected a multiplication batch, got Done"),
-            other => panic!("expected a multiplication batch, got {:?}", other),
+            OpDepthInput::Op { depth, op: Op::Mul { x, y } } => (depth, x, y),
+            other => panic!("expected a Mul op-depth, got {:?}", other),
         }
     }
 
@@ -451,9 +448,9 @@ mod tests {
         let app = app(16);
         // k=16, log_k=4, max_depth=16, 8 switches per depth.
         let counts = app.preprocessing_count();
-        assert_eq!(counts.gates_per_depth, vec![8; 16], "8 switches at each of 16 depths");
-        assert_eq!(counts.mult_gates(), 8 * 16);
-        assert_eq!(app.random_wires().bits, 8 * 16);
+        assert_eq!(counts.ops, vec![OpParams::new(OpType::Mul, 8); 16], "8 switches at each of 16 depths");
+        assert_eq!(counts.rand_bits, 8 * 16);
+        assert_eq!(counts.sharings, 0);
         assert!(counts.output >= 16);
         assert_eq!(counts.depth(), 16);
     }
@@ -483,7 +480,7 @@ mod tests {
         // every switch is the identity. Depth 1 of a k=4 circuit pairs (0,2) and
         // (1,3), so the wires come back as [w0, w2, w1, w3].
         let next = match app.handle_mult_results(1, diffs).unwrap() {
-            DepthInput::Done(next) => next,
+            OpDepthInput::Done(next) => next,
             other => panic!("expected the truncated circuit to finish, got {:?}", other),
         };
 
@@ -511,7 +508,7 @@ mod tests {
             .unwrap();
 
         match depth_input {
-            DepthInput::Done(outputs) => assert_eq!(outputs.len(), 4),
+            OpDepthInput::Done(outputs) => assert_eq!(outputs.len(), 4),
             _ => panic!("the last depth must return output sharings"),
         }
     }
@@ -556,9 +553,9 @@ mod tests {
         let mut depth_input = app.init_butterfly_level(1).unwrap();
         loop {
             match depth_input {
-                DepthInput::Done(outputs) => return outputs,
-                DepthInput::Waiting => panic!("the mixing circuit stalled"),
-                DepthInput::Multiply { depth, x, y } => {
+                OpDepthInput::Done(outputs) => return outputs,
+                OpDepthInput::Waiting => panic!("the mixing circuit stalled"),
+                OpDepthInput::Op { depth, op: Op::Mul { x, y } } => {
                     let results: Vec<FieldElement<F>> =
                         x.iter().zip(y.iter()).map(|(a, b)| a.clone() * b.clone()).collect();
                     depth_input = app.handle_mult_results(depth, results).unwrap();
@@ -659,7 +656,7 @@ mod tests {
             diffs.iter().zip(bits.iter()).map(|(d, b)| d.clone() * b.clone()).collect();
 
         let next = match app.handle_mult_results(1, products).unwrap() {
-            DepthInput::Done(next) => next,
+            OpDepthInput::Done(next) => next,
             other => panic!("expected the truncated circuit to finish, got {:?}", other),
         };
 
@@ -683,9 +680,8 @@ mod tests {
                 let counts = app.preprocessing_count();
 
                 assert_eq!(counts.depth(), max_depth, "n={} k={}", num_nodes, k);
-                assert_eq!(counts.gates_per_depth, vec![k / 2; max_depth], "n={} k={}", num_nodes, k);
-                assert_eq!(counts.mult_gates(), (k / 2) * max_depth, "n={} k={}", num_nodes, k);
-                assert_eq!(app.random_wires().bits, (k / 2) * max_depth, "n={} k={}", num_nodes, k);
+                assert_eq!(counts.ops, vec![OpParams::new(OpType::Mul, k / 2); max_depth], "n={} k={}", num_nodes, k);
+                assert_eq!(counts.rand_bits, (k / 2) * max_depth, "n={} k={}", num_nodes, k);
                 assert_eq!(counts.output, k, "n={} k={}", num_nodes, k);
 
                 // Now run it and check every depth really did schedule what it declared.
@@ -698,9 +694,9 @@ mod tests {
                 let mut depth_input = app.init_butterfly_level(1).unwrap();
                 loop {
                     match depth_input {
-                        DepthInput::Done(_) => break,
-                        DepthInput::Waiting => panic!("n={} k={}: stalled", num_nodes, k),
-                        DepthInput::Multiply { depth, x, y } => {
+                        OpDepthInput::Done(_) => break,
+                        OpDepthInput::Waiting => panic!("n={} k={}: stalled", num_nodes, k),
+                        OpDepthInput::Op { depth, op: Op::Mul { x, y } } => {
                             assert_eq!(depth, scheduled.len() + 1, "depths must be named in order");
                             scheduled.push(x.len());
                             let results: Vec<FieldElement<F>> =
@@ -710,7 +706,8 @@ mod tests {
                         other => panic!("n={} k={}: the mixing circuit only multiplies, got {:?}", num_nodes, k, other),
                     }
                 }
-                assert_eq!(scheduled, counts.gates_per_depth, "n={} k={}", num_nodes, k);
+                let declared: Vec<usize> = counts.ops.iter().map(|p| p.elements).collect();
+                assert_eq!(scheduled, declared, "n={} k={}", num_nodes, k);
             }
         }
     }
@@ -758,9 +755,9 @@ mod tests {
             let mut depths_seen = 0;
             loop {
                 match depth_input {
-                    DepthInput::Done(_) => break,
-                    DepthInput::Waiting => panic!("k={}: stalled at depth {}", k, depths_seen),
-                    DepthInput::Multiply { depth, x, y } => {
+                    OpDepthInput::Done(_) => break,
+                    OpDepthInput::Waiting => panic!("k={}: stalled at depth {}", k, depths_seen),
+                    OpDepthInput::Op { depth, op: Op::Mul { x, y } } => {
                         depths_seen += 1;
                         assert_eq!(
                             x.len(),
@@ -777,6 +774,50 @@ mod tests {
             }
             assert_eq!(depths_seen, app.max_depth, "k={}", k);
         }
+    }
+
+    /// The whole application hosted by the Planner, driven by a plaintext
+    /// engine: the switch signs travel as random wires through the Planner
+    /// (which takes none of its own for a `Mul`-only circuit), every depth is
+    /// one engine multiplication, and the output is a permutation of the
+    /// input wires.
+    #[tokio::test]
+    async fn the_mix_runs_through_the_planner() {
+        use velox::{Application, DepthInput, Planner};
+        let (num_nodes, num_faults, k) = (4, 1, 8);
+        let app = AnonymousBroadcast::<F>::new(num_nodes, num_faults, 0, k);
+        let mut planner = Planner::new(app).unwrap();
+        let wires = planner.random_wires();
+        assert_eq!(wires.bits, (k / 2) * 9, "the app's signs, and nothing of the Planner's");
+        assert_eq!(planner.preprocessing_count().gates_per_depth, vec![k / 2; 9]);
+
+        let signs: Vec<FieldElement<F>> = signs(wires.bits, 0xabc).into_iter().collect();
+        let mut next = planner.on_preprocessing_complete(RandomWireShares::new(signs, Vec::new())).await.unwrap();
+        assert!(next.is_waiting());
+        let per_party = k / (num_nodes - num_faults) + 1;
+        let mut inputs = Vec::new();
+        for party in 0..num_nodes {
+            let shares: Vec<FieldElement<F>> =
+                (0..per_party).map(|i| FieldElement::<F>::from((party * 100 + i + 1) as u64)).collect();
+            inputs.extend(shares.iter().cloned());
+            next = planner.input_sharing_termination(party, shares).await.unwrap();
+        }
+        inputs.truncate(k);
+        let mut depths = 0;
+        let outputs = loop {
+            next = match next {
+                DepthInput::Done(outputs) => break outputs,
+                DepthInput::Multiply { depth, x, y } => {
+                    depths += 1;
+                    assert_eq!(depth, depths);
+                    let products = x.iter().zip(y.iter()).map(|(a, b)| a * b).collect();
+                    planner.on_depth_complete(depth, products).await.unwrap()
+                }
+                other => panic!("the mix only multiplies, got {:?}", other),
+            };
+        };
+        assert_eq!(depths, 9);
+        assert_eq!(multiset(&outputs), multiset(&inputs));
     }
 
     /// Only `n - t` dealers are guaranteed to terminate, so the per-party input
