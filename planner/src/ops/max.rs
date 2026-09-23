@@ -6,7 +6,7 @@
 //! Preprocessing: one edaBit per element.
 
 use anyhow::Result;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 
 use crate::{api::application::OpResult, primitives::edabit::EdaBit};
 
@@ -18,21 +18,21 @@ pub fn steps(ell: usize) -> Vec<OpStep> {
     steps
 }
 
-pub struct Max<F: ProtocolField + MersennePrimeField> {
+pub struct Max<F: ProtocolField> {
     diff: Vec<E<F>>,
     other: Vec<E<F>>,
     drelu: DReLU<F>,
     out: Vec<E<F>>,
 }
 
-impl<F: ProtocolField + MersennePrimeField> Max<F> {
+impl<F: ProtocolField> Max<F> {
     pub fn new(a: Vec<E<F>>, other: Vec<E<F>>, eda: Vec<EdaBit<F>>) -> Self {
         let diff: Vec<E<F>> = a.iter().zip(other.iter()).map(|(l, r)| l - r).collect();
         Self { drelu: DReLU::new(diff.clone(), eda), diff, other, out: Vec::new() }
     }
 }
 
-impl<F: ProtocolField + MersennePrimeField> Operation<F> for Max<F> {
+impl<F: ProtocolField> Operation<F> for Max<F> {
     fn operands(&self, step: usize) -> EngineOperands<F> {
         if step < self.drelu.steps() {
             self.drelu.operands(step)

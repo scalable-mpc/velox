@@ -5,7 +5,7 @@
 //! edaBit per element.
 
 use anyhow::Result;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 
 use crate::{
     api::application::{OpType, OpResult},
@@ -18,20 +18,20 @@ pub fn steps() -> Vec<OpStep> {
     vec![OpStep::new(EngineOperationType::Reveal, 1)]
 }
 
-pub struct Truncate<F: ProtocolField + MersennePrimeField> {
+pub struct Truncate<F: ProtocolField> {
     x: Vec<E<F>>,
     d: usize,
     eda: Vec<EdaBit<F>>,
     out: Vec<E<F>>,
 }
 
-impl<F: ProtocolField + MersennePrimeField> Truncate<F> {
+impl<F: ProtocolField> Truncate<F> {
     pub fn new(x: Vec<E<F>>, d: usize, eda: Vec<EdaBit<F>>) -> Self {
         Self { x, d, eda, out: Vec::new() }
     }
 }
 
-impl<F: ProtocolField + MersennePrimeField> Operation<F> for Truncate<F> {
+impl<F: ProtocolField> Operation<F> for Truncate<F> {
     fn operands(&self, _step: usize) -> EngineOperands<F> {
         let offset = fixed_point::offset::<F>();
         EngineOperands::Reveal(self.x.iter().zip(self.eda.iter()).map(|(x, r)| x + &offset + &r.value).collect())

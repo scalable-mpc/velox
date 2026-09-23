@@ -15,7 +15,9 @@
 //! shape, and `Compare`, `Max`, `Min` delegate their leading steps to it.
 
 use anyhow::{bail, Result};
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
+
+use crate::primitives::mersenne;
 
 use crate::primitives::{
     carry_tree::{CarryTree, Slot},
@@ -32,7 +34,7 @@ pub fn steps(ell: usize) -> Vec<OpStep> {
     steps
 }
 
-pub struct DReLU<F: ProtocolField + MersennePrimeField> {
+pub struct DReLU<F: ProtocolField> {
     tree: CarryTree,
     v: Vec<E<F>>,
     eda: Vec<EdaBit<F>>,
@@ -46,9 +48,9 @@ pub struct DReLU<F: ProtocolField + MersennePrimeField> {
     out: Vec<E<F>>,
 }
 
-impl<F: ProtocolField + MersennePrimeField> DReLU<F> {
+impl<F: ProtocolField> DReLU<F> {
     pub fn new(v: Vec<E<F>>, eda: Vec<EdaBit<F>>) -> Self {
-        Self { tree: CarryTree::new(F::BITS), v, eda, slots: Vec::new(), b: Vec::new(), c: Vec::new(), out: Vec::new() }
+        Self { tree: CarryTree::new(mersenne::ell::<F>()), v, eda, slots: Vec::new(), b: Vec::new(), c: Vec::new(), out: Vec::new() }
     }
 
     /// Steps in the pipeline: the reveal, the levels, the xor.
@@ -74,50 +76,46 @@ impl<F: ProtocolField + MersennePrimeField> DReLU<F> {
 
     pub fn on_step_complete(&mut self, step: usize, results: Vec<E<F>>) -> Result<()> {
         let levels = self.tree.num_levels();
+        let one = E::<F>::one();
         match step {
-            0 => self.on_reveal(results),
-            s if s <= levels => self.on_level(s - 1, results),
-            s if s == levels + 1 => self.on_xor(results),
+            // The reveal: `y` is public — its bits seed the tree, its LSB the xor.
+            0 => {
+                for (y, eda) in results.iter().zip(self.eda.iter()) {
+                    let y_bits: Vec<u64> = (0..mersenne::ell::<F>()).map(|i| mersenne::bit::<F>(y, i)).collect();
+                    self.b.push(if y_bits[0] == 1 { &one - &eda.bits[0] } else { eda.bits[0].clone() });
+                    let not_r: Vec<E<F>> = eda.bits.iter().map(|r| &one - r).collect();
+                    let slots = self.tree.leaves(&y_bits, &not_r);
+                    if levels == 0 {
+                        self.c.push(&one - self.tree.carry(&slots));
+                    }
+                    self.slots.push(slots);
+                }
+            }
+            // A tree level: fold each element's slots; after the last level
+            // the carry gives `[c] = [y < r]`.
+            s if s <= levels => {
+                let level = s - 1;
+                let width = self.tree.level_widths()[level];
+                for (slots, chunk) in self.slots.iter_mut().zip(results.chunks(width)) {
+                    *slots = self.tree.level_absorb(level, slots, chunk);
+                }
+                if level + 1 == levels {
+                    self.c = self.slots.iter().map(|slots| &one - self.tree.carry(slots)).collect();
+                }
+            }
+            // The xor: `DReLU = 1 − ([b] + [c] − 2[b][c])`.
+            s if s == levels + 1 => {
+                let two = E::<F>::from(2u64);
+                self.out = self
+                    .b
+                    .iter()
+                    .zip(self.c.iter())
+                    .zip(results.iter())
+                    .map(|((b, c), bc)| &one - (b + c - &two * bc))
+                    .collect();
+            }
             s => bail!("the DReLU pipeline has no step {}", s),
         }
         Ok(())
-    }
-
-    /// `y` is public: its bits seed the tree, its LSB the xor.
-    fn on_reveal(&mut self, ys: Vec<E<F>>) {
-        let one = E::<F>::one();
-        for (y, eda) in ys.iter().zip(self.eda.iter()) {
-            let y_bits: Vec<u64> = (0..F::BITS).map(|i| F::bit(y, i)).collect();
-            self.b.push(if y_bits[0] == 1 { &one - &eda.bits[0] } else { eda.bits[0].clone() });
-            let not_r: Vec<E<F>> = eda.bits.iter().map(|r| &one - r).collect();
-            let slots = self.tree.leaves(&y_bits, &not_r);
-            if self.tree.num_levels() == 0 {
-                self.c.push(&one - self.tree.carry(&slots));
-            }
-            self.slots.push(slots);
-        }
-    }
-
-    fn on_level(&mut self, level: usize, products: Vec<E<F>>) {
-        let width = self.tree.level_widths()[level];
-        for (slots, chunk) in self.slots.iter_mut().zip(products.chunks(width)) {
-            *slots = self.tree.level_absorb(level, slots, chunk);
-        }
-        if level + 1 == self.tree.num_levels() {
-            let one = E::<F>::one();
-            self.c = self.slots.iter().map(|slots| &one - self.tree.carry(slots)).collect();
-        }
-    }
-
-    fn on_xor(&mut self, products: Vec<E<F>>) {
-        let one = E::<F>::one();
-        let two = E::<F>::from(2u64);
-        self.out = self
-            .b
-            .iter()
-            .zip(self.c.iter())
-            .zip(products.iter())
-            .map(|((b, c), bc)| &one - (b + c - &two * bc))
-            .collect();
     }
 }

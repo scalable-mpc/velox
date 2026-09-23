@@ -146,6 +146,26 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
     /// == embed_ext(x + y)`; `lift` makes no such promise.
     fn embed_ext(elem: &FieldElement<Self>) -> FieldElement<Self::Ext>;
 
+    // -- Mersenne capability ------------------------------------------------
+    //
+    // The comparison and truncation protocols need the modulus to be a
+    // Mersenne prime `2^ℓ − 1` (see `MersennePrimeField`). Code that is
+    // generic over every protocol field — the Planner — asks through these two
+    // items whether it has one, and refuses those operations when it does not,
+    // instead of carrying the bound on everything it touches.
+
+    /// `Some(ℓ)` when the modulus is the Mersenne prime `2^ℓ − 1`, `None`
+    /// otherwise. The extension fields over a Mersenne prime are `None`:
+    /// their elements are not integers mod `p`.
+    const MERSENNE_BITS: Option<usize> = None;
+
+    /// The integer in `[0, p)` that `elem` represents, when the field is a
+    /// Mersenne prime field; `None` otherwise. Agrees with
+    /// `MersennePrimeField::to_canonical_u64` wherever both exist.
+    fn mersenne_canonical(_elem: &FieldElement<Self>) -> Option<u64> {
+        None
+    }
+
     /// Optional GPU-accelerated batched GEMM.
     ///
     /// Returning `None` (the default) means "no GPU path for this field" and

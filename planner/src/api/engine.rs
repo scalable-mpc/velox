@@ -7,12 +7,13 @@
 //! hook returns. Its vocabulary is deliberately small: a multiplication
 //! batch, a reveal batch, a masked-multiplication batch. Everything richer —
 //! comparison, truncation, fixed-point multiplication — is built above it by
-//! the Planner, which is itself an `Application` (see `bridge`) hosting a
+//! the Planner, which is itself an `Application` (see `crate::planner`) hosting a
 //! [`PlannerApplication`](super::application::PlannerApplication).
 //!
-//! An application may also implement this trait directly, as
-//! `anonymous_broadcast`, `btx_setup` and `reveal_probe` do, when it needs
-//! nothing beyond the engine's own batches.
+//! Applications do not implement this trait: every application in the
+//! workspace is a `PlannerApplication`, and the Planner is the only
+//! `Application` the engine hosts (`DefaultApplication` below aside, a no-op
+//! for benchmarking the bare engine).
 //!
 //! # Division of labour
 //!

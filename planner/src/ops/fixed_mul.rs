@@ -7,7 +7,7 @@
 //! Preprocessing: one edaBit per element.
 
 use anyhow::Result;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 
 use crate::{
     api::application::{OpType, OpResult},
@@ -20,7 +20,7 @@ pub fn steps() -> Vec<OpStep> {
     vec![OpStep::new(EngineOperationType::MaskedMultiply, 1)]
 }
 
-pub struct FixedMul<F: ProtocolField + MersennePrimeField> {
+pub struct FixedMul<F: ProtocolField> {
     x: Vec<E<F>>,
     y: Vec<E<F>>,
     d: usize,
@@ -28,13 +28,13 @@ pub struct FixedMul<F: ProtocolField + MersennePrimeField> {
     out: Vec<E<F>>,
 }
 
-impl<F: ProtocolField + MersennePrimeField> FixedMul<F> {
+impl<F: ProtocolField> FixedMul<F> {
     pub fn new(x: Vec<E<F>>, y: Vec<E<F>>, d: usize, eda: Vec<EdaBit<F>>) -> Self {
         Self { x, y, d, eda, out: Vec::new() }
     }
 }
 
-impl<F: ProtocolField + MersennePrimeField> Operation<F> for FixedMul<F> {
+impl<F: ProtocolField> Operation<F> for FixedMul<F> {
     fn operands(&self, _step: usize) -> EngineOperands<F> {
         let offset = fixed_point::offset::<F>();
         EngineOperands::MaskedMultiply {

@@ -53,19 +53,30 @@ impl OpDepthPlan {
 #[derive(Clone, Debug)]
 pub struct Plan {
     op_depths: Vec<OpDepthPlan>,
-    ell: usize,
+    /// `Some(ℓ)` over the Mersenne prime field `2^ℓ − 1`, `None` over any
+    /// other protocol field.
+    ell: Option<usize>,
     output: usize,
     app_rand_bits: usize,
     app_sharings: usize,
 }
 
 impl Plan {
-    pub fn compile(counts: &PlannerCounts, ell: usize) -> Result<Self> {
+    /// `ell` is `F::MERSENNE_BITS`: a declaration with a Mersenne-only op
+    /// over any other field is refused here, before preprocessing.
+    pub fn compile(counts: &PlannerCounts, ell: Option<usize>) -> Result<Self> {
         let mut op_depths = Vec::with_capacity(counts.depth());
         let mut engine_depth = 1;
         for (index, params) in counts.ops.iter().enumerate() {
             if params.elements == 0 {
                 bail!("op-depth {} declares {:?} over no elements", index + 1, params.op_type);
+            }
+            if params.op_type.needs_mersenne() && ell.is_none() {
+                bail!(
+                    "op-depth {} declares {:?}, which needs a Mersenne prime field (m61base or m31base)",
+                    index + 1,
+                    params.op_type
+                );
             }
             let rounds = ops::steps_of(params.op_type, ell)
                 .into_iter()
@@ -89,7 +100,7 @@ impl Plan {
         &self.op_depths
     }
 
-    pub fn ell(&self) -> usize {
+    pub fn ell(&self) -> Option<usize> {
         self.ell
     }
 
@@ -110,7 +121,7 @@ impl Plan {
     /// Bits the Planner keeps for itself off the front of what the engine
     /// delivers: `ℓ` per edaBit.
     pub fn planner_bits(&self) -> usize {
-        self.edabits_total() * self.ell
+        self.edabits_total() * self.ell.unwrap_or(0)
     }
 
     /// The engine's profile: plain and masked gates per engine depth, 0 at
@@ -143,7 +154,26 @@ mod tests {
     use crate::api::application::OpType;
 
     fn rounds(op_type: OpType, ell: usize) -> usize {
-        Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 3)], 0), ell).unwrap().op_depth(1).unwrap().rounds()
+        Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 3)], 0), Some(ell)).unwrap().op_depth(1).unwrap().rounds()
+    }
+
+    /// Over a non-Mersenne field the plan takes `Mul`, `Add` and `Reveal`,
+    /// asks for no random bits of its own, and refuses the rest by name.
+    #[test]
+    fn a_non_mersenne_field_plans_only_the_field_generic_ops() {
+        let counts = PlannerCounts::new(
+            vec![OpParams::new(OpType::Mul, 4), OpParams::new(OpType::Add, 2), OpParams::new(OpType::Reveal, 3)],
+            1,
+        )
+        .with_random_wires(7, 2);
+        let plan = Plan::compile(&counts, None).unwrap();
+        assert_eq!(plan.engine_depths(), 2);
+        assert_eq!(plan.planner_bits(), 0);
+        assert_eq!(plan.random_wires(), RandomWires::new(7, 2));
+        for op_type in [OpType::Compare, OpType::MaxPub, OpType::Truncate, OpType::FixedMul, OpType::MaskReveal] {
+            let err = Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 1)], 0), None).unwrap_err();
+            assert!(err.to_string().contains("Mersenne"), "{op_type:?}: {err}");
+        }
     }
 
     #[test]
@@ -164,7 +194,7 @@ mod tests {
 
     #[test]
     fn a_comparison_depth_is_planned_level_by_level() {
-        let plan = Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Max, 4)], 0), 61).unwrap();
+        let plan = Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Max, 4)], 0), Some(61)).unwrap();
         let op_depth = plan.op_depth(1).unwrap();
         let batches: Vec<EngineOperationType> = op_depth.rounds.iter().map(|r| r.step.engine_op).collect();
         assert_eq!(batches[0], EngineOperationType::Reveal);
@@ -191,7 +221,7 @@ mod tests {
             9,
         )
         .with_random_wires(5, 3);
-        let plan = Plan::compile(&counts, 61).unwrap();
+        let plan = Plan::compile(&counts, Some(61)).unwrap();
         assert_eq!(plan.op_depth(1).unwrap().rounds[0].engine_depth, 1);
         assert_eq!(plan.op_depth(2).unwrap().rounds(), 0);
         assert_eq!(plan.op_depth(3).unwrap().rounds[0].engine_depth, 2);
@@ -204,6 +234,6 @@ mod tests {
         assert_eq!(plan.edabits_per_depth(), vec![0, 0, 2, 3]);
         assert_eq!(plan.random_wires(), RandomWires::new(5 * 61 + 5, 3));
         assert!(plan.op_depth(5).is_none());
-        assert!(Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mul, 0)], 0), 61).is_err());
+        assert!(Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mul, 0)], 0), Some(61)).is_err());
     }
 }

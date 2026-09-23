@@ -8,7 +8,7 @@
 //! uniformly blinded.
 
 use anyhow::Result;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 
 use crate::{
     api::application::{OpType, OpResult},
@@ -21,19 +21,19 @@ pub fn steps() -> Vec<OpStep> {
     vec![OpStep::new(EngineOperationType::Reveal, 1)]
 }
 
-pub struct MaskReveal<F: ProtocolField + MersennePrimeField> {
+pub struct MaskReveal<F: ProtocolField> {
     x: Vec<E<F>>,
     eda: Vec<EdaBit<F>>,
     out: Vec<E<F>>,
 }
 
-impl<F: ProtocolField + MersennePrimeField> MaskReveal<F> {
+impl<F: ProtocolField> MaskReveal<F> {
     pub fn new(x: Vec<E<F>>, eda: Vec<EdaBit<F>>) -> Self {
         Self { x, eda, out: Vec::new() }
     }
 }
 
-impl<F: ProtocolField + MersennePrimeField> Operation<F> for MaskReveal<F> {
+impl<F: ProtocolField> Operation<F> for MaskReveal<F> {
     fn operands(&self, _step: usize) -> EngineOperands<F> {
         EngineOperands::Reveal(self.x.iter().zip(self.eda.iter()).map(|(x, r)| x + &r.value).collect())
     }

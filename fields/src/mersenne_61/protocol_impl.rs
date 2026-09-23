@@ -183,6 +183,12 @@ impl ProtocolField for Mersenne61Field {
     /// the degree-4 extension.
     type Ext = Mersenne61Degree4ExtensionField;
 
+    const MERSENNE_BITS: Option<usize> = Some(<Self as MersennePrimeField>::BITS);
+
+    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u64> {
+        Some(<Self as MersennePrimeField>::to_canonical_u64(elem))
+    }
+
     /// Four base elements are the four coefficients of one Fp4 element.
     const CONV_RATIO: usize = 4;
 

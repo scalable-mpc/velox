@@ -3,7 +3,7 @@
 //! Rounds: 1. Steps: one multiply.
 
 use anyhow::Result;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 
 use crate::api::application::{OpType, OpResult};
 
@@ -25,7 +25,7 @@ impl<F: ProtocolField> Mul<F> {
     }
 }
 
-impl<F: ProtocolField + MersennePrimeField> Operation<F> for Mul<F> {
+impl<F: ProtocolField> Operation<F> for Mul<F> {
     fn operands(&self, _step: usize) -> EngineOperands<F> {
         EngineOperands::Multiply { x: self.x.clone(), y: self.y.clone() }
     }

@@ -32,7 +32,7 @@
 //! same file as its shared sibling with `other` holding public elements.
 
 use anyhow::{bail, Result};
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
 use crate::{
@@ -78,8 +78,11 @@ impl OpStep {
     }
 }
 
-/// The steps of an op type for an `ell`-bit field.
-pub fn steps_of(op_type: OpType, ell: usize) -> Vec<OpStep> {
+/// The steps of an op type. `ell` is `Some(ℓ)` over a Mersenne prime
+/// field; the comparison family's steps depend on it, and `Plan::compile`
+/// has already refused those types when it is `None`.
+pub fn steps_of(op_type: OpType, ell: Option<usize>) -> Vec<OpStep> {
+    let ell = || ell.expect("a Mersenne-only op type planned over a non-Mersenne field");
     match op_type {
         OpType::Mul => mul::steps(),
         OpType::Add => add::steps(),
@@ -87,9 +90,9 @@ pub fn steps_of(op_type: OpType, ell: usize) -> Vec<OpStep> {
         OpType::MaskReveal => mask_reveal::steps(),
         OpType::Truncate => truncate::steps(),
         OpType::FixedMul => fixed_mul::steps(),
-        OpType::Compare | OpType::ComparePub => compare::steps(ell),
-        OpType::Max | OpType::MaxPub => max::steps(ell),
-        OpType::Min | OpType::MinPub => min::steps(ell),
+        OpType::Compare | OpType::ComparePub => compare::steps(ell()),
+        OpType::Max | OpType::MaxPub => max::steps(ell()),
+        OpType::Min | OpType::MinPub => min::steps(ell()),
     }
 }
 
@@ -129,7 +132,7 @@ impl<F: ProtocolField> EngineOperands<F> {
 }
 
 /// The template.
-pub trait Operation<F: ProtocolField + MersennePrimeField>: Send {
+pub trait Operation<F: ProtocolField>: Send {
     /// The operands this op puts into its step `step`.
     fn operands(&self, step: usize) -> EngineOperands<F>;
 
@@ -143,7 +146,7 @@ pub trait Operation<F: ProtocolField + MersennePrimeField>: Send {
 
 /// Build the operation for `op`, drawing its edaBits from `edabits` in
 /// element order.
-pub fn build<F: ProtocolField + MersennePrimeField>(
+pub fn build<F: ProtocolField>(
     op: Op<F>,
     edabits: &mut impl Iterator<Item = EdaBit<F>>,
 ) -> Result<Box<dyn Operation<F>>> {

@@ -14,14 +14,20 @@
 //! that consumes them (the carry tree, `Trunc_d` on public values) lives in
 //! the ops layer, where it is tested against integer references.
 //!
-//! # Why a separate trait
+//! # A trait and a capability
 //!
-//! Only the ops adapter is bounded by it. The engine stays generic over
-//! [`ProtocolField`](crate::ProtocolField), every non-Mersenne field is
-//! untouched, and a comparison scheduled over BN254 or over the degree-4
-//! extension of Mersenne-61 fails at the adapter's type instead of at runtime.
-//! The extension field is deliberately excluded: its elements are not
-//! integers mod a Mersenne prime, so neither fact above holds for them.
+//! This trait is the static statement — `F: MersennePrimeField` — for code
+//! that only ever runs over a Mersenne prime field, such as a circuit's
+//! cleartext reference evaluator. Code that is generic over every protocol
+//! field and needs Mersenne arithmetic for *some* of what it does — the
+//! Planner, whose `Mul`/`Reveal` run over any field but whose comparisons do
+//! not — reads the same facts at runtime through
+//! [`ProtocolField::MERSENNE_BITS`](crate::ProtocolField::MERSENNE_BITS) and
+//! [`ProtocolField::mersenne_canonical`](crate::ProtocolField::mersenne_canonical),
+//! which the Mersenne base fields answer by delegating here and every other
+//! field answers with `None`. The extension fields are deliberately excluded
+//! from both: their elements are not integers mod a Mersenne prime, so
+//! neither fact above holds for them.
 //!
 //! The supertrait is lambdaworks's [`IsPrimeField`], not `ProtocolField`, so
 //! the trait is a statement about the field alone. The Mersenne-31 base field

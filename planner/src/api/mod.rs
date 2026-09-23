@@ -2,8 +2,8 @@
 //!
 //! - [`engine`]: the API the engine drives — the `Application` trait and the
 //!   data its hooks exchange (`DepthInput`, `PreprocessingCounts`,
-//!   `RandomWires`). An application may implement it directly; the Planner
-//!   implements it on behalf of a `PlannerApplication` (see `crate::bridge`).
+//!   `RandomWires`). The Planner implements it on behalf of a
+//!   `PlannerApplication` (see `crate::planner`); applications do not.
 //! - [`application`]: the API an application programs against through the
 //!   Planner — operations, op-depths, results, and the `PlannerApplication`
 //!   hooks.

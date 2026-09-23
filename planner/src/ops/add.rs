@@ -3,7 +3,7 @@
 //! Rounds: 0. Steps: none; the sum is formed at construction.
 
 use anyhow::Result;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 
 use crate::api::application::{OpType, OpResult};
 
@@ -23,7 +23,7 @@ impl<F: ProtocolField> Add<F> {
     }
 }
 
-impl<F: ProtocolField + MersennePrimeField> Operation<F> for Add<F> {
+impl<F: ProtocolField> Operation<F> for Add<F> {
     fn operands(&self, _step: usize) -> EngineOperands<F> {
         EngineOperands::Reveal(Vec::new())
     }

@@ -24,19 +24,72 @@
 //!   root included — then has `P = 0` for free and costs one multiplication,
 //!   `P_H · G_L`.
 //!
+//! # The three kinds of node
+//!
+//! Every node combines its low (L) and high (H) child with `∘`, which in
+//! general needs two products, `P_L · P_H` and `P_H · G_L`. The two
+//! specialisations above make most nodes cheaper, and [`CombineType`] names
+//! which case a node is:
+//!
+//! - **[`LeafPair`](CombineType::LeafPair)** — 1 multiplication. A level-1
+//!   node over two leaves, neither of them bit 0. A leaf is *affine* in its
+//!   shared bit because `a_i` is public: `p_i` is `¬b_i` or `b_i`, and
+//!   `g_i = a_i (1 − p_i)`. So only `P = p_L · p_H` is a product;
+//!   `G = g_H + p_H · g_L = a_H (1 − p_H) + a_L (p_H − P)` is then local,
+//!   since `p_H · g_L = a_L (p_H − p_H p_L)`. [`Slot::leaf_a`] records that a
+//!   slot is still such a leaf, with its public bit.
+//! - **[`Spine`](CombineType::Spine)** — 1 multiplication. The leftmost node
+//!   of every level, root included: the node containing bit 0. The folded
+//!   carry-in gives the lowest slot `P = 0`, and `P = P_L · P_H` keeps it 0
+//!   all the way up, so only `G = G_H + P_H · G_L` is computed. At the root
+//!   `P = 0` and the carry out is just `G`.
+//! - **[`Inner`](CombineType::Inner)** — 2 multiplications. Every other node
+//!   from level 2 up: its children are no longer affine leaves and do not
+//!   contain bit 0, so both `P = P_L · P_H` and `G = G_H + P_H · G_L` are
+//!   products.
+//!
+//! A [`Carry`](Node::Carry) is the odd slot left over at a level, passed up
+//! unchanged at no cost.
+//!
+//! At `k = 8` (bits 0..7, ranges are the bits a slot covers):
+//!
+//! ```text
+//!                                   [0..7]                     level 3: 1
+//!                                   Spine
+//!                          ┌──────────┴──────────┐
+//!                       [0..3]                 [4..7]          level 2: 1 + 2 = 3
+//!                       Spine                  Inner
+//!                   ┌─────┴─────┐          ┌─────┴─────┐
+//!                 [0,1]       [2,3]      [4,5]       [6,7]     level 1: 1+1+1+1 = 4
+//!                 Spine     LeafPair   LeafPair    LeafPair
+//!                 ┌─┴─┐       ┌─┴─┐      ┌─┴─┐       ┌─┴─┐
+//! leaves:        0*   1       2   3      4   5       6   7
+//!
+//!   0* = leaf 0 with the carry-in folded in: (0, g_0 + p_0), so P = 0.
+//!   The spine is the left edge 0* → [0,1] → [0..3] → [0..7].
+//! ```
+//!
+//! 8 multiplications over 3 rounds, where two products per node would take
+//! 14. At an odd width the top slot of a level is carried: at `k = 61` level
+//! 1 is one spine node and 29 leaf pairs with bit 60 carried (30), level 2 one
+//! spine and 14 inner nodes (1 + 28 = 29), and so on.
+//!
 //! At `k = 61`: levels of 30, 29, 15, 7, 3, 1 multiplications, 85 in all.
 //! At `k = 31`: 15, 15, 7, 3, 1 — 41.
 
 use lambdaworks_math::field::{element::FieldElement, traits::IsField};
 
-/// How the node is formed from the two slots below it.
+/// How the node is formed from the two slots below it; see the module
+/// docs for the tree these three cases make up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CombineType {
-    /// Two affine leaves: one multiplication, `P` is the product.
+    /// Two affine leaves, neither bit 0: one multiplication, `P = p_L · p_H`;
+    /// `G` is local.
     LeafPair,
-    /// The lower slot has `P = 0`: one multiplication, `G = g_H + p_H · G_L`.
+    /// The node containing bit 0, whose low slot has `P = 0`: one
+    /// multiplication, `G = G_H + P_H · G_L`, and `P` stays 0.
     Spine,
-    /// Two multiplications.
+    /// Any other node: two multiplications, `P_L · P_H` and `P_H · G_L`.
     Inner,
 }
 

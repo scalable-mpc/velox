@@ -61,14 +61,14 @@ impl Rng {
 
 type Scene<F> = Box<dyn FnMut(&[OpResult<F>]) -> OpDepthInput<F> + Send>;
 
-struct Script<F: ProtocolField + MersennePrimeField> {
+struct Script<F: ProtocolField> {
     counts: PlannerCounts,
     scenes: VecDeque<Scene<F>>,
     results: Vec<OpResult<F>>,
     outputs: Option<Vec<E<F>>>,
 }
 
-impl<F: ProtocolField + MersennePrimeField> Script<F> {
+impl<F: ProtocolField> Script<F> {
     fn new(counts: PlannerCounts) -> Self {
         Self { counts, scenes: VecDeque::new(), results: Vec::new(), outputs: None }
     }
@@ -87,7 +87,7 @@ impl<F: ProtocolField + MersennePrimeField> Script<F> {
 }
 
 #[async_trait]
-impl<F: ProtocolField + MersennePrimeField> PlannerApplication<F> for Script<F> {
+impl<F: ProtocolField> PlannerApplication<F> for Script<F> {
     fn preprocessing_count(&self) -> PlannerCounts {
         self.counts.clone()
     }
@@ -123,7 +123,7 @@ enum Batch {
     Masked(usize, usize),
 }
 
-async fn run<F: ProtocolField + MersennePrimeField, A: Application<F>>(app: &mut A, seed: u64) -> Vec<Batch> {
+async fn run<F: ProtocolField, A: Application<F>>(app: &mut A, seed: u64) -> Vec<Batch> {
     let mut rng = Rng(seed | 1);
     let wires = app.random_wires();
     let bits: Vec<E<F>> = (0..wires.bits).map(|_| if rng.next() & 1 == 1 { E::<F>::one() } else { -E::<F>::one() }).collect();
@@ -312,6 +312,38 @@ fn reveal_mask_reveal_mul_and_add() {
     assert_eq!(signed_all(&results[3]), xs.iter().zip(ys.iter()).map(|(x, y)| x + y).collect::<Vec<_>>());
 }
 
+/// Over a non-Mersenne field — here the degree-4 extension of Mersenne-61,
+/// the engine's default — the Planner runs `Mul`, `Add` and `Reveal`, asks
+/// for no random bits of its own, and passes the application's through; a
+/// declaration with a Mersenne-only op is refused when the Planner is built.
+#[test]
+fn a_non_mersenne_field_runs_mul_add_and_reveal() {
+    type F = fields::DefaultField;
+    let e = |v: u64| E::<F>::from(v);
+    let counts = PlannerCounts::new(
+        vec![OpParams::new(OpType::Mul, 3), OpParams::new(OpType::Add, 3), OpParams::new(OpType::Reveal, 3)],
+        0,
+    )
+    .with_random_wires(5, 2);
+    let script = Script::<F>::new(counts)
+        .then(move |_| OpDepthInput::Op { depth: 1, op: Op::Mul { x: vec![e(2), e(3), e(4)], y: vec![e(5), e(6), e(7)] } })
+        .then(move |r| OpDepthInput::Op { depth: 2, op: Op::Add { x: r[0].clone_shares(), y: vec![e(1), e(1), e(1)] } })
+        .then(move |r| OpDepthInput::Op { depth: 3, op: Op::Reveal { x: r[1].clone_shares() } });
+    let mut planner = Planner::new(script).unwrap();
+    assert_eq!(planner.random_wires(), planner::RandomWires::new(5, 2), "the app's wires, nothing of the Planner's");
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, 11));
+    assert_eq!(batches, vec![Batch::Multiply(1, 3), Batch::Reveal(2, 3)]);
+    let OpResult::Public(opened) = &planner.app().results[2] else { panic!("Reveal returns Public") };
+    assert_eq!(opened, &vec![e(11), e(19), e(29)]);
+
+    for op_type in [OpType::Compare, OpType::MinPub, OpType::Truncate, OpType::FixedMul, OpType::MaskReveal] {
+        let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(op_type, 1)], 0));
+        let err = Planner::new(script).err().expect("refused").to_string();
+        assert!(err.contains("Mersenne"), "{op_type:?}: {err}");
+    }
+}
+
 /// A circuit over several op-depths, with a prefix run (fewer elements
 /// than declared), an Add-only depth, and the plan checked
 /// against the batches actually run.
@@ -390,10 +422,10 @@ fn op_clone<F: ProtocolField + MersennePrimeField>(op: &Op<F>) -> Op<F> {
 }
 
 // Small conveniences for the multi-depth script.
-trait CloneShares<F: ProtocolField + MersennePrimeField> {
+trait CloneShares<F: ProtocolField> {
     fn clone_shares(&self) -> Vec<E<F>>;
 }
-impl<F: ProtocolField + MersennePrimeField> CloneShares<F> for OpResult<F> {
+impl<F: ProtocolField> CloneShares<F> for OpResult<F> {
     fn clone_shares(&self) -> Vec<E<F>> {
         match self {
             OpResult::Shares(s) | OpResult::Public(s) => s.clone(),

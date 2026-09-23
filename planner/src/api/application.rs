@@ -12,7 +12,7 @@
 use anyhow::{bail, Result};
 use crate::api::engine::RandomWireShares;
 use async_trait::async_trait;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
 use crate::primitives::edabit::EdaBit;
@@ -21,7 +21,7 @@ use crate::primitives::edabit::EdaBit;
 /// `OpDepthInput` in place of `DepthInput` and op results in place of
 /// products.
 #[async_trait]
-pub trait PlannerApplication<F: ProtocolField + MersennePrimeField>: Send + 'static {
+pub trait PlannerApplication<F: ProtocolField>: Send + 'static {
     /// Pure, read once before preprocessing, the same at every party.
     fn preprocessing_count(&self) -> PlannerCounts;
 
@@ -77,14 +77,14 @@ impl<F: ProtocolField> std::fmt::Debug for OpDepthInput<F> {
 }
 
 /// What an op-depth produced.
-pub enum OpResult<F: ProtocolField + MersennePrimeField> {
+pub enum OpResult<F: ProtocolField> {
     Shares(Vec<FieldElement<F>>),
     Public(Vec<FieldElement<F>>),
     /// `MaskReveal`: the public `x + r` and `r`'s edaBit, elementwise.
     Masked { public: Vec<FieldElement<F>>, mask: Vec<EdaBit<F>> },
 }
 
-impl<F: ProtocolField + MersennePrimeField> OpResult<F> {
+impl<F: ProtocolField> OpResult<F> {
     pub fn shares(self) -> Result<Vec<FieldElement<F>>> {
         match self {
             Self::Shares(s) => Ok(s),
@@ -100,7 +100,7 @@ impl<F: ProtocolField + MersennePrimeField> OpResult<F> {
     }
 }
 
-impl<F: ProtocolField + MersennePrimeField> std::fmt::Debug for OpResult<F> {
+impl<F: ProtocolField> std::fmt::Debug for OpResult<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Shares(s) => write!(f, "Shares({})", s.len()),
@@ -163,13 +163,18 @@ pub enum OpType {
 }
 
 impl OpType {
+    /// True for the ops that need a Mersenne prime field `p = 2^ℓ − 1`:
+    /// everything that reads the bits of a public value. `Mul`, `Add` and
+    /// `Reveal` run over any protocol field.
+    pub fn needs_mersenne(self) -> bool {
+        !matches!(self, OpType::Mul | OpType::Add | OpType::Reveal)
+    }
+
     /// edaBits an element of this type consumes: one for anything that
-    /// blinds a value with a random `r` it also needs the bits of.
+    /// blinds a value with a random `r` it also needs the bits of — the
+    /// same set as [`needs_mersenne`](Self::needs_mersenne).
     pub fn edabits_per_element(self) -> usize {
-        match self {
-            OpType::Mul | OpType::Add | OpType::Reveal => 0,
-            _ => 1,
-        }
+        usize::from(self.needs_mersenne())
     }
 }
 
@@ -210,8 +215,13 @@ impl<F: ProtocolField> Op<F> {
         OpParams::new(self.op_type(), self.len())
     }
 
-    /// Operand vectors agree in length, and `d` is in range for `ℓ` bits.
-    pub fn validate(&self, ell: usize) -> Result<()> {
+    /// Operand vectors agree in length, the field can run the op, and `d` is
+    /// in range for `ℓ` bits. `ell` is `Some(ℓ)` over a Mersenne prime field
+    /// and `None` over any other.
+    pub fn validate(&self, ell: Option<usize>) -> Result<()> {
+        if self.op_type().needs_mersenne() && ell.is_none() {
+            bail!("{:?} needs a Mersenne prime field (m61base or m31base)", self.op_type());
+        }
         let pair = |l: usize, r: usize, what: &str| -> Result<()> {
             if l != r {
                 bail!("{:?}: {} operands of length {} and {}", self.op_type(), what, l, r);
@@ -223,10 +233,10 @@ impl<F: ProtocolField> Op<F> {
             Op::Compare { a, b } | Op::Max { a, b } | Op::Min { a, b } => pair(a.len(), b.len(), "a, b"),
             Op::ComparePub { a, c } | Op::MaxPub { a, c } | Op::MinPub { a, c } => pair(a.len(), c.len(), "a, c"),
             Op::Reveal { .. } | Op::MaskReveal { .. } => Ok(()),
-            Op::Truncate { d, .. } => Self::check_d(*d, ell),
+            Op::Truncate { d, .. } => Self::check_d(*d, ell.expect("checked above")),
             Op::FixedMul { x, y, d } => {
                 pair(x.len(), y.len(), "x, y")?;
-                Self::check_d(*d, ell)
+                Self::check_d(*d, ell.expect("checked above"))
             }
         }
     }
@@ -320,13 +330,20 @@ mod tests {
 
     #[test]
     fn validation() {
-        assert!(Op::<F>::Mul { x: v(2), y: v(3) }.validate(61).is_err());
-        assert!(Op::<F>::Compare { a: v(2), b: v(2) }.validate(61).is_ok());
-        assert!(Op::<F>::Truncate { x: v(1), d: 0 }.validate(61).is_err());
-        assert!(Op::<F>::Truncate { x: v(1), d: 58 }.validate(61).is_ok());
-        assert!(Op::<F>::Truncate { x: v(1), d: 59 }.validate(61).is_err());
-        assert!(Op::<F>::FixedMul { x: v(1), y: v(1), d: 16 }.validate(61).is_ok());
-        assert!(Op::<F>::FixedMul { x: v(1), y: v(2), d: 16 }.validate(61).is_err());
+        let m = Some(61);
+        assert!(Op::<F>::Mul { x: v(2), y: v(3) }.validate(m).is_err());
+        assert!(Op::<F>::Compare { a: v(2), b: v(2) }.validate(m).is_ok());
+        assert!(Op::<F>::Truncate { x: v(1), d: 0 }.validate(m).is_err());
+        assert!(Op::<F>::Truncate { x: v(1), d: 58 }.validate(m).is_ok());
+        assert!(Op::<F>::Truncate { x: v(1), d: 59 }.validate(m).is_err());
+        assert!(Op::<F>::FixedMul { x: v(1), y: v(1), d: 16 }.validate(m).is_ok());
+        assert!(Op::<F>::FixedMul { x: v(1), y: v(2), d: 16 }.validate(m).is_err());
+        // Over a non-Mersenne field only Mul, Add and Reveal validate.
+        assert!(Op::<F>::Mul { x: v(2), y: v(2) }.validate(None).is_ok());
+        assert!(Op::<F>::Reveal { x: v(2) }.validate(None).is_ok());
+        let err = Op::<F>::Compare { a: v(2), b: v(2) }.validate(None).unwrap_err();
+        assert!(err.to_string().contains("Mersenne"), "{err}");
+        assert!(Op::<F>::Truncate { x: v(1), d: 4 }.validate(None).is_err());
         assert!(OpDepthInput::<F>::op(0, Op::Add { x: v(1), y: v(1) }).is_err());
     }
 

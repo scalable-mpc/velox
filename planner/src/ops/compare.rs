@@ -6,7 +6,7 @@
 //! per element.
 
 use anyhow::Result;
-use fields::{MersennePrimeField, ProtocolField};
+use fields::ProtocolField;
 
 use crate::{api::application::OpResult, primitives::edabit::EdaBit};
 
@@ -16,11 +16,11 @@ pub fn steps(ell: usize) -> Vec<OpStep> {
     super::drelu::steps(ell)
 }
 
-pub struct Compare<F: ProtocolField + MersennePrimeField> {
+pub struct Compare<F: ProtocolField> {
     drelu: DReLU<F>,
 }
 
-impl<F: ProtocolField + MersennePrimeField> Compare<F> {
+impl<F: ProtocolField> Compare<F> {
     /// `other` is `b` (shared) or `c` (public); the arithmetic is the same.
     pub fn new(a: Vec<E<F>>, other: Vec<E<F>>, eda: Vec<EdaBit<F>>) -> Self {
         let diff = a.iter().zip(other.iter()).map(|(l, r)| l - r).collect();
@@ -28,7 +28,7 @@ impl<F: ProtocolField + MersennePrimeField> Compare<F> {
     }
 }
 
-impl<F: ProtocolField + MersennePrimeField> Operation<F> for Compare<F> {
+impl<F: ProtocolField> Operation<F> for Compare<F> {
     fn operands(&self, step: usize) -> EngineOperands<F> {
         self.drelu.operands(step)
     }
