@@ -1,8 +1,9 @@
 use planner::api::engine::Application;
 
 use crate::{Context, protocol::online_phase::APPLICATION_DEPTH_OFFSET};
-use lambdaworks_math::field::element::FieldElement;
 use fields::ProtocolField;
+
+use super::{StatisticalElement, pop_statistical_sharing};
 
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function will be used to compress the multiplication tuples
@@ -12,8 +13,10 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // This might involve some form of serialization or aggregation of the shares
         // Initiate the random mask generation for the last level
         log::info!("Initiating verification process: Preparing a random mask and tossing a common coin");
-        let random_a_share = self.rand_sharings_state.rand_sharings_mult.pop_front().unwrap();
-        let random_b_share = self.rand_sharings_state.rand_sharings_mult.pop_front().unwrap();
+        // The mask lives in `K` with the rest of the compression: `d` random
+        // sharings over `F` for each half.
+        let random_a_share = pop_statistical_sharing(&mut self.rand_sharings_state.rand_sharings_mult).unwrap();
+        let random_b_share = pop_statistical_sharing(&mut self.rand_sharings_state.rand_sharings_mult).unwrap();
 
         //let vec_a_share = vec![vec![random_a_share]];
         //let vec_b_share = vec![vec![random_b_share]];
@@ -66,26 +69,28 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             depth == self.preprocessing_mult_depth
                 || (depth >= APPLICATION_DEPTH_OFFSET && depth < self.delinearization_depth)
         };
-        let (mut x_values, y_values, mut mult_values) = self.verf_state.take_verified_tuples(is_verified_depth);
+        let (x_values, y_values, mult_values) = self.verf_state.take_verified_tuples(is_verified_depth);
         log::info!("Initiating verification process for {} multiplication tuples: x: {}, y: {}, mult: {}",x_values.len(), x_values.len(), y_values.len(), mult_values.len());
         if x_values.len() != y_values.len() || x_values.len() != mult_values.len() || x_values.len() == 0{
             log::error!("Invalid number of shares for delinearization {} {} {}, abandoning process", x_values.len(), y_values.len(), mult_values.len());
             return;
         }
-        // The delinearization challenge stays in `F`, not `F::Ext`: it is a
-        // reconstructed sharing rather than a hash, and the values it weights
-        // flow straight into the compression multiplications. This phase
-        // assumes `F` is large enough for statistical security by itself — see
-        // `ProtocolField::Ext`, whose lift covers the ACSS DZK only.
-        let mut r_iter = FieldElement::<F>::one();
-        for (x,mult) in x_values.iter_mut().zip(mult_values.iter_mut()){
-            *x *= r_iter.clone();
-            *mult *= r_iter.clone();
-            r_iter *= coin_value.clone();
+        // The tuples move into the statistical extension `K` here, weighted by
+        // the powers of the coin, which lies in `K`: a wrong tuple survives the
+        // fold with probability about `#tuples / |K|`.
+        let embed = |value: &_| F::from_statistical_coeffs(std::slice::from_ref(value));
+        let mut r_iter = StatisticalElement::<F>::one();
+        let mut weighted_x = Vec::with_capacity(x_values.len());
+        let mut summed_mult_value = StatisticalElement::<F>::zero();
+        for (x, mult) in x_values.iter().zip(mult_values.iter()){
+            weighted_x.push(embed(x) * &r_iter);
+            summed_mult_value += embed(mult) * &r_iter;
+            r_iter *= &coin_value;
         }
-        log::info!("Multiplication tuples after coin toss: x: {}, y: {}, mult: {}",x_values.len(), y_values.len(), mult_values.len());
+        drop((x_values, mult_values));
+        let y_values: Vec<StatisticalElement<F>> = y_values.iter().map(embed).collect();
+        log::info!("Multiplication tuples after coin toss: {} over a degree-{} extension", weighted_x.len(), F::STATISTICAL_DEGREE);
         // Compress shares with dimension reduction factor k
-        let summed_mult_value: FieldElement<F> = mult_values.into_iter().sum();
-        self.init_compression_level(x_values, y_values, summed_mult_value, self.delinearization_depth +2).await;
+        self.init_compression_level(weighted_x, y_values, summed_mult_value, self.delinearization_depth +2).await;
     }
 }

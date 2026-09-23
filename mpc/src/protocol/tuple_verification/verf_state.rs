@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::ex_compr_state::ExComprState;
+use super::{ex_compr_state::ExComprState, StatisticalElement};
 use lambdaworks_math::field::element::FieldElement;
 use fields::ProtocolField;
 
@@ -8,10 +8,10 @@ pub struct VerificationState<F: ProtocolField>{
     // A vector of multiplication tuples (a,b,a*b) to be verified at each depth
     pub mult_tuples: HashMap<usize, (Vec<FieldElement<F>>, Vec<FieldElement<F>>, Vec<FieldElement<F>>)>,
     pub ex_compr_state: HashMap<usize, ExComprState<F>>,
-    // Prepare a beaver triple as a random mask for verification
-    pub random_mask: (Option<FieldElement<F>>,Option<FieldElement<F>>,Option<FieldElement<F>>),
-    // indices, x_shares, y_shares, z_shares
-    pub output_verf_reconstruction_shares: (Vec<FieldElement<F>>, Vec<FieldElement<F>>, Vec<FieldElement<F>>, Vec<FieldElement<F>>),
+    // Prepare a beaver triple as a random mask for verification, over `K`
+    pub random_mask: (Option<StatisticalElement<F>>,Option<StatisticalElement<F>>,Option<StatisticalElement<F>>),
+    // indices, x_shares, y_shares, z_shares; the shares are over `K`
+    pub output_verf_reconstruction_shares: (Vec<FieldElement<F>>, Vec<StatisticalElement<F>>, Vec<StatisticalElement<F>>, Vec<StatisticalElement<F>>),
 
     /// Set once this party's own circuit has finished and `delinearize_mult_tuples`
     /// has drawn the verification mask. Until then `mult_tuples` is still being
@@ -31,8 +31,9 @@ pub struct VerificationState<F: ProtocolField>{
     pub reveal_check_sent: bool,
     /// Set once `[Δ]` has been opened, so the check runs exactly once.
     pub reveal_check_done: bool,
-    /// The shares of `[Δ]` received so far: evaluation points and shares.
-    pub reveal_check_shares: (Vec<FieldElement<F>>, Vec<FieldElement<F>>),
+    /// The shares of `[Δ]` received so far: evaluation points and shares
+    /// over `K`.
+    pub reveal_check_shares: (Vec<FieldElement<F>>, Vec<StatisticalElement<F>>),
 
     /// The two halves of verification run side by side; the output waits
     /// for both. `verification_finished` makes the handover run once.
@@ -101,20 +102,5 @@ impl<F: ProtocolField> VerificationState<F>{
         // For each multiplication tuple at this depth, we will assign the output share
         let entry = self.mult_tuples.entry(depth).or_insert_with(|| (Vec::new(), Vec::new(), Vec::new()));
         entry.2.extend(output_shares); // Add the shares of the output to the third vector
-    }
-
-    pub fn add_compression_level_state(&mut self, 
-        depth: usize, 
-        x_shares: Vec<Vec<FieldElement<F>>>, 
-        y_shares: Vec<Vec<FieldElement<F>>>, 
-        z_shares: Vec<FieldElement<F>>
-    ){
-        let entry = self.ex_compr_state.entry(depth).or_insert_with(|| ExComprState::<F>::new(depth) );
-        // Add the shares of x
-        entry.x_sharings.extend(x_shares);
-        // Add the shares of y
-        entry.y_sharings.extend(y_shares);
-        // Add the shares of z
-        entry.mult_sharings.extend(z_shares);
     }
 }
