@@ -1,6 +1,6 @@
 # A script to test quickly
 
-killall anonymous_broadcast bristol_circuit reveal_probe &> /dev/null
+killall anonymous_broadcast bristol_circuit reveal_probe erc20 &> /dev/null
 rm -rf /tmp/*.db &> /dev/null
 vals=(27000 27100 27200 27300)
 

@@ -8,6 +8,7 @@ members = [
     "apps/anonymous_broadcast",
     "apps/bristol_circuit",
     "apps/btx_setup",
+    "apps/erc20",
     "apps/reveal_probe",
     "velox",
     "config"
