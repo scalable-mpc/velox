@@ -121,26 +121,58 @@ Therefore, Velox is most suited for real-time performance at network speed, in w
 
 # Repository Structure
 
-This repository implements scalable anonymous broadcast using asynchronous Multi-Party Computation (MPC) with the Velox protocol. Here's a high-level overview of the directory structure:
+This repository implements the Velox asynchronous MPC engine and the applications built on it. Here's a high-level overview of the directory structure:
 
 ```
-mpc/
-├── fields/             # Finite-field arithmetic, polynomials, and GEMM (CPU/GPU)
-├── secret_sharing/     # Secret-sharing building blocks
-│   ├── acss_ab/       # Asynchronous Complete Secret Sharing with Abort
-│   ├── avid_ab/       # Asynchronous Verifiable Information Dispersal with Abort
-│   └── sh2t/          # Degree-2t sharing with Abort
+velox/
+├── fields/                   # Finite-field arithmetic (M31, M61 and extensions, prime fields), polynomials, GEMM (SIMD/CUDA)
+├── secret_sharing/           # Secret-sharing building blocks
+│   ├── acss_ab/              # Asynchronous Complete Secret Sharing with Abort
+│   │   └── src/protocol/     #   dealing (init, avss), CTRBC, AVID dispersal, RA, per-instance state
+│   ├── avid_ab/              # Asynchronous Verifiable Information Dispersal with Abort
+│   │   └── src/              #   protocol/ (init, echo, ready, state), handlers/, rs.rs (Reed–Solomon)
+│   └── sh2t/                 # Degree-2t sharing with Abort
+│       └── src/protocol/     #   dealing (init), CTRBC, AVID dispersal, RA, per-instance state
 │
-├── mpc/               # Main MPC protocols (multiplication, reveal, online phase, verification)
-├── planner/           # The Planner: comparison, min/max, truncation, fixed-point ops over the engine
-├── circuit/           # The .arith circuit IR (docs/CIRCUIT_FORMAT.md)
-├── apps/              # Applications, each a PlannerApplication with its own binary
-├── node/              # Executable node implementation and coordination logic
-├── benchmark/         # AWS benchmarking infrastructure and analysis tools
-├── testdata/          # Configuration files and test inputs for different node setups
-├── scripts/           # Execution scripts (test.sh for running protocols)
-├── logs/              # Runtime logs from protocol execution
-└── images/            # Project assets (logo, etc.)
+├── mpc/                      # The MPC engine: runs the protocol phases for a hosted Application
+│   └── src/
+│       ├── protocol/
+│       │   ├── rand_sharings/          # Preprocessing: random sharings, masks, random bits, per-depth reservation
+│       │   ├── multiplication/         # Linear, quadratic, weak and masked multiplication; output reconstruction
+│       │   ├── online_phase/           # Input dealing, depth scheduling, application reveals
+│       │   ├── public_reconstruction/  # Batched public opening shared by multiplication and reveal
+│       │   └── tuple_verification/     # Tuple compression, common coin, reveal check
+│       ├── handlers/         # Message and syncer handlers
+│       ├── context.rs        # Per-party engine state and constants
+│       ├── input.rs          # Reading parties' input files
+│       └── msg.rs, process_msg.rs      # Wire messages and their dispatch
+│
+├── planner/                  # The Planner: comparison, min/max, truncation, fixed-point ops over the engine
+│   ├── src/
+│   │   ├── api/              # engine.rs (the engine's Application trait), application.rs (PlannerApplication, Op)
+│   │   ├── ops/              # One file per op: add, mul, reveal, mask_reveal, compare, drelu, max, min, truncate, fixed_mul
+│   │   ├── primitives/       # edaBits, the carry-tree bitwise less-than, Mersenne-prime arithmetic
+│   │   ├── plan.rs           # Compiles op-depths into engine rounds
+│   │   └── planner.rs        # The Application the engine hosts, driving the PlannerApplication
+│   ├── tests/plaintext.rs    # The Planner against a plaintext engine
+│   └── README.md             # The Planner's API
+│
+├── apps/                     # Applications, each a PlannerApplication with its own binary (lib.rs + main.rs)
+│   ├── anonymous_broadcast/  # Butterfly mixing network over k messages
+│   ├── bristol_circuit/      # Evaluates any .arith circuit (parser.rs)
+│   ├── btx_setup/            # Batched threshold encryption setup (commitments.rs: shares lifted into the pairing groups)
+│   ├── erc20/                # Private ERC20 transfers with secure comparisons
+│   └── reveal_probe/         # End-to-end check of the public reveal
+│
+├── velox/                    # The engine as one dependency for applications: re-exports, CLI arguments, node launch, syncer
+├── circuit/                  # The .arith circuit IR (docs/CIRCUIT_FORMAT.md)
+├── config/                   # The config binary, which generates per-node configuration files
+├── benchmark/                # AWS benchmarking infrastructure and analysis tools
+├── testdata/                 # Node configurations (testdata/<n>), circuits, erc20 ledgers, party inputs
+├── scripts/                  # test.sh, test_btx.sh, and the bench_ops.py / bench_erc20.py benchmarks
+├── docs/                     # Circuit format, comparison design, and other design notes
+├── logs/                     # Runtime logs from protocol execution
+└── images/                   # Project assets (logo, etc.)
 ```
 
 ## Applications
@@ -155,6 +187,49 @@ run through `scripts/test.sh` (`APP_BIN=<name>`):
 | `btx_setup` | the key setup of batched threshold encryption: shares of `τ¹ … τ^{2B}`; with `--delta`, Policharla's indexed variant (shares of `sk·τ^d`, `sk⁻¹·τ^i`, `β`) | any (`bls381` default) |
 | `erc20` | private ERC20 payments: secret balances and amounts, every transfer checked for funds with secure comparisons (`apps/erc20/src/lib.rs`) | `m61base`, `m31base` |
 | `reveal_probe` | an end-to-end check of the public reveal | any |
+
+### Running each application
+
+Every application runs through `scripts/test.sh {num_parties} {label} {comp} [rand_batches]`,
+except `btx_setup`, which has `scripts/test_btx.sh`. Environment variables pick
+the application. The config directory defaults to `testdata/<num_parties>`
+(`testdata/10` ships with the repository; generate others with the `config`
+binary as in step 5, using `--target testdata/<n>/`). `comp` must be at least 2;
+use 10.
+
+```bash
+# anonymous_broadcast (default; field m61). The 2nd argument is --messages, the anonymity set size k.
+./scripts/test.sh 10 256 10
+
+# bristol_circuit (runs when CIRCUIT is set; field m61base by default). The 2nd argument only labels the logs.
+CIRCUIT=testdata/circuits/comparison.arith ./scripts/test.sh 10 cmp 10
+FIELD=m31base CIRCUIT=testdata/circuits/simple_mul.arith ./scripts/test.sh 10 mul 10
+
+# erc20 (m61base or m31base; set FIELD, since test.sh otherwise defaults to m61)
+APP_BIN=erc20 APP_ARG="--ledger testdata/erc20/example.ledger" FIELD=m61base ./scripts/test.sh 10 erc20 10
+
+# reveal_probe (any field)
+APP_BIN=reveal_probe APP_ARG="--values 4" ./scripts/test.sh 10 probe 10
+
+# btx_setup (field bls381 by default): {num_parties} {batch_size B} {comp}
+./scripts/test_btx.sh 10 16 10
+DELTA=4 ./scripts/test_btx.sh 10 16 10    # indexed variant, delta <= B
+```
+
+Each party reads its inputs from `testdata/inputs/`: `input_<id>.txt` for
+anonymous broadcast, `circuit_input_<id>.txt` for circuits, and
+`erc20_input_<id>.txt` for erc20 (balances, then transfer amounts). Anonymous
+broadcast and circuits fall back to random inputs when a file is missing, and
+erc20 falls back to zeros. `TESTDIR`, `TYPE` (build profile, default `release`) and
+`FIELD` override the defaults.
+
+The syncer writes phase latencies to `logs/syncer_n_<n>_<label>_<comp>.log`
+(`logs/syncer_btx_n_<n>_<B>_<comp>.log` for btx_setup), and each party writes
+its output to `logs/party-<i>-...log`. `test.sh` kills the previous run's
+processes, but its kill list leaves out `btx_setup`, which only `test_btx.sh`
+kills. If ports are still held, free them as in step 9.
+`scripts/bench_ops.py` and `scripts/bench_erc20.py` benchmark circuits and
+erc20 on the 10-party fixture.
 
 Secure comparison, truncation and fixed-point multiplication (issue #5) are
 described in [`docs/comparison.md`](docs/comparison.md); the Planner's API in
