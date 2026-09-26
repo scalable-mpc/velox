@@ -192,9 +192,7 @@ mkdir -p testdata/10
 ./target/release/config --base_port 15000 --client_base_port 19000 --client_run_port 19500 --NumNodes 10 --blocksize 100 --delay 100 --target testdata/10/ --local true
 ```
 
-Input files are not checked in either. Generate anonymous broadcast's inputs as
-in step 6, and erc20's with the following, which gives each party 100 random
-values in `[0, 2^20)`:
+Generate anonymous broadcast's inputs as in step 6, and erc20's with the following, which gives each party 100 random values in `[0, 2^20)`:
 
 ```bash
 python3 -c "import random
