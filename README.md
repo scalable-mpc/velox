@@ -26,7 +26,7 @@ We describe the steps to run this artifact.
 2. This artifact has been run and tested on Ubuntu OS (versions 20,22,24) following the Debian distro. However, we are unaware of any issues that would prevent this artifact from running on Fedora distros like CentOS and Red Hat Linux. 
 
 ## Rust installation and Cargo setup
-The repository uses the `Cargo` build tool. The compatibility between dependencies has been tested for Rust version `1.97.0`.
+The repository uses the `Cargo` build tool. The compatibility between dependencies has been tested for Rust version `1.97.1`, the version pinned in `rust-toolchain.toml`.
 
 3. **Install Rust and Cargo**: Run the set of following commands to install the toolchain required to compile code written in Rust and create binary executable files. 
 ```bash
@@ -39,66 +39,63 @@ sudo apt-get -y install curl
 # Install rust (non-interactive)
 curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source $HOME/.cargo/env
-rustup install 1.97.0
-rustup override set 1.97.0
+rustup install 1.97.1
 ```
 4. Build the repository using the following command. The command should be run in the directory containing the `Cargo.toml` file. 
 ```bash
 cargo build --release
-mkdir logs
+mkdir -p logs
 ```
 If the build fails because of lack of `lgmp` files, install the `libgmp3-dev` dependency using the following command and try again.
 ```
 sudo apt-get install libgmp3-dev
 ```
 
-5. **Generate Configuration Files**: Next, generate configuration files for nodes in the system using the following command. Run the following commands to create configuration files and necessary directories for logs storage. 
+5. **Generate Configuration Files**: Configuration files are not checked in; generate them for each number of parties `n` you want to run. The scripts look for them in `testdata/<n>/`, so name the directory after `n`. The command also writes `ip_file`, the parties' addresses, at the repository root.
 ```bash
-mkdir testdata/hyb_4
-mkdir logs/
-./target/release/config --base_port 15000 --client_base_port 19000 --client_run_port 19500 --NumNodes 4 --blocksize 100 --delay 100 --target testdata/hyb_4/ --local true
+mkdir -p testdata/4
+./target/release/config --base_port 15000 --client_base_port 19000 --client_run_port 19500 --NumNodes 4 --blocksize 100 --delay 100 --target testdata/4/ --local true
 ```
 
 ## Running the code
-6. **Generate Inputs**: Generate files containing the inputs of each party. These files need to be placed in `testdata/inputs/` directory. A sample code in `python` has been provided to automatically generate these inputs. Navigate to the `testdata/inputs/` directory and run the following command. 
+6. **Generate Inputs**: Generate files containing the inputs of each party. These files need to be placed in `testdata/inputs/` directory. A sample code in `python` has been provided to automatically generate these inputs. Run the following from the repository root. 
 ```bash
-cd testdata/inputs/
-python3 inp_gen.py
+cd testdata/inputs/ && python3 inp_gen.py && cd ../..
 ```
 This command generates input text files of the form `input_{$i}.txt` in the `testdata/inputs/` folder. 
 
-7. **Run the protocol**: After generating the configuration files, run the script `test.sh` in the scripts folder.
+7. **Run the protocol**: After generating the configuration files, run the script `test.sh` in the scripts folder from the repository root.
 The protocol takes the following command line arguments.
-- num_parties: The number of parties $n$ participating in the protocol. 
+- num_parties: The number of parties $n$ participating in the protocol. Its configuration must be in `testdata/{num_parties}/`.
 - num_messages: The anonymity set size `k`, which corresponds to the number of inputs to mix.  
-- batchsize: ACSS parameter deciding number of secrets to be batched within each ACSS instance. 
-- compression_factor: The degree of the polynomial in the multiplication tuple verification phase. A higher degree implies lower round complexity but higher computation complexity. 
+- compression_factor: The degree of the polynomial in the multiplication tuple verification phase. A higher degree implies lower round complexity but higher computation complexity. It must be at least 2.
+- rand_batches (optional): The number of sub-batches each group of random sharings is dealt in. More sub-batches lower peak memory at large `k`.
 ```bash
-./scripts/test.sh {num_parties} {num_messages} {batchsize} {compression_factor}
+./scripts/test.sh {num_parties} {num_messages} {compression_factor} [rand_batches]
 ```
 Substitute `{num_parties}` with the number of parties and `{num_messages}` with the `k` value, where `k` is the number of messages.  
 Example values include `k=256,512,1024...`. 
 An example run can be the following. 
 ```bash
-./scripts/test.sh 4 256 1000 10
+./scripts/test.sh 4 256 10
 ```
 This script starts `n=4` parties. 
-Each party $i$ reads the first `k/n` inputs from its input file `testdata/inputs/inputs_{$i}.txt`. 
+Each party $i$ reads the first `k/n` inputs from its input file `testdata/inputs/input_{$i}.txt`. 
 Then, parties start the mixing protocol with `k` inputs. 
 
-**Note: Each line in the input file must be less than 31 bytes. This is because the protocol converts the input into a finite field element. The code currently operates on a 254-bit finite field, so if the input is bigger, the encoding will fail.**
+**Note: Each line in the input file must be at most 28 bytes. This is because the protocol encodes each input into one element of the default field (`m61`, four Mersenne-61 limbs of 7 bytes each). `inp_gen.py` respects this limit.**
 
-8. **Check results in logs**: The termination latencies of each protocol phase are logged into the `syncer-{}.log` file in logs directory. 
-Please wait for a minute before checking the logfile.  
-The output of individual parties can be found in individual log files `party-0-{}.log,...`. 
-The `syncer-{}.log` file will contain phase-wise latencies of the protocol. 
+8. **Check results in logs**: The termination latencies of each protocol phase are logged into the syncer's log file, `logs/syncer_n_{num_parties}_{num_messages}_{compression_factor}.log`. 
+A run with `k=256` finishes within seconds.  
+The output of individual parties can be found in individual log files `logs/party-{i}-n_{num_parties}_{num_messages}_{compression_factor}.log`. 
+The syncer's log file will contain phase-wise latencies of the protocol. 
 As mentioned in the paper, the protocol contains four phases: (a) Preprocessing, (b) Online, (c) Verification, and (d) Output. 
 The `syncer` module records the latency (in milliseconds) of each phase and will print it out to the log file in the following format. 
 ```
-INFO [node::syncer] All n nodes completed the protocol for ID: 1 with latency [2961, 3241, 3457], status {"Preprocessing"}, and value {[]}
+INFO [velox::syncer] All n nodes completed the protocol for ID: 1 with latency [862, 862, 863], status {"output"}, and value {[...]}
 ```
 The array of latencies indicate the time at which each party terminated the protocol. 
-In the output phase, the `syncer-{}.log` file will also contain the output of the protocol - a set of shuffled messages input to the protocol. 
+In the output phase, the syncer's log file will also contain the output of the protocol - a set of shuffled messages input to the protocol. 
 
 9. **Kill processes**: Before running the protocol with another configuration, kill all processes running on the requested ports. 
 ```bash
@@ -183,11 +180,28 @@ run through `scripts/test.sh` (`APP_BIN=<name>`):
 ### Running each application
 
 Every application runs through `scripts/test.sh {num_parties} {label} {comp} [rand_batches]`,
-except `btx_setup`, which has `scripts/test_btx.sh`. Environment variables pick
-the application. The config directory defaults to `testdata/<num_parties>`
-(`testdata/10` ships with the repository; generate others with the `config`
-binary as in step 5, using `--target testdata/<n>/`). `comp` must be at least 2;
-use 10.
+except `btx_setup`, which has `scripts/test_btx.sh`. Run them from the repository
+root, after building (step 4). Environment variables pick the application.
+`comp` must be at least 2; use 10.
+
+The commands below use `n=10` parties. Generate that configuration first, as in
+step 5; the scripts read it from `testdata/10/`:
+
+```bash
+mkdir -p testdata/10
+./target/release/config --base_port 15000 --client_base_port 19000 --client_run_port 19500 --NumNodes 10 --blocksize 100 --delay 100 --target testdata/10/ --local true
+```
+
+Input files are not checked in either. Generate anonymous broadcast's inputs as
+in step 6, and erc20's with the following, which gives each party 100 random
+values in `[0, 2^20)`:
+
+```bash
+python3 -c "import random
+for i in range(10): open(f'testdata/inputs/erc20_input_{i}.txt', 'w').write(''.join(f'{random.randrange(1 << 20)}\n' for _ in range(100)))"
+```
+
+Then run any application:
 
 ```bash
 # anonymous_broadcast (default; field m61). The 2nd argument is --messages, the anonymity set size k.
@@ -209,19 +223,31 @@ DELTA=4 ./scripts/test_btx.sh 10 16 10    # indexed variant, delta <= B
 ```
 
 Each party reads its inputs from `testdata/inputs/`: `input_<id>.txt` for
-anonymous broadcast, `circuit_input_<id>.txt` for circuits, and
-`erc20_input_<id>.txt` for erc20 (balances, then transfer amounts). Anonymous
-broadcast and circuits fall back to random inputs when a file is missing, and
-erc20 falls back to zeros. `TESTDIR`, `TYPE` (build profile, default `release`) and
-`FIELD` override the defaults.
+anonymous broadcast, `circuit_input_<id>.txt` for circuits (one number per
+line), and `erc20_input_<id>.txt` for erc20 (its accounts' balances, then the
+amounts of the transfers they send, one number per line). Anonymous broadcast
+and circuits fall back to random inputs when a file is missing, and erc20 falls
+back to zeros. `TESTDIR` (config directory), `TYPE` (build profile, default
+`release`) and `FIELD` override the defaults.
 
-The syncer writes phase latencies to `logs/syncer_n_<n>_<label>_<comp>.log`
-(`logs/syncer_btx_n_<n>_<B>_<comp>.log` for btx_setup), and each party writes
-its output to `logs/party-<i>-...log`. `test.sh` kills the previous run's
-processes, but its kill list leaves out `btx_setup`, which only `test_btx.sh`
-kills. If ports are still held, free them as in step 9.
+Each run finishes within seconds. The syncer writes phase latencies to
+`logs/syncer_n_<n>_<label>_<comp>.log` (`logs/syncer_btx_n_<n>_<B>_<comp>.log`
+for btx_setup); a run is done when that log reports `status {"output"}`. Each
+party writes its own log to `logs/party-<i>-...log`, where the results are:
+
+| application | what to look for in a party's log |
+|---|---|
+| `anonymous_broadcast` | `Broadcast output:` the shuffled messages (also in the syncer's log) |
+| `bristol_circuit` | `Reconstructed <m> output wires:` the circuit's output values |
+| `erc20` | `Erc20: <m> final balances:` every account's balance after the transfers |
+| `reveal_probe` | `reveal_probe: <k> reveals verified` |
+| `btx_setup` | `BtxSetup:` lines with the party's shares (with `DELTA`, of `sk·τ^d`, `sk⁻¹·τ^i` and `β`) and its commitments `g1^(…)`, `g2^(…)` to them |
+
+`test.sh` kills the previous run's processes, but its kill list leaves out
+`btx_setup`, which only `test_btx.sh` kills. If ports are still held, free them
+as in step 9.
 `scripts/bench_ops.py` and `scripts/bench_erc20.py` benchmark circuits and
-erc20 on the 10-party fixture.
+erc20 on the 10-party configuration.
 
 Secure comparison, truncation and fixed-point multiplication (issue #5) are
 described in [`docs/comparison.md`](docs/comparison.md); the Planner's API in
