@@ -26,7 +26,7 @@ We describe the steps to run this artifact.
 2. This artifact has been run and tested on Ubuntu OS (versions 20,22,24) following the Debian distro. However, we are unaware of any issues that would prevent this artifact from running on Fedora distros like CentOS and Red Hat Linux. 
 
 ## Rust installation and Cargo setup
-The repository uses the `Cargo` build tool. The compatibility between dependencies has been tested for Rust version `1.83.0`.
+The repository uses the `Cargo` build tool. The compatibility between dependencies has been tested for Rust version `1.97.0`.
 
 3. **Install Rust and Cargo**: Run the set of following commands to install the toolchain required to compile code written in Rust and create binary executable files. 
 ```bash
@@ -39,8 +39,8 @@ sudo apt-get -y install curl
 # Install rust (non-interactive)
 curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source $HOME/.cargo/env
-rustup install 1.83.0
-rustup override set 1.83.0
+rustup install 1.97.0
+rustup override set 1.97.0
 ```
 4. Build the repository using the following command. The command should be run in the directory containing the `Cargo.toml` file. 
 ```bash
@@ -125,35 +125,27 @@ This repository implements the Velox asynchronous MPC engine and the application
 
 ```
 velox/
-├── fields/                   # Finite-field arithmetic (M31, M61 and extensions, prime fields), polynomials, GEMM (SIMD/CUDA)
+├── fields/                   # Finite-field arithmetic (M31, M61 and extensions, prime fields), polynomials, GEMM (AVX SIMD/CUDA)
 ├── secret_sharing/           # Secret-sharing building blocks
 │   ├── acss_ab/              # Asynchronous Complete Secret Sharing with Abort
-│   │   └── src/protocol/     #   dealing (init, avss), CTRBC, AVID dispersal, RA, per-instance state
 │   ├── avid_ab/              # Asynchronous Verifiable Information Dispersal with Abort
-│   │   └── src/              #   protocol/ (init, echo, ready, state), handlers/, rs.rs (Reed–Solomon)
 │   └── sh2t/                 # Degree-2t sharing with Abort
-│       └── src/protocol/     #   dealing (init), CTRBC, AVID dispersal, RA, per-instance state
 │
 ├── mpc/                      # The MPC engine: runs the protocol phases for a hosted Application
-│   └── src/
-│       ├── protocol/
-│       │   ├── rand_sharings/          # Preprocessing: random sharings, masks, random bits, per-depth reservation
-│       │   ├── multiplication/         # Linear, quadratic, weak and masked multiplication; output reconstruction
-│       │   ├── online_phase/           # Input dealing, depth scheduling, application reveals
-│       │   ├── public_reconstruction/  # Batched public opening shared by multiplication and reveal
-│       │   └── tuple_verification/     # Tuple compression, common coin, reveal check
-│       ├── handlers/         # Message and syncer handlers
-│       ├── context.rs        # Per-party engine state and constants
-│       ├── input.rs          # Reading parties' input files
-│       └── msg.rs, process_msg.rs      # Wire messages and their dispatch
+│   ├── protocol/
+│   │   ├── rand_sharings/          # Preprocessing: random sharings, masks, random bits, per-depth reservation
+│   │   ├── multiplication/         # Linear, quadratic, weak and masked multiplication; output reconstruction
+│   │   ├── online_phase/           # Input dealing, depth scheduling, application reveals
+│   │   ├── public_reconstruction/  # Batched public opening shared by multiplication and reveal
+│   │   └── tuple_verification/     # Tuple compression, common coin, reveal check
+│   └── context.rs            # Per-party engine state and constants
 │
 ├── planner/                  # The Planner: comparison, min/max, truncation, fixed-point ops over the engine
-│   ├── src/
-│   │   ├── api/              # engine.rs (the engine's Application trait), application.rs (PlannerApplication, Op)
-│   │   ├── ops/              # One file per op: add, mul, reveal, mask_reveal, compare, drelu, max, min, truncate, fixed_mul
-│   │   ├── primitives/       # edaBits, the carry-tree bitwise less-than, Mersenne-prime arithmetic
-│   │   ├── plan.rs           # Compiles op-depths into engine rounds
-│   │   └── planner.rs        # The Application the engine hosts, driving the PlannerApplication
+│   ├── api/                  # engine.rs (the engine's Application trait), application.rs (PlannerApplication, Op)
+│   ├── ops/                  # One file per op: add, mul, reveal, mask_reveal, compare, drelu, max, min, truncate, fixed_mul
+│   ├── primitives/           # edaBits, the carry-tree bitwise less-than, Mersenne-prime arithmetic
+│   ├── plan.rs               # Compiles op-depths into engine rounds
+│   ├── planner.rs            # The Application the engine hosts, driving the PlannerApplication
 │   ├── tests/plaintext.rs    # The Planner against a plaintext engine
 │   └── README.md             # The Planner's API
 │
