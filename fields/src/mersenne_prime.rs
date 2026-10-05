@@ -30,9 +30,9 @@
 //! neither fact above holds for them.
 //!
 //! The supertrait is lambdaworks's [`IsPrimeField`], not `ProtocolField`, so
-//! the trait is a statement about the field alone. The Mersenne-31 base field
-//! implements it today without a `ProtocolField` impl; a consumer that needs
-//! both writes `F: ProtocolField + MersennePrimeField`.
+//! the trait is a statement about the field alone; a consumer that needs both
+//! writes `F: ProtocolField + MersennePrimeField`. It is implemented for the
+//! Mersenne-31, Mersenne-61 and Mersenne-127 base fields.
 
 use lambdaworks_math::field::{element::FieldElement, traits::IsPrimeField};
 
@@ -43,24 +43,24 @@ pub trait MersennePrimeField: IsPrimeField {
     const BITS: usize;
 
     /// The modulus, derived from [`BITS`](Self::BITS) so an implementor cannot
-    /// claim a bit length its prime does not have. `u64` covers every
-    /// Mersenne prime up to `2^63 − 1`, which is every one this crate could
-    /// host in a machine word.
-    const MODULUS: u64 = (1u64 << Self::BITS) - 1;
+    /// claim a bit length its prime does not have. `u128` because the
+    /// trait has one integer type for every implementor, and Mersenne-127
+    /// does not fit a `u64`; the 31- and 61-bit fields widen at no cost.
+    const MODULUS: u128 = (1u128 << Self::BITS) - 1;
 
     /// The unique integer in `[0, p)` that `elem` represents.
     ///
     /// Must go through the field's canonical form, not its raw storage: an
     /// implementation that lets the internal word hold `p` as a second
     /// encoding of zero would otherwise hand the bit layer `0b11…1` for `0`.
-    fn to_canonical_u64(elem: &FieldElement<Self>) -> u64;
+    fn to_canonical_u128(elem: &FieldElement<Self>) -> u128;
 
     /// Bit `i` of the canonical representative, `0` for `i ≥ BITS`.
     fn bit(elem: &FieldElement<Self>, i: usize) -> u64 {
         if i >= Self::BITS {
             0
         } else {
-            (Self::to_canonical_u64(elem) >> i) & 1
+            ((Self::to_canonical_u128(elem) >> i) & 1) as u64
         }
     }
 }

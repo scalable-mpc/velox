@@ -14,7 +14,7 @@ use rand::random;
 use rand_chacha::ChaCha20Rng;
 use rand_core::RngCore;
 
-use crate::protocol_field::ProtocolField;
+use crate::{mersenne_prime::MersennePrimeField, protocol_field::ProtocolField};
 
 use super::{
     extension::{Fp2E, Mersenne127Degree2ExtensionField},
@@ -135,6 +135,12 @@ impl ProtocolField for Mersenne127Field {
 
     fn embed_ext(elem: &FieldElement<Self>) -> FieldElement<Self::Ext> {
         Fp2E::new(<Self as IsSubFieldOf<Mersenne127Degree2ExtensionField>>::embed(*elem.value()))
+    }
+
+    const MERSENNE_BITS: Option<usize> = Some(<Self as MersennePrimeField>::BITS);
+
+    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u128> {
+        Some(<Self as MersennePrimeField>::to_canonical_u128(elem))
     }
 
     /// 127 bits is enough for the statistical checks: verification runs in
@@ -262,6 +268,15 @@ impl ProtocolField for Mersenne127Degree2ExtensionField {
 
     fn decode_ascii(elem: &FieldElement<Self>) -> String {
         decode_ascii_limbs(2, &<Self as ProtocolField>::to_bytes_be(elem))
+    }
+}
+
+impl MersennePrimeField for Mersenne127Field {
+    const BITS: usize = 127;
+
+    /// Every operation leaves the word fully reduced, so it is the integer.
+    fn to_canonical_u128(elem: &FieldElement<Self>) -> u128 {
+        elem.value().0
     }
 }
 

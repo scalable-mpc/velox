@@ -190,8 +190,8 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
 
     /// The integer in `[0, p)` that `elem` represents, when the field is a
     /// Mersenne prime field; `None` otherwise. Agrees with
-    /// `MersennePrimeField::to_canonical_u64` wherever both exist.
-    fn mersenne_canonical(_elem: &FieldElement<Self>) -> Option<u64> {
+    /// `MersennePrimeField::to_canonical_u128` wherever both exist.
+    fn mersenne_canonical(_elem: &FieldElement<Self>) -> Option<u128> {
         None
     }
 

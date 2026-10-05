@@ -13,7 +13,7 @@ use crate::mersenne_prime::MersennePrimeField;
 impl MersennePrimeField for Mersenne31Field {
     const BITS: usize = 31;
 
-    fn to_canonical_u64(elem: &lambdaworks_math::field::element::FieldElement<Self>) -> u64 {
-        <Self as lambdaworks_math::field::traits::IsPrimeField>::representative(elem.value()) as u64
+    fn to_canonical_u128(elem: &lambdaworks_math::field::element::FieldElement<Self>) -> u128 {
+        <Self as lambdaworks_math::field::traits::IsPrimeField>::representative(elem.value()) as u128
     }
 }

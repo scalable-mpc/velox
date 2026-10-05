@@ -197,8 +197,8 @@ impl ProtocolField for Mersenne61Field {
 
     const MERSENNE_BITS: Option<usize> = Some(<Self as MersennePrimeField>::BITS);
 
-    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u64> {
-        Some(<Self as MersennePrimeField>::to_canonical_u64(elem))
+    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u128> {
+        Some(<Self as MersennePrimeField>::to_canonical_u128(elem))
     }
 
     /// Four base elements are the four coefficients of one Fp4 element.
@@ -491,7 +491,7 @@ impl MersennePrimeField for Mersenne61Field {
     /// Through `representative`, not `value()`: the internal word may hold `p`
     /// itself as a non-canonical zero (`weak_reduce` leaves it, `as_representative`
     /// folds it).
-    fn to_canonical_u64(elem: &FieldElement<Self>) -> u64 {
-        <Self as lambdaworks_math::field::traits::IsPrimeField>::representative(elem.value())
+    fn to_canonical_u128(elem: &FieldElement<Self>) -> u128 {
+        <Self as lambdaworks_math::field::traits::IsPrimeField>::representative(elem.value()) as u128
     }
 }

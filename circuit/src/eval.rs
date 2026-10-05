@@ -21,7 +21,7 @@ use crate::{Circuit, GateType};
 /// The signed integer a field element stands for: `x` for `x ≤ (p−1)/2`,
 /// `x − p` above.
 pub fn to_signed<F: MersennePrimeField>(e: &FieldElement<F>) -> i128 {
-    let c = F::to_canonical_u64(e) as i128;
+    let c = F::to_canonical_u128(e) as i128;
     let p = F::MODULUS as i128;
     if c <= (p - 1) / 2 { c } else { c - p }
 }

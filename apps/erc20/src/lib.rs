@@ -306,11 +306,11 @@ impl<F: ProtocolField + MersennePrimeField> PlannerApplication<F> for Erc20<F> {
     }
 
     async fn on_output(&mut self, outputs: Vec<FieldElement<F>>) -> Result<()> {
-        let p = (1i128 << <F as MersennePrimeField>::BITS) - 1;
+        let p = <F as MersennePrimeField>::MODULUS as i128;
         let signed: Vec<i128> = outputs
             .iter()
             .map(|e| {
-                let c = <F as MersennePrimeField>::to_canonical_u64(e) as i128;
+                let c = <F as MersennePrimeField>::to_canonical_u128(e) as i128;
                 if c <= (p - 1) / 2 { c } else { c - p }
             })
             .collect();
@@ -333,7 +333,7 @@ mod tests {
 
     fn signed(e: &FieldElement<F>) -> i128 {
         let p = (1i128 << 61) - 1;
-        let c = <F as MersennePrimeField>::to_canonical_u64(e) as i128;
+        let c = <F as MersennePrimeField>::to_canonical_u128(e) as i128;
         if c <= (p - 1) / 2 { c } else { c - p }
     }
 

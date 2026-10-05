@@ -220,7 +220,7 @@ impl<F: ProtocolField> Op<F> {
     /// and `None` over any other.
     pub fn validate(&self, ell: Option<usize>) -> Result<()> {
         if self.op_type().needs_mersenne() && ell.is_none() {
-            bail!("{:?} needs a Mersenne prime field (m61base or m31base)", self.op_type());
+            bail!("{:?} needs a Mersenne prime field (m61base, m31base or m127base)", self.op_type());
         }
         let pair = |l: usize, r: usize, what: &str| -> Result<()> {
             if l != r {

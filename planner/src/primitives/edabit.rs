@@ -34,7 +34,7 @@ impl<F: ProtocolField> EdaBit<F> {
         let value = bits
             .iter()
             .enumerate()
-            .fold(FieldElement::<F>::zero(), |acc, (i, b)| acc + b * FieldElement::<F>::from(1u64 << i));
+            .fold(FieldElement::<F>::zero(), |acc, (i, b)| acc + b * mersenne::pow2::<F>(i));
         Ok(Self { value, bits })
     }
 
@@ -50,10 +50,10 @@ impl<F: ProtocolField> EdaBit<F> {
         assert!(d < ell, "truncation by {} bits of an {}-bit value", d, ell);
         let mut acc = FieldElement::<F>::zero();
         for i in d..ell {
-            acc = acc + &self.bits[i] * FieldElement::<F>::from(1u64 << (i - d));
+            acc = acc + &self.bits[i] * mersenne::pow2::<F>(i - d);
         }
         for i in (ell - d)..ell {
-            acc = acc + self.msb() * FieldElement::<F>::from(1u64 << i);
+            acc = acc + self.msb() * mersenne::pow2::<F>(i);
         }
         acc
     }
@@ -126,23 +126,23 @@ impl<F: ProtocolField> EdaBitPool<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fields::{mersenne_31::Mersenne31Field, Mersenne61Field};
+    use fields::{mersenne_31::Mersenne31Field, Mersenne127Field, Mersenne61Field};
 
-    fn signs_of<F: ProtocolField>(r: u64) -> Vec<FieldElement<F>> {
+    fn signs_of<F: ProtocolField>(r: u128) -> Vec<FieldElement<F>> {
         (0..mersenne::ell::<F>())
             .map(|i| if (r >> i) & 1 == 1 { FieldElement::<F>::one() } else { -FieldElement::<F>::one() })
             .collect()
     }
 
     /// Plaintext `Trunc_d` of a field element read as a signed integer.
-    fn trunc_ref<F: ProtocolField>(r: u64, d: usize) -> u64 {
-        let p = (1u64 << mersenne::ell::<F>()) - 1;
+    fn trunc_ref<F: ProtocolField>(r: u128, d: usize) -> u128 {
+        let p = (1u128 << mersenne::ell::<F>()) - 1;
         if r <= (p - 1) / 2 { r >> d } else { (p - ((p - r) >> d)) % p }
     }
 
     fn check<F: ProtocolField>() {
-        let p = (1u64 << mersenne::ell::<F>()) - 1;
-        for r in [0u64, 1, 5, p / 2, p / 2 + 1, p - 2, p - 1] {
+        let p = (1u128 << mersenne::ell::<F>()) - 1;
+        for r in [0u128, 1, 5, p / 2, p / 2 + 1, p - 2, p - 1] {
             let e = EdaBit::<F>::from_signs(&signs_of::<F>(r)).unwrap();
             assert_eq!(mersenne::canonical::<F>(&e.value), r % p, "value of r={r}");
             for i in 0..mersenne::ell::<F>() {
@@ -162,6 +162,7 @@ mod tests {
     fn bits_and_truncation_match_integers() {
         check::<Mersenne61Field>();
         check::<Mersenne31Field>();
+        check::<Mersenne127Field>();
     }
 
     #[test]

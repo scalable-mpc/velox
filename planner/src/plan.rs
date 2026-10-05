@@ -73,7 +73,7 @@ impl Plan {
             }
             if params.op_type.needs_mersenne() && ell.is_none() {
                 bail!(
-                    "op-depth {} declares {:?}, which needs a Mersenne prime field (m61base or m31base)",
+                    "op-depth {} declares {:?}, which needs a Mersenne prime field (m61base, m31base or m127base)",
                     index + 1,
                     params.op_type
                 );

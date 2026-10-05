@@ -41,18 +41,6 @@ impl Mersenne127Field {
         }
     }
 
-    /// Reduces the 254-bit product `a1b1·2^128 + mid·2^64 + a0b0` of two
-    /// elements split into 64-bit halves (`a = a1·2^64 + a0`): split it at
-    /// bit 127 as `H·2^127 + L`, and `H + L` is the product mod p.
-    #[inline(always)]
-    fn fold_product(a0b0: u128, mid: u128, a1b1: u128) -> M127 {
-        let (lo, carry) = a0b0.overflowing_add(mid << 64);
-        let hi = a1b1 + (mid >> 64) + carry as u128;
-        // The product is below 2^254, so `hi < 2^126` and the shift is safe.
-        let high_part = (hi << 1) | (lo >> 127);
-        Self::reduce((lo & MERSENNE_127_PRIME_FIELD_ORDER) + high_part)
-    }
-
     /// `x^(2^k)`: `k` squarings.
     #[inline(always)]
     fn square_times(x: &M127, k: u32) -> M127 {
@@ -69,22 +57,22 @@ impl IsField for Mersenne127Field {
         Self::reduce(a.0 + b.0)
     }
 
-    /// The 254-bit product from four 64×64-bit products, then the fold.
+    /// The 254-bit product from four 64×64-bit products, then the fold:
+    /// with the product split at bit 127 as `H·2^127 + L`, it is `H + L`
+    /// mod p. Squaring uses this too; a dedicated square (three products)
+    /// measured no faster, as LLVM already shares the cross product.
     #[inline(always)]
     fn mul(a: &M127, b: &M127) -> M127 {
         let (a0, a1) = (a.0 as u64 as u128, a.0 >> 64);
         let (b0, b1) = (b.0 as u64 as u128, b.0 >> 64);
         // a1, b1 < 2^63, so each cross product is below 2^127 and their sum
         // fits a `u128`.
-        Self::fold_product(a0 * b0, a0 * b1 + a1 * b0, a1 * b1)
-    }
-
-    /// Three 64×64-bit products instead of `mul`'s four: the cross product
-    /// `a0·a1` is computed once and doubled (`< 2^128`, since `a1 < 2^63`).
-    #[inline(always)]
-    fn square(a: &M127) -> M127 {
-        let (a0, a1) = (a.0 as u64 as u128, a.0 >> 64);
-        Self::fold_product(a0 * a0, (a0 * a1) << 1, a1 * a1)
+        let mid = a0 * b1 + a1 * b0;
+        let (lo, carry) = (a0 * b0).overflowing_add(mid << 64);
+        let hi = a1 * b1 + (mid >> 64) + carry as u128;
+        // The product is below 2^254, so `hi < 2^126` and the shift is safe.
+        let high_part = (hi << 1) | (lo >> 127);
+        Self::reduce((lo & MERSENNE_127_PRIME_FIELD_ORDER) + high_part)
     }
 
     #[inline(always)]

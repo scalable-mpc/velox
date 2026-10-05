@@ -4,16 +4,16 @@
 //! polynomial): an engine where `Multiply` is the product, `Reveal` the
 //! identity and `MaskedMultiply` is `x·y + mask` exercises every line of the
 //! Planner except the network. Each op is checked against its integer
-//! reference, at ℓ = 61 and ℓ = 31.
+//! reference, at ℓ = 61, 31 and 127.
 
 use std::collections::VecDeque;
 
 use anyhow::Result;
 use planner::api::engine::{Application, DepthInput, RandomWireShares};
 use async_trait::async_trait;
-use fields::{mersenne_31::Mersenne31Field, MersennePrimeField, Mersenne61Field, ProtocolField};
+use fields::{mersenne_31::Mersenne31Field, Mersenne127Field, MersennePrimeField, Mersenne61Field, ProtocolField};
 use lambdaworks_math::field::element::FieldElement;
-use planner::{OpParams, Op, OpDepthInput, OpType, OpResult, Planner, PlannerApplication, PlannerCounts};
+use planner::{primitives::mersenne::from_u128, OpParams, Op, OpDepthInput, OpType, OpResult, Planner, PlannerApplication, PlannerCounts};
 
 type E<F> = FieldElement<F>;
 
@@ -22,15 +22,13 @@ type E<F> = FieldElement<F>;
 // ---------------------------------------------------------------------------
 
 fn from_signed<F: ProtocolField + MersennePrimeField>(v: i128) -> E<F> {
-    if v >= 0 {
-        E::<F>::from(v as u64)
-    } else {
-        -E::<F>::from((-v) as u64)
-    }
+    let magnitude = from_u128::<F>(v.unsigned_abs());
+    if v >= 0 { magnitude } else { -magnitude }
 }
 
+/// `p < 2^127`, so the canonical value and `p` both fit an `i128`.
 fn to_signed<F: ProtocolField + MersennePrimeField>(e: &E<F>) -> i128 {
-    let c = F::to_canonical_u64(e) as i128;
+    let c = F::to_canonical_u128(e) as i128;
     let p = F::MODULUS as i128;
     if c <= (p - 1) / 2 { c } else { c - p }
 }
@@ -49,9 +47,11 @@ impl Rng {
         self.0 ^= self.0 << 17;
         self.0
     }
-    /// Uniform in `[-bound, bound)`.
+    /// Uniform in `[-bound, bound)`, from two draws so that the 127-bit
+    /// field's domain (`bound = 2^125`) is covered.
     fn signed(&mut self, bound: i128) -> i128 {
-        (self.next() as i128 % (2 * bound)) - bound
+        let wide = ((self.next() as u128) << 64) | self.next() as u128;
+        (wide % (2 * bound) as u128) as i128 - bound
     }
 }
 
@@ -216,7 +216,8 @@ fn comparison_family<F: ProtocolField + MersennePrimeField>(pairs: Vec<(i128, i1
 fn comparison_family_exhaustive_on_small_values() {
     let pairs: Vec<(i128, i128)> = (-6..=6).flat_map(|a| (-6..=6).map(move |b| (a, b))).collect();
     comparison_family::<Mersenne61Field>(pairs.clone(), 1);
-    comparison_family::<Mersenne31Field>(pairs, 1);
+    comparison_family::<Mersenne31Field>(pairs.clone(), 1);
+    comparison_family::<Mersenne127Field>(pairs, 1);
 }
 
 #[test]
@@ -230,6 +231,7 @@ fn comparison_family_randomised_over_the_domain() {
     }
     go::<Mersenne61Field>(0x1234);
     go::<Mersenne31Field>(0x5678);
+    go::<Mersenne127Field>(0x9abc);
 }
 
 fn truncation<F: ProtocolField + MersennePrimeField>(seed: u64) {
@@ -275,6 +277,7 @@ fn truncation<F: ProtocolField + MersennePrimeField>(seed: u64) {
 fn truncation_and_fixed_point_multiplication_within_two() {
     truncation::<Mersenne61Field>(0xabcd);
     truncation::<Mersenne31Field>(0xef01);
+    truncation::<Mersenne127Field>(0x2345);
 }
 
 #[test]
