@@ -80,8 +80,8 @@ impl ProtocolField for Mersenne31Field {
 
     const MERSENNE_BITS: Option<usize> = Some(<Self as crate::MersennePrimeField>::BITS);
 
-    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u64> {
-        Some(<Self as crate::MersennePrimeField>::to_canonical_u64(elem))
+    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u128> {
+        Some(<Self as crate::MersennePrimeField>::to_canonical_u128(elem))
     }
 
     /// Eight base elements are the eight coefficients of one Fp8 element.

@@ -9,6 +9,7 @@ members = [
     "apps/bristol_circuit",
     "apps/btx_setup",
     "apps/erc20",
+    "apps/fhe_decrypt",
     "apps/reveal_probe",
     "velox",
     "config"

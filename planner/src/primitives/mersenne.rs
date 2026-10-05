@@ -18,7 +18,7 @@ pub fn ell<F: ProtocolField>() -> usize {
 }
 
 /// The integer in `[0, p)` that `elem` represents.
-pub fn canonical<F: ProtocolField>(elem: &FieldElement<F>) -> u64 {
+pub fn canonical<F: ProtocolField>(elem: &FieldElement<F>) -> u128 {
     F::mersenne_canonical(elem).expect("a Mersenne-only op reached a non-Mersenne field past Plan::compile")
 }
 
@@ -27,6 +27,22 @@ pub fn bit<F: ProtocolField>(elem: &FieldElement<F>, i: usize) -> u64 {
     if i >= ell::<F>() {
         0
     } else {
-        (canonical(elem) >> i) & 1
+        ((canonical(elem) >> i) & 1) as u64
     }
+}
+
+/// The element `x` represents. A public value or a power of two at
+/// `ℓ = 127` does not fit the `u64` that `FieldElement::from` takes, so the
+/// high word goes in as a multiple of `2^64 = (2^32)^2`.
+pub fn from_u128<F: ProtocolField>(x: u128) -> FieldElement<F> {
+    let low = FieldElement::<F>::from(x as u64);
+    match (x >> 64) as u64 {
+        0 => low,
+        high => FieldElement::<F>::from(high) * FieldElement::<F>::from(1u64 << 32).square() + low,
+    }
+}
+
+/// `2^exp`, for `exp < 128`.
+pub fn pow2<F: ProtocolField>(exp: usize) -> FieldElement<F> {
+    from_u128(1u128 << exp)
 }

@@ -48,6 +48,7 @@ pub mod fixed_point;
 pub mod mask_reveal;
 pub mod max;
 pub mod min;
+pub mod mod2m;
 pub mod mul;
 pub mod reveal;
 pub mod truncate;
@@ -90,6 +91,7 @@ pub fn steps_of(op_type: OpType, ell: Option<usize>) -> Vec<OpStep> {
         OpType::MaskReveal => mask_reveal::steps(),
         OpType::Truncate => truncate::steps(),
         OpType::FixedMul => fixed_mul::steps(),
+        OpType::Mod2m { m } => mod2m::steps(m),
         OpType::Compare | OpType::ComparePub => compare::steps(ell()),
         OpType::Max | OpType::MaxPub => max::steps(ell()),
         OpType::Min | OpType::MinPub => min::steps(ell()),
@@ -165,6 +167,7 @@ pub fn build<F: ProtocolField>(
         Op::MaskReveal { x } => Box::new(mask_reveal::MaskReveal::new(x, draw(n)?)),
         Op::Truncate { x, d } => Box::new(truncate::Truncate::new(x, d, draw(n)?)),
         Op::FixedMul { x, y, d } => Box::new(fixed_mul::FixedMul::new(x, y, d, draw(n)?)),
+        Op::Mod2m { x, m } => Box::new(mod2m::Mod2m::new(x, m, draw(n)?)),
         Op::Compare { a, b } | Op::ComparePub { a, c: b } => Box::new(compare::Compare::new(a, b, draw(n)?)),
         Op::Max { a, b } | Op::MaxPub { a, c: b } => Box::new(max::Max::new(a, b, draw(n)?)),
         Op::Min { a, b } | Op::MinPub { a, c: b } => Box::new(min::Min::new(a, b, draw(n)?)),

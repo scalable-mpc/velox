@@ -61,3 +61,7 @@ harness = false
 [[bench]]
 name = "simd_gemm"
 harness = false
+
+[[bench]]
+name = "mersenne_127"
+harness = false

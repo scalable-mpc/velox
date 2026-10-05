@@ -1,0 +1,19 @@
+[package]
+name = "fhe_decrypt"
+version = "0.1.0"
+edition = "2021"
+
+# Threshold decryption of LWE ciphertexts (issue 10): the secret key is
+# secret-shared, and the ciphertext noise is removed inside the MPC before
+# anything is opened. Runs over Mersenne-127 only. See src/lib.rs.
+
+[dependencies]
+velox = { package = "velox", path = "../../velox" }
+
+anyhow = "1"
+async-trait = "0"
+log = "*"
+lambdaworks-math = "=0.13.0"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt"] }

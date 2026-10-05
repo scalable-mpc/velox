@@ -21,13 +21,9 @@ use crate::primitives::edabit::EdaBit;
 
 use super::E;
 
-pub fn pow2<F: ProtocolField>(exp: usize) -> E<F> {
-    E::<F>::from(1u64 << exp)
-}
-
 /// The offset that makes the value non-negative before it is opened.
 pub fn offset<F: ProtocolField>() -> E<F> {
-    pow2::<F>(mersenne::ell::<F>() - 2)
+    mersenne::pow2::<F>(mersenne::ell::<F>() - 2)
 }
 
 /// Steps 6–8 of ΠTrunc on the opened `c`.
@@ -37,7 +33,7 @@ pub fn unmask<F: ProtocolField>(c: &E<F>, eda: &EdaBit<F>, d: usize) -> E<F> {
     let c_msb = mersenne::bit::<F>(c, ell - 1);
     // e = (1 − r_msb) · c_msb, with c_msb public.
     let e = if c_msb == 1 { &one - eda.msb() } else { E::<F>::zero() };
-    let correction = pow2::<F>(ell - d) - &one;
+    let correction = mersenne::pow2::<F>(ell - d) - &one;
     // `Trunc_d(c)` of the public `c` (Theorem 3.1): shift down by `d`, fill
     // the top `d` bits with the MSB.
     let c_value = mersenne::canonical::<F>(c);
@@ -45,5 +41,5 @@ pub fn unmask<F: ProtocolField>(c: &E<F>, eda: &EdaBit<F>, d: usize) -> E<F> {
     for i in (ell - d)..ell {
         c_trunc |= (c_value >> (ell - 1)) << i;
     }
-    E::<F>::from(c_trunc) - eda.trunc_shift(d) + e * correction - pow2::<F>(ell - d - 2)
+    mersenne::from_u128::<F>(c_trunc) - eda.trunc_shift(d) + e * correction - mersenne::pow2::<F>(ell - d - 2)
 }

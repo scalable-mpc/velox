@@ -4,16 +4,16 @@
 //! polynomial): an engine where `Multiply` is the product, `Reveal` the
 //! identity and `MaskedMultiply` is `x·y + mask` exercises every line of the
 //! Planner except the network. Each op is checked against its integer
-//! reference, at ℓ = 61 and ℓ = 31.
+//! reference, at ℓ = 61, 31 and 127.
 
 use std::collections::VecDeque;
 
 use anyhow::Result;
 use planner::api::engine::{Application, DepthInput, RandomWireShares};
 use async_trait::async_trait;
-use fields::{mersenne_31::Mersenne31Field, MersennePrimeField, Mersenne61Field, ProtocolField};
+use fields::{mersenne_31::Mersenne31Field, Mersenne127Field, MersennePrimeField, Mersenne61Field, ProtocolField};
 use lambdaworks_math::field::element::FieldElement;
-use planner::{OpParams, Op, OpDepthInput, OpType, OpResult, Planner, PlannerApplication, PlannerCounts};
+use planner::{primitives::{carry_tree::CarryTree, mersenne::from_u128}, OpParams, Op, OpDepthInput, OpType, OpResult, Planner, PlannerApplication, PlannerCounts};
 
 type E<F> = FieldElement<F>;
 
@@ -22,15 +22,13 @@ type E<F> = FieldElement<F>;
 // ---------------------------------------------------------------------------
 
 fn from_signed<F: ProtocolField + MersennePrimeField>(v: i128) -> E<F> {
-    if v >= 0 {
-        E::<F>::from(v as u64)
-    } else {
-        -E::<F>::from((-v) as u64)
-    }
+    let magnitude = from_u128::<F>(v.unsigned_abs());
+    if v >= 0 { magnitude } else { -magnitude }
 }
 
+/// `p < 2^127`, so the canonical value and `p` both fit an `i128`.
 fn to_signed<F: ProtocolField + MersennePrimeField>(e: &E<F>) -> i128 {
-    let c = F::to_canonical_u64(e) as i128;
+    let c = F::to_canonical_u128(e) as i128;
     let p = F::MODULUS as i128;
     if c <= (p - 1) / 2 { c } else { c - p }
 }
@@ -49,9 +47,11 @@ impl Rng {
         self.0 ^= self.0 << 17;
         self.0
     }
-    /// Uniform in `[-bound, bound)`.
+    /// Uniform in `[-bound, bound)`, from two draws so that the 127-bit
+    /// field's domain (`bound = 2^125`) is covered.
     fn signed(&mut self, bound: i128) -> i128 {
-        (self.next() as i128 % (2 * bound)) - bound
+        let wide = ((self.next() as u128) << 64) | self.next() as u128;
+        (wide % (2 * bound) as u128) as i128 - bound
     }
 }
 
@@ -216,7 +216,8 @@ fn comparison_family<F: ProtocolField + MersennePrimeField>(pairs: Vec<(i128, i1
 fn comparison_family_exhaustive_on_small_values() {
     let pairs: Vec<(i128, i128)> = (-6..=6).flat_map(|a| (-6..=6).map(move |b| (a, b))).collect();
     comparison_family::<Mersenne61Field>(pairs.clone(), 1);
-    comparison_family::<Mersenne31Field>(pairs, 1);
+    comparison_family::<Mersenne31Field>(pairs.clone(), 1);
+    comparison_family::<Mersenne127Field>(pairs, 1);
 }
 
 #[test]
@@ -230,6 +231,7 @@ fn comparison_family_randomised_over_the_domain() {
     }
     go::<Mersenne61Field>(0x1234);
     go::<Mersenne31Field>(0x5678);
+    go::<Mersenne127Field>(0x9abc);
 }
 
 fn truncation<F: ProtocolField + MersennePrimeField>(seed: u64) {
@@ -275,6 +277,7 @@ fn truncation<F: ProtocolField + MersennePrimeField>(seed: u64) {
 fn truncation_and_fixed_point_multiplication_within_two() {
     truncation::<Mersenne61Field>(0xabcd);
     truncation::<Mersenne31Field>(0xef01);
+    truncation::<Mersenne127Field>(0x2345);
 }
 
 #[test]
@@ -432,4 +435,54 @@ impl<F: ProtocolField> CloneShares<F> for OpResult<F> {
             OpResult::Masked { public, .. } => public.clone(),
         }
     }
+}
+
+/// Runs one `Mod2m` op-depth per `(m, xs)` case and checks every result
+/// against `x mod 2^m`, and every engine batch against the plan: a reveal,
+/// then the carry tree's levels.
+fn mod2m<F: ProtocolField + MersennePrimeField>(cases: Vec<(usize, Vec<u128>)>, seed: u64) {
+    let ops = cases.iter().map(|(m, xs)| OpParams::new(OpType::Mod2m { m: *m }, xs.len())).collect();
+    let mut script = Script::<F>::new(PlannerCounts::new(ops, 0));
+    for (i, (m, xs)) in cases.iter().cloned().enumerate() {
+        script = script.then(move |_| OpDepthInput::Op {
+            depth: i + 1,
+            op: Op::Mod2m { x: xs.iter().map(|x| from_u128::<F>(*x)).collect(), m },
+        });
+    }
+    let mut planner = Planner::new(script).unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, seed));
+
+    let mut want_batches = Vec::new();
+    for (m, xs) in &cases {
+        want_batches.push(Batch::Reveal(want_batches.len() + 1, xs.len()));
+        for width in CarryTree::new(*m).level_widths() {
+            want_batches.push(Batch::Multiply(want_batches.len() + 1, width * xs.len()));
+        }
+    }
+    assert_eq!(batches, want_batches);
+
+    for ((m, xs), result) in cases.iter().zip(&planner.app().results) {
+        let OpResult::Shares(got) = result else { panic!("Mod2m returns shares") };
+        for (x, e) in xs.iter().zip(got) {
+            assert_eq!(F::to_canonical_u128(e), x % (1u128 << m), "{x} mod 2^{m} at ℓ={}", F::BITS);
+        }
+    }
+}
+
+#[test]
+fn mod2m_exhaustive_on_small_values() {
+    let xs: Vec<u128> = (0..1 << 10).collect();
+    mod2m::<Mersenne61Field>((1..=10).map(|m| (m, xs.clone())).collect(), 0x3141);
+}
+
+/// The decryption's shape: `m = 63` on inputs up to the 86-bit limit, plus
+/// both ends of the range of `m`.
+#[test]
+fn mod2m_randomised_at_127_bits() {
+    let limit = 1u128 << 86;
+    let mut rng = Rng(0x2718);
+    let mut xs: Vec<u128> = (0..200).map(|_| (((rng.next() as u128) << 64) | rng.next() as u128) % limit).collect();
+    xs.extend([0, 1, (1 << 63) - 1, 1 << 63, (1 << 64) - 1, limit - 1]);
+    mod2m::<Mersenne127Field>(vec![(63, xs.clone()), (1, xs.clone()), (86, xs)], 0x1618);
 }
