@@ -18,10 +18,10 @@ use anyhow::{bail, Result};
 
 use crate::{
     api::{
-        application::{OpParams, PlannerCounts},
+        application::{OpParams, OpType, PlannerCounts},
         engine::{PreprocessingCounts, RandomWires},
     },
-    ops::{self, EngineOperationType, OpStep},
+    ops::{self, mod2m, EngineOperationType, OpStep},
 };
 
 /// One engine depth: a step of an op's schedule, placed at a depth and
@@ -77,6 +77,11 @@ impl Plan {
                     index + 1,
                     params.op_type
                 );
+            }
+            if let (OpType::Mod2m { m }, Some(ell)) = (params.op_type, ell) {
+                if let Err(e) = mod2m::check_m(m, ell) {
+                    bail!("op-depth {}: {}", index + 1, e);
+                }
             }
             let rounds = ops::steps_of(params.op_type, ell)
                 .into_iter()
@@ -190,6 +195,24 @@ mod tests {
             assert_eq!(rounds(op_type, 61), 9, "{op_type:?}");
             assert_eq!(rounds(op_type, 31), 8, "{op_type:?}");
         }
+        // A reveal, then ⌈log₂ m⌉ tree levels.
+        assert_eq!(rounds(OpType::Mod2m { m: 1 }, 127), 1);
+        assert_eq!(rounds(OpType::Mod2m { m: 8 }, 127), 4);
+        assert_eq!(rounds(OpType::Mod2m { m: 63 }, 127), 7);
+    }
+
+    /// A `Mod2m` whose `m` the field cannot mask is refused before
+    /// preprocessing, naming the op-depth.
+    #[test]
+    fn mod2m_out_of_range_is_refused_at_compile() {
+        let compile = |m, ell| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mod2m { m }, 1)], 0), Some(ell));
+        assert!(compile(20, 61).is_ok());
+        for (m, ell) in [(0, 61), (21, 61), (1, 31), (87, 127)] {
+            let err = compile(m, ell).unwrap_err();
+            assert!(err.to_string().starts_with("op-depth 1: Mod2m"), "m={m} ℓ={ell}: {err}");
+        }
+        let plan = compile(63, 127).unwrap();
+        assert_eq!(plan.planner_bits(), 127, "one edaBit");
     }
 
     #[test]

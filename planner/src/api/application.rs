@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
-use crate::primitives::edabit::EdaBit;
+use crate::{ops::mod2m, primitives::edabit::EdaBit};
 
 /// The application's side of the Planner: the hooks of `Application`, with
 /// `OpDepthInput` in place of `DepthInput` and op results in place of
@@ -144,6 +144,9 @@ pub enum Op<F: ProtocolField> {
     /// `Trunc_d(x · y)` in one round: a fixed-point multiplication with `d`
     /// fractional bits.
     FixedMul { x: Vec<FieldElement<F>>, y: Vec<FieldElement<F>>, d: usize },
+    /// `x mod 2^m`, exactly, for an unsigned `0 ≤ x < 2^{ℓ−1−κ}` (κ = 40);
+    /// `1 ≤ m ≤ ℓ − 1 − κ`.
+    Mod2m { x: Vec<FieldElement<F>>, m: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -160,6 +163,9 @@ pub enum OpType {
     MaskReveal,
     Truncate,
     FixedMul,
+    /// `m` is part of the type: the carry tree's levels, and so the engine
+    /// rounds the plan reserves, depend on it.
+    Mod2m { m: usize },
 }
 
 impl OpType {
@@ -193,6 +199,7 @@ impl<F: ProtocolField> Op<F> {
             Op::MaskReveal { .. } => OpType::MaskReveal,
             Op::Truncate { .. } => OpType::Truncate,
             Op::FixedMul { .. } => OpType::FixedMul,
+            Op::Mod2m { m, .. } => OpType::Mod2m { m: *m },
         }
     }
 
@@ -200,7 +207,7 @@ impl<F: ProtocolField> Op<F> {
     pub fn len(&self) -> usize {
         match self {
             Op::Mul { x, .. } | Op::Add { x, .. } | Op::Reveal { x } | Op::MaskReveal { x }
-            | Op::Truncate { x, .. } | Op::FixedMul { x, .. } => x.len(),
+            | Op::Truncate { x, .. } | Op::FixedMul { x, .. } | Op::Mod2m { x, .. } => x.len(),
             Op::Compare { a, .. } | Op::ComparePub { a, .. } | Op::Max { a, .. } | Op::Min { a, .. }
             | Op::MaxPub { a, .. } | Op::MinPub { a, .. } => a.len(),
         }
@@ -238,6 +245,7 @@ impl<F: ProtocolField> Op<F> {
                 pair(x.len(), y.len(), "x, y")?;
                 Self::check_d(*d, ell.expect("checked above"))
             }
+            Op::Mod2m { m, .. } => mod2m::check_m(*m, ell.expect("checked above")),
         }
     }
 
@@ -255,6 +263,7 @@ impl<F: ProtocolField> std::fmt::Debug for Op<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Op::Truncate { d, .. } | Op::FixedMul { d, .. } => write!(f, "{:?}({} elements, d={})", self.op_type(), self.len(), d),
+            Op::Mod2m { m, .. } => write!(f, "Mod2m({} elements, m={})", self.len(), m),
             _ => write!(f, "{:?}({} elements)", self.op_type(), self.len()),
         }
     }
@@ -345,6 +354,25 @@ mod tests {
         assert!(err.to_string().contains("Mersenne"), "{err}");
         assert!(Op::<F>::Truncate { x: v(1), d: 4 }.validate(None).is_err());
         assert!(OpDepthInput::<F>::op(0, Op::Add { x: v(1), y: v(1) }).is_err());
+    }
+
+    /// `1 ≤ m ≤ ℓ − 1 − κ`: up to 20 at ℓ = 61, up to 86 at ℓ = 127, none at
+    /// ℓ = 31, and only over a Mersenne prime field.
+    #[test]
+    fn mod2m_validation() {
+        let mod2m = |m| Op::<F>::Mod2m { x: v(2), m };
+        assert!(mod2m(1).validate(Some(61)).is_ok());
+        assert!(mod2m(20).validate(Some(61)).is_ok());
+        assert!(mod2m(0).validate(Some(61)).is_err());
+        assert!(mod2m(21).validate(Some(61)).is_err());
+        assert!(mod2m(86).validate(Some(127)).is_ok());
+        assert!(mod2m(87).validate(Some(127)).is_err());
+        let err = mod2m(1).validate(Some(31)).unwrap_err();
+        assert!(err.to_string().contains("ℓ = 31"), "{err}");
+        assert!(mod2m(1).validate(None).is_err());
+        assert_eq!(mod2m(7).params(), OpParams::new(OpType::Mod2m { m: 7 }, 2));
+        assert_eq!(OpParams::new(OpType::Mod2m { m: 7 }, 5).edabits(), 5);
+        assert_eq!(format!("{:?}", mod2m(7)), "Mod2m(2 elements, m=7)");
     }
 
     #[test]

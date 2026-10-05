@@ -184,7 +184,7 @@ over another field makes `Planner::new` fail with a message naming the op;
 
 | Variant | Produced by | Meaning |
 |---|---|---|
-| `Shares(Vec)` | `Mul`, `Add`, `Compare*`, `Max*`, `Min*`, `Truncate`, `FixedMul` | degree-`t` sharings, elementwise in operand order |
+| `Shares(Vec)` | `Mul`, `Add`, `Compare*`, `Max*`, `Min*`, `Truncate`, `FixedMul`, `Mod2m` | degree-`t` sharings, elementwise in operand order |
 | `Public(Vec)` | `Reveal` | field elements every party holds identically |
 | `Masked { public, mask }` | `MaskReveal` | the public `x_i + r_i` and, alongside, the `EdaBit` of each `r_i` (its sharing and its bit sharings) |
 
@@ -225,6 +225,7 @@ they differ. "Rounds" is engine depths, i.e. network round trips.
 | `MaskReveal { x }` | `Masked{x+r, eda(r)}` | 1 | reveal | 0 | 1 | — |
 | `Truncate { x, d }` | `Shares(Trunc_d(x) ± 2)` | 1 | reveal of `x + 2^{ℓ−2} + r` | 0 | 1 | `|x| < 2^{ℓ−2}` |
 | `FixedMul { x, y, d }` | `Shares(Trunc_d(x·y) ± 2)` | 1 | masked multiply, mask `r + 2^{ℓ−2}` | 1 (masked) | 1 | `|x·y| < 2^{ℓ−2}` |
+| `Mod2m { x, m }` | `Shares(x mod 2^m)`, exact | `1 + ⌈log₂ m⌉` (7 at m = 63) | reveal of `x + r` (edaBit without its top bit), `⌈log₂ m⌉` tree levels on the low `m` bits | 88 at m = 63 | 1 | `0 ≤ x < 2^{ℓ−41}`, `1 ≤ m ≤ ℓ − 41`; statistical, `2^{−40}` |
 | `Compare { a, b }` / `ComparePub { a, c }` | `Shares([a < b])` | 8 [7] | reveal, 6 [5] tree levels, 1 multiply | 86 [42] | 1 | `|a|,|b| < 2^{ℓ−2}` |
 | `Max { a, b }` / `MaxPub { a, c }` | `Shares(max(a,b))` | 9 [8] | Compare's steps + 1 multiply | 87 [43] | 1 | same |
 | `Min { a, b }` / `MinPub { a, c }` | `Shares(min(a,b))` | 9 [8] | Compare's steps + 1 multiply | 87 [43] | 1 | same |
@@ -330,6 +331,7 @@ bits dropped.
 | `MaskReveal` | `x` |
 | `Truncate` | `x, d` |
 | `FixedMul` | `x, y, d` |
+| `Mod2m` | `x, m` |
 
 Methods: `op_type() -> OpType`; `len()` / `is_empty()` (elements, from the
 first operand); `params() -> OpParams` (type + width, what a declaration is
@@ -337,7 +339,7 @@ compared to); `validate(ell: Option<usize>) -> Result<()>` (operand vectors
 agree in length; the field can run the op — `ell` is `F::MERSENNE_BITS`;
 `d ∈ 1..=ℓ−3`). `Debug` prints `Type(n elements[, d=…])`.
 
-**`enum OpType`** — `Mul, Add, Compare, ComparePub, Max, Min, MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul`.
+**`enum OpType`** — `Mul, Add, Compare, ComparePub, Max, Min, MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul, Mod2m { m }`.
 `Copy + Eq + Hash`. `needs_mersenne()` is false for `Mul`, `Add`, `Reveal` and
 true for the rest; `edabits_per_element()` is 0 for `Mul`, `Add`, `Reveal`
 and 1 for everything else.
@@ -512,6 +514,7 @@ steps, preprocessing) → `steps()` → the struct → `impl Operation`.
 | `mask_reveal.rs` | `MaskReveal` | `x, eda, out` | 0: reveal `x + r` |
 | `truncate.rs` | `Truncate` | `x, d, eda, out` | 0: reveal `x + 2^{ℓ−2} + r`; `unmask` on completion |
 | `fixed_mul.rs` | `FixedMul` | `x, y, d, eda, out` | 0: masked multiply with mask `r + 2^{ℓ−2}`; `unmask` on completion |
+| `mod2m.rs` | `Mod2m` | `tree, x, m, eda, c_low, slots, out` | 0: reveal `x + r`; 1..L: tree levels on `c mod 2^m` and `¬[r_i]`; then `c' − [r_lo] + 2^m·[u]` |
 | `compare.rs` | `Compare` | `drelu: DReLU` | DReLU's; result `1 − DReLU` |
 | `max.rs` | `Max` | `diff, other, drelu, out` | DReLU's, then multiply `DReLU · diff`; `+ other` |
 | `min.rs` | `Min` | `a, diff, drelu, out` | DReLU's, then multiply `DReLU · diff`; `a −` |
