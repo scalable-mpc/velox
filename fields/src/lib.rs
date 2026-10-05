@@ -19,9 +19,15 @@ pub use mersenne_61::Mersenne61Field;
 
 pub mod mersenne_31;
 /// The 31-bit base field and its degree-8 extension (`Ext`, ~2^-248). Half
-/// the carry tree of Mersenne-61 for comparisons; see `mersenne_31::protocol_impl`
+/// the carry tree of Mersenne-61 for comparisons; see `mersenne_31::mpc_impl`
 /// for the verification-soundness caveat of sharing over 31 bits.
 pub use mersenne_31::{Degree8ExtensionField as Mersenne31Degree8ExtensionField, Mersenne31Field};
+
+pub mod mersenne_127;
+/// The 127-bit base field and its degree-2 extension (`Ext`, ~2^-254). Wide
+/// enough to hold a 64-bit FHE ciphertext's inner product with room for a
+/// statistical mask.
+pub use mersenne_127::{Mersenne127Degree2ExtensionField, Mersenne127Field};
 
 pub mod prime_fields;
 pub use prime_fields::{BLS12381ScalarField, BN254Field, Stark252Field};

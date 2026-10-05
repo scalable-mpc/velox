@@ -2,7 +2,7 @@
 //!
 //! Compiled only on `x86_64`; everything else in the crate is unaware of this
 //! module except the `ProtocolField::try_simd_gemm` overrides in
-//! `mersenne_61::protocol_impl`, which are gated the same way.
+//! `mersenne_61::mpc_impl`, which are gated the same way.
 //!
 //! # What is here
 //!

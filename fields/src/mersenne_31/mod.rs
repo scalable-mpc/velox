@@ -2,14 +2,14 @@
 pub mod extension_fp8;
 pub use extension_fp8::*;
 
-mod protocol_impl;
+mod mpc_impl;
 mod ser;
 pub mod sqrt;
 
 use crate::mersenne_prime::MersennePrimeField;
 
 /// The base field is lambdaworks's; the Mersenne-prime facts are added here
-/// and its `ProtocolField` impl lives in `protocol_impl`.
+/// and its `ProtocolField` impl lives in `mpc_impl`.
 impl MersennePrimeField for Mersenne31Field {
     const BITS: usize = 31;
 
