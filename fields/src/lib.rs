@@ -29,6 +29,12 @@ pub mod mersenne_127;
 /// statistical mask.
 pub use mersenne_127::{Mersenne127Degree2ExtensionField, Mersenne127Field};
 
+pub mod ml_dsa;
+/// The ML-DSA field, `q = 2^23 − 2^13 + 1`, and its extensions of degree 3
+/// (`StatisticalExt`, ~2^-69) and 11 (`Ext`, ~2^-253). Sharings over it are
+/// sharings of ML-DSA ring coefficients.
+pub use ml_dsa::{MlDsaDegree11ExtensionField, MlDsaDegree3ExtensionField, MlDsaField};
+
 pub mod prime_fields;
 pub use prime_fields::{BLS12381ScalarField, BN254Field, Stark252Field};
 
