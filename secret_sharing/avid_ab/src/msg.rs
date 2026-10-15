@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use types::{Replica};
 
-use crate::rs::{CheckedShard, Commitment, Shard};
+use consensus::{CheckedShard, Commitment, Shard};
 
 /// One party's fragment of one recipient's message.
 ///
-/// Two commitment layers. `commitment` is commonware's Merkle root over the
+/// Two commitment layers. `commitment` is the Merkle root over the
 /// shards of a single recipient's message, and `shard` carries its own
 /// inclusion proof against it. `master_proof` then places that commitment in
 /// the dealer's master tree over all recipients, so one master root identifies
@@ -45,12 +45,13 @@ impl AVIDShard{
             return None;
         }
         // ...and the shard must sit at `index` under that commitment.
-        crate::rs::check(
+        consensus::check(
             &self.commitment,
             index,
             &self.shard,
             num_nodes - 2 * num_faults,
             2 * num_faults,
+            hash_state,
         )
         .ok()
     }

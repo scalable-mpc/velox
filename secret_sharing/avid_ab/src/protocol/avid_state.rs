@@ -4,7 +4,7 @@ use crypto::{hash::Hash};
 use types::Replica;
 
 use crate::msg::AVIDMsg;
-use crate::rs::{CheckedShard, Commitment};
+use consensus::{CheckedShard, Commitment};
 
 pub struct AVIDState{
     pub sender: usize,

@@ -13,8 +13,6 @@ use msg::*;
 mod protocol;
 pub use protocol::*;
 
-pub mod rs;
-
 // mod rbc_context;
 // pub use rbc_context::*;
 
