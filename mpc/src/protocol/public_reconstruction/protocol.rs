@@ -257,7 +257,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A> {
         let (indices, points) = std::mem::take(&mut recon.l2_shares);
 
         log::info!("Attempting L2 reconstruction at depth {}", depth);
-        let values = rayon_async(move || l2_interpolate(indices, points)).await;
+        let num_faults = self.num_faults;
+        let values = rayon_async(move || l2_interpolate(indices, points, num_faults)).await;
         let hash = hash_of(&values);
 
         let recon = self.mult_state.recon(depth);
