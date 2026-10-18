@@ -129,17 +129,28 @@ pub fn l1_interpolate<F: ProtocolField>(
     Ok(shares.par_iter().map(|chunk| interpolate_at_zero(&lambdas, chunk)).collect())
 }
 
-/// L2: from `2t+1` parties' points on every chunk polynomial — `points[i]`
-/// holds `Z_i` at `indices` — recover every chunk's coefficients, flattened
-/// in batch order. Every coefficient is wanted, so a full inverse.
+/// L2: from at least `2t+1` parties' points on every chunk polynomial —
+/// `points[i]` holds `Z_i` at `indices` — recover every chunk's coefficients,
+/// flattened in batch order. Every coefficient is wanted, so a full inverse.
+///
+/// A chunk polynomial has `2t+1` coefficients, so only the first `2t+1`
+/// points are used. A party that starts its own reconstruction late can hold
+/// more than `n − t` points. With all of them, the square inverse gives one
+/// value for each point, not `2t+1` for each chunk.
 pub fn l2_interpolate<F: ProtocolField>(
-    indices: Vec<FieldElement<F>>,
+    mut indices: Vec<FieldElement<F>>,
     points: Vec<Vec<FieldElement<F>>>,
+    num_faults: usize,
 ) -> Vec<FieldElement<F>> {
+    let coefficients = 2 * num_faults + 1;
+    indices.truncate(coefficients);
     let inverse = inverse_vandermonde_from_points(&indices);
     points
-        .par_iter()
-        .map(|chunk| matrix_vector_multiply(&inverse, chunk))
+        .into_par_iter()
+        .map(|mut chunk| {
+            chunk.truncate(coefficients);
+            matrix_vector_multiply(&inverse, &chunk)
+        })
         .flatten()
         .collect()
 }
@@ -199,7 +210,7 @@ mod tests {
     /// every party reconstructs, and the degree-2t polynomial party 0
     /// recovers from *all* n L1 shares of its first chunk (to inspect the
     /// privacy term).
-    fn run(secrets: &[E], degree: SharingDegree, privacy: bool, corrupt: Option<usize>, seed: u8)
+    fn run(secrets: &[E], degree: SharingDegree, privacy: bool, corrupt: Option<usize>, seed: u8, l2_voters: usize)
         -> (Result<Vec<E>, String>, Vec<E>)
     {
         let mut rng = ChaCha20Rng::from_seed([seed; 32]);
@@ -256,13 +267,13 @@ mod tests {
             }
         }
 
-        // L2 at one party from 2t+1 broadcast points.
-        let voters: Vec<usize> = (0..2 * T + 1).collect();
+        // L2 at one party from `l2_voters` broadcast points.
+        let voters: Vec<usize> = (0..l2_voters).collect();
         let indices: Vec<E> = voters.iter().map(|v| pts[*v].clone()).collect();
         let chunk_points: Vec<Vec<E>> = (0..num_chunks)
             .map(|i| voters.iter().map(|v| l2_points[*v][i].clone()).collect())
             .collect();
-        let mut values = l2_interpolate(indices, chunk_points);
+        let mut values = l2_interpolate(indices, chunk_points, T);
         values.truncate(values.len() - padding);
         (Ok(values), learnt_poly)
     }
@@ -288,7 +299,7 @@ mod tests {
     #[test]
     fn degree_t_round_trips_with_and_without_a_full_chunk() {
         for m in [1, 7, 8, 20] {
-            let (values, _) = run(&secrets(m), SharingDegree::T, false, None, 1);
+            let (values, _) = run(&secrets(m), SharingDegree::T, false, None, 1, 2 * T + 1);
             assert_eq!(values.unwrap(), secrets(m), "m={m}");
         }
     }
@@ -296,7 +307,7 @@ mod tests {
     #[test]
     fn degree_2t_round_trips_with_and_without_privacy() {
         for privacy in [false, true] {
-            let (values, _) = run(&secrets(9), SharingDegree::TwoT, privacy, None, 2);
+            let (values, _) = run(&secrets(9), SharingDegree::TwoT, privacy, None, 2, 2 * T + 1);
             assert_eq!(values.unwrap(), secrets(9), "privacy={privacy}");
         }
     }
@@ -305,8 +316,8 @@ mod tests {
     /// all n shares — without changing the value it interpolates.
     #[test]
     fn privacy_randomises_the_l1_polynomial_but_not_the_value() {
-        let (plain, poly_plain) = run(&secrets(7), SharingDegree::TwoT, false, None, 3);
-        let (masked, poly_masked) = run(&secrets(7), SharingDegree::TwoT, true, None, 3);
+        let (plain, poly_plain) = run(&secrets(7), SharingDegree::TwoT, false, None, 3, 2 * T + 1);
+        let (masked, poly_masked) = run(&secrets(7), SharingDegree::TwoT, true, None, 3, 2 * T + 1);
         assert_eq!(plain.unwrap(), masked.unwrap());
         assert_eq!(poly_plain[0], poly_masked[0], "constant term is the point Z(α_0) either way");
         assert_ne!(poly_plain[1..], poly_masked[1..], "the other coefficients are re-randomised");
@@ -317,10 +328,20 @@ mod tests {
     /// through — which is what the verification phase is for.
     #[test]
     fn a_corrupt_l1_share_is_caught_at_degree_t_only() {
-        let (values, _) = run(&secrets(7), SharingDegree::T, false, Some(1), 4);
+        let (values, _) = run(&secrets(7), SharingDegree::T, false, Some(1), 4, 2 * T + 1);
         assert!(values.unwrap_err().contains("corrupt share"));
-        let (values, _) = run(&secrets(7), SharingDegree::TwoT, false, Some(1), 4);
+        let (values, _) = run(&secrets(7), SharingDegree::TwoT, false, Some(1), 4, 2 * T + 1);
         assert_ne!(values.unwrap(), secrets(7));
+    }
+
+    /// A party that starts its own reconstruction late holds more than
+    /// `n − t` L2 points. It must still recover `2t+1` values for each chunk.
+    #[test]
+    fn l2_with_more_than_2t_plus_1_points_recovers_the_values() {
+        for l2_voters in [2 * T + 2, N] {
+            let (values, _) = run(&secrets(8), SharingDegree::TwoT, true, None, 5, l2_voters);
+            assert_eq!(values.unwrap(), secrets(8), "l2_voters={l2_voters}");
+        }
     }
 
     #[test]

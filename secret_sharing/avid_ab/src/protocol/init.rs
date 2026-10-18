@@ -6,7 +6,7 @@ use crypto::{
 };
 use types::{WrapperMsg, Replica};
 
-use crate::rs::{Commitment, Shard};
+use consensus::{Commitment, Shard};
 use crate::{Context, msg::{AVIDMsg, AVIDShard}, AVIDState};
 use crate::{ProtMsg};
 use network::{plaintcp::CancelHandler, Acknowledgement};
@@ -40,10 +40,11 @@ impl Context {
         let (recipients, payloads): (Vec<Replica>, Vec<Vec<u8>>) =
             filled_msg_vec.into_iter().unzip();
 
-        let encodings = match crate::rs::encode_batch_async(
+        let encodings = match consensus::encode_batch_async(
             payloads,
             self.num_nodes - 2 * self.num_faults,
             2 * self.num_faults,
+            self.hash_context.clone(),
         ).await {
             Ok(encodings) => encodings,
             Err(error) => {

@@ -4,7 +4,7 @@ use crypto::hash::Hash;
 use types::Replica;
 
 use crate::msg::{AVIDShard};
-use crate::rs::CheckedShard;
+use consensus::CheckedShard;
 use crate::{AVIDState};
 
 use crate::Context;
@@ -79,11 +79,12 @@ impl Context {
             let checked: Vec<CheckedShard> =
                 shards_map.values().map(|(_, shard)| shard.clone()).collect();
 
-            let message = match crate::rs::decode(
+            let message = match consensus::decode(
                 &commitment,
                 checked.iter(),
                 self.num_nodes - 2 * self.num_faults,
                 2 * self.num_faults,
+                &self.hash_context,
             ){
                 Ok(message) => message,
                 Err(error) => {
