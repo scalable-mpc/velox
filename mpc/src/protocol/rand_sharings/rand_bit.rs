@@ -38,6 +38,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // Take each value's square root via `ProtocolField::sqrt` and invert.
         // Discard the sign-choice branch (`let (sqrt, _) = ...`); the
         // randomness comes from upstream `r`, not from which root is picked.
+        // A zero square (`r = 0`, probability `1/p` per bit) has no inverse.
+        // It stays in its place as a zero, which no true inverse can be, so
+        // the list stays aligned with the sharings of `r` and
+        // `verify_rand_bit_reconstruction` drops that bit. Removing it here
+        // instead would pair every later sharing with the wrong inverse.
         // Yielded: `F::sqrt` is an exponentiation and `.inv()` a second one, so
         // this is the densest per-element job in the engine - order 10^3 field
         // multiplications each. Running it inline parked the `Context` task for
@@ -46,10 +51,8 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             reconstructed_values.into_par_iter()
                 .map(|secret| {
                     let (sqrt_root, _) = F::sqrt(&secret).expect("Square root does not exist");
-                    sqrt_root.inv()
+                    sqrt_root.inv().unwrap_or(FieldElement::zero())
                 })
-                .filter(|x| x.is_ok())
-                .map(|x| x.unwrap())
                 .collect()
         }).await;
 
@@ -118,9 +121,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         let reconstructed_shares = std::mem::take(&mut self.mix_circuit_state.rand_bit_inverse_recon_values);
         let rand_bit_input_shares = std::mem::take(&mut self.mix_circuit_state.rand_bit_inp_shares);
 
+        // A zero inverse marks a zero square: that `r` gives no bit.
         let final_rand_bit_sharings: Vec<FieldElement<F>> = rayon_async(move || {
             rand_bit_input_shares.into_par_iter()
                 .zip(reconstructed_shares.into_par_iter())
+                .filter(|(_, re)| *re != FieldElement::zero())
                 .map(|(r,re)| r.mul(re))
                 .collect()
         }).await;
@@ -143,7 +148,15 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     /// pool up front, sized here and re-portioned there, which put the
     /// protocol's `2t+1` batching rule in application code.
     pub async fn hand_preprocessing_to_application(&mut self){
-        let rand_bits: Vec<FieldElement<F>> = self.mix_circuit_state.rand_bit_sharings.drain(..).collect();
+        // Exactly the bits the application asked for. The engine makes a
+        // surplus (see `rand_sh.rs`) so that the zero squares dropped above
+        // leave enough; a shortfall has probability below 2^-40.
+        let requested_bits = self.random_wires.bits;
+        let made_bits = self.mix_circuit_state.rand_bit_sharings.len();
+        if made_bits < requested_bits {
+            log::error!("Random bits: the application asked for {} and only {} are left after zero squares", requested_bits, made_bits);
+        }
+        let rand_bits: Vec<FieldElement<F>> = self.mix_circuit_state.rand_bit_sharings.drain(..requested_bits.min(made_bits)).collect();
         let wire_sharings = std::mem::take(&mut self.rand_sharings_state.app_wire_sharings);
 
         log::info!("Handing {} random bits and {} random sharings to the application; {} random and {} zero sharings held in the engine's pool for its depths, verification and coins",

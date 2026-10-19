@@ -64,7 +64,21 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         //    and the mask for that squaring multiplication (batch 1),
         //  - one per random wire sharing the application reads directly,
         //  - the coin sharings and the verification multiplications.
-        self.rand_bit_batch_size = batch_size_for(num_rand_bits + group);
+        //
+        // A random bit is lost when its `r` is zero (probability `1/p`), so
+        // the engine makes `bits_to_make` and hands over `num_rand_bits`. With
+        // `N` bits and `p` the modulus, the number of zeros is about
+        // Poisson(λ = N/p), and P(X ≥ k) ≤ (eλ/k)^k ≤ 2^-k when k ≥ 2eλ. The
+        // surplus `40 + 6N/p` is at least that, so a shortfall has
+        // probability below 2^-40. An application that asks for no bits
+        // gets no surplus.
+        let zero_square_surplus = if num_rand_bits == 0 {
+            0
+        } else {
+            40 + F::PRIME_MODULUS.map_or(0, |p| (6 * num_rand_bits as u128).div_ceil(p) as usize)
+        };
+        let bits_to_make = num_rand_bits + zero_square_surplus;
+        self.rand_bit_batch_size = batch_size_for(bits_to_make + group);
 
         // Verification multiplies its own tuples, and those multiplications draw
         // from the same pool. It compresses every tuple the circuit and the
@@ -93,7 +107,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         self.mult_batch_size = batch_size_for(
             app_rand_total
             + num_wire_sharings
-            + num_rand_bits
+            + bits_to_make
             + rand_bit_squaring_padding
             + verification_rand
             + self.total_sharings_for_coins
@@ -110,7 +124,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         // The circuit's zero sharings are counted exactly by the reservation
         // table; the rand-bit squaring and verification are budgeted in groups.
         let zero_sharing_groups =
-            (num_rand_bits + group).div_ceil(group)
+            (bits_to_make + group).div_ceil(group)
             + verification_groups;
         self.zero_batch_size = batch_size_for(app_zero_total + zero_sharing_groups * (t + 1));
         // AVSS masks blind the output wires before public reconstruction.
