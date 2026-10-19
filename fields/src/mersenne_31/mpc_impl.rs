@@ -78,9 +78,11 @@ impl ProtocolField for Mersenne31Field {
     /// 31 bits is nowhere near a soundness bound; challenges lift into Fp8.
     type Ext = Degree8ExtensionField;
 
+    const PRIME_MODULUS: Option<u128> = Some(<Self as crate::MersennePrimeField>::MODULUS);
+
     const MERSENNE_BITS: Option<usize> = Some(<Self as crate::MersennePrimeField>::BITS);
 
-    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u128> {
+    fn canonical_u128(elem: &FieldElement<Self>) -> Option<u128> {
         Some(<Self as crate::MersennePrimeField>::to_canonical_u128(elem))
     }
 

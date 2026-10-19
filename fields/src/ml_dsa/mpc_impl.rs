@@ -156,6 +156,15 @@ impl ProtocolField for MlDsaField {
         FieldElement::new(ExtCoeffs(std::array::from_fn(|k| coeffs.get(k).map_or(0, |c| *c.value()))))
     }
 
+    /// A prime field, so the Planner can read the integer of an opened value.
+    /// Not a Mersenne prime: `MERSENNE_BITS` stays `None`.
+    const PRIME_MODULUS: Option<u128> = Some(Q as u128);
+
+    /// The stored word is always fully reduced, so it is the integer.
+    fn canonical_u128(elem: &FieldElement<Self>) -> Option<u128> {
+        Some(*elem.value() as u128)
+    }
+
     fn rand() -> FieldElement<Self> {
         uniform_element(random::<u32>)
     }
@@ -321,6 +330,21 @@ mod tests {
             assert_eq!(fe(a) * fe(a).inv().unwrap(), FqE::one(), "a={a}");
         }
         assert!(fe(0).inv().is_err());
+    }
+
+    #[test]
+    fn canonical_integers() {
+        assert_eq!(F::PRIME_MODULUS, Some(Q as u128));
+        assert_eq!(F::MERSENNE_BITS, None, "q is not a Mersenne prime");
+        let canon = |e: &FqE| F::canonical_u128(e).unwrap();
+        for a in edges().into_iter().chain(samples(1_000, 0xca70)) {
+            assert_eq!(canon(&fe(a)), a as u128, "a={a}");
+            assert_eq!(canon(&-fe(a)), (Q as u128 - a as u128) % Q as u128, "-{a}");
+        }
+        assert_eq!(canon(&(fe(Q - 1) + fe(1))), 0, "(q-1)+1 reads as 0, not q");
+        assert_eq!(canon(&FqE::from(u64::MAX)), u64::MAX as u128 % Q as u128);
+        assert_eq!(E::PRIME_MODULUS, None, "an extension element is not an integer");
+        assert_eq!(E::canonical_u128(&FieldElement::<E>::one()), None);
     }
 
     #[test]

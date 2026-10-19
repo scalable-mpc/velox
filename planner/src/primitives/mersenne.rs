@@ -17,9 +17,10 @@ pub fn ell<F: ProtocolField>() -> usize {
     F::MERSENNE_BITS.expect("a Mersenne-only op reached a non-Mersenne field past Plan::compile")
 }
 
-/// The integer in `[0, p)` that `elem` represents.
+/// The integer in `[0, p)` that `elem` represents. Any prime field has it,
+/// not only a Mersenne field.
 pub fn canonical<F: ProtocolField>(elem: &FieldElement<F>) -> u128 {
-    F::mersenne_canonical(elem).expect("a Mersenne-only op reached a non-Mersenne field past Plan::compile")
+    F::canonical_u128(elem).expect("an op that reads integers reached a field that is not a prime field")
 }
 
 /// Bit `i` of the canonical representative, `0` for `i ≥ ℓ`.

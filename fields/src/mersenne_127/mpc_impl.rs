@@ -137,9 +137,11 @@ impl ProtocolField for Mersenne127Field {
         Fp2E::new(<Self as IsSubFieldOf<Mersenne127Degree2ExtensionField>>::embed(*elem.value()))
     }
 
+    const PRIME_MODULUS: Option<u128> = Some(<Self as MersennePrimeField>::MODULUS);
+
     const MERSENNE_BITS: Option<usize> = Some(<Self as MersennePrimeField>::BITS);
 
-    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u128> {
+    fn canonical_u128(elem: &FieldElement<Self>) -> Option<u128> {
         Some(<Self as MersennePrimeField>::to_canonical_u128(elem))
     }
 

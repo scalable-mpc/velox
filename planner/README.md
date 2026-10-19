@@ -539,9 +539,11 @@ step)` is the error an op returns for a step outside its list.
 
 **`mod mersenne`** — `ell::<F>()`, `canonical::<F>(e)`,
 `bit::<F>(e, i)`: the Mersenne arithmetic the ops need, read through
-`ProtocolField::MERSENNE_BITS` / `mersenne_canonical`. They panic over a
-non-Mersenne field, which cannot happen past `Plan::compile` and
-`Op::validate`, the two places that refuse Mersenne-only ops cleanly.
+`ProtocolField::MERSENNE_BITS` / `canonical_u128`. `canonical` works over
+any prime field; `ell` and `bit` need a Mersenne field. They panic over a
+field that does not have what they need, which cannot happen past
+`Plan::compile` and `Op::validate`, the two places that refuse those ops
+cleanly.
 
 **`struct EdaBit<F: ProtocolField> { value: FieldElement<F>, bits: Vec<FieldElement<F>> }`** —
 a random `r` with sharings of its bits, LSB first. Assembled locally from ℓ

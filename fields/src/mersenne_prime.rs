@@ -23,7 +23,7 @@
 //! Planner, whose `Mul`/`Reveal` run over any field but whose comparisons do
 //! not — reads the same facts at runtime through
 //! [`ProtocolField::MERSENNE_BITS`](crate::ProtocolField::MERSENNE_BITS) and
-//! [`ProtocolField::mersenne_canonical`](crate::ProtocolField::mersenne_canonical),
+//! [`ProtocolField::canonical_u128`](crate::ProtocolField::canonical_u128),
 //! which the Mersenne base fields answer by delegating here and every other
 //! field answers with `None`. The extension fields are deliberately excluded
 //! from both: their elements are not integers mod a Mersenne prime, so

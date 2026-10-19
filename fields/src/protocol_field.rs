@@ -175,23 +175,31 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
     /// coefficient with the base field's machinery.
     fn from_statistical_coeffs(coeffs: &[FieldElement<Self>]) -> FieldElement<Self::StatisticalExt>;
 
-    // -- Mersenne capability ------------------------------------------------
+    // -- Prime-field and Mersenne capabilities ------------------------------
     //
-    // The comparison and truncation protocols need the modulus to be a
-    // Mersenne prime `2^ℓ − 1` (see `MersennePrimeField`). Code that is
-    // generic over every protocol field — the Planner — asks through these two
-    // items whether it has one, and refuses those operations when it does not,
-    // instead of carrying the bound on everything it touches.
+    // The protocols that read the bits of an opened value need its integer
+    // in `[0, p)`, so they need a prime field. The comparison and truncation
+    // protocols also need the modulus to be a Mersenne prime `2^ℓ − 1` (see
+    // `MersennePrimeField`). Code that is generic over every protocol field —
+    // the Planner — asks through these items what the field has, and refuses
+    // an operation when the field does not have it, instead of carrying the
+    // bound on everything it touches.
+
+    /// `Some(p)` when the field is the prime field `F_p` with `p < 2^128`,
+    /// `None` otherwise. The extension fields are `None`: their elements are
+    /// not integers mod a prime.
+    const PRIME_MODULUS: Option<u128> = None;
 
     /// `Some(ℓ)` when the modulus is the Mersenne prime `2^ℓ − 1`, `None`
-    /// otherwise. The extension fields over a Mersenne prime are `None`:
-    /// their elements are not integers mod `p`.
+    /// otherwise. Every field with `Some(ℓ)` here has
+    /// `PRIME_MODULUS == Some(2^ℓ − 1)`.
     const MERSENNE_BITS: Option<usize> = None;
 
-    /// The integer in `[0, p)` that `elem` represents, when the field is a
-    /// Mersenne prime field; `None` otherwise. Agrees with
-    /// `MersennePrimeField::to_canonical_u128` wherever both exist.
-    fn mersenne_canonical(_elem: &FieldElement<Self>) -> Option<u128> {
+    /// The integer in `[0, p)` that `elem` represents, when
+    /// [`PRIME_MODULUS`](Self::PRIME_MODULUS) is `Some(p)`; `None` otherwise.
+    /// Agrees with `MersennePrimeField::to_canonical_u128` wherever both
+    /// exist.
+    fn canonical_u128(_elem: &FieldElement<Self>) -> Option<u128> {
         None
     }
 
