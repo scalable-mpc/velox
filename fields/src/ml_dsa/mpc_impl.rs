@@ -203,6 +203,15 @@ impl ProtocolField for MlDsaField {
     fn decode_ascii(elem: &FieldElement<Self>) -> String {
         decode_ascii_be(&<Self as ProtocolField>::to_bytes_be(elem))
     }
+
+    /// The lazy-reduction kernel (`ml_dsa::gemm`), on every target.
+    fn try_simd_gemm(
+        matrix: &[Vec<FieldElement<Self>>],
+        vectors: &[Vec<FieldElement<Self>>],
+        row_major: bool,
+    ) -> Option<Vec<Vec<FieldElement<Self>>>> {
+        super::gemm::lazy_gemm(matrix, vectors, row_major)
+    }
 }
 
 /// [`ProtocolField`] for the degree-11 extension: 253 bits, its own `Ext`.
