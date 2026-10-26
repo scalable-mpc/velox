@@ -17,7 +17,8 @@
 //!    preprocessing per element;
 //! 2. `steps(..)`: the op's steps — the one thing the plan (which sizes
 //!    the engine's preprocessing from them) and the op share. Its argument
-//!    is what the step count depends on: `ell` for the comparison family,
+//!    is what the step count depends on: the edaBit width for the
+//!    comparison family and `LessThanPub`,
 //!    `m` for `Mod2m`, the prime's `MaskShape` for the uniform-mask prefix,
 //!    and none for the one-step ops;
 //! 3. the state struct — inputs, preprocessing drawn, intermediates, output,
@@ -52,6 +53,7 @@ pub mod compare;
 pub mod drelu;
 pub mod fixed_mul;
 pub mod fixed_point;
+pub mod less_than_pub;
 pub mod mask_reveal;
 pub mod max;
 pub mod min;
@@ -103,6 +105,7 @@ pub fn steps_of(op_type: OpType, mask_bits: Option<usize>) -> Vec<OpStep> {
         OpType::Compare | OpType::ComparePub => compare::steps(bits()),
         OpType::Max | OpType::MaxPub => max::steps(bits()),
         OpType::Min | OpType::MinPub => min::steps(bits()),
+        OpType::LessThanPub => less_than_pub::steps(bits()),
     }
 }
 
@@ -155,10 +158,12 @@ pub trait Operation<F: ProtocolField>: Send {
 }
 
 /// Build the operation for `op`, drawing its edaBits from `edabits` in
-/// element order.
+/// element order. `mask_bits` is `Plan::mask_bits`, the edaBit width that
+/// `LessThanPub` gives to its carry trees.
 pub fn build<F: ProtocolField>(
     op: Op<F>,
     edabits: &mut impl Iterator<Item = EdaBit<F>>,
+    mask_bits: Option<usize>,
 ) -> Result<Box<dyn Operation<F>>> {
     let n = op.len();
     let mut draw = |count: usize| -> Result<Vec<EdaBit<F>>> {
@@ -179,6 +184,10 @@ pub fn build<F: ProtocolField>(
         Op::Compare { a, b } | Op::ComparePub { a, c: b } => Box::new(compare::Compare::new(a, b, draw(n)?)),
         Op::Max { a, b } | Op::MaxPub { a, c: b } => Box::new(max::Max::new(a, b, draw(n)?)),
         Op::Min { a, b } | Op::MinPub { a, c: b } => Box::new(min::Min::new(a, b, draw(n)?)),
+        Op::LessThanPub { x, c } => {
+            let bits = mask_bits.expect("validated: the field has uniform masks");
+            Box::new(less_than_pub::LessThanPub::new(x, c, bits, draw(n)?))
+        }
     })
 }
 

@@ -113,7 +113,7 @@ impl<F: ProtocolField, A: PlannerApplication<F>> Planner<F, A> {
             bail!("op-depth {} runs {:?} but declared {:?}", depth, op.params(), op_depth_plan.params);
         }
         let mut edabits = self.edabit_pool.for_depth(depth, op.len() * op.op_type().edabits_per_element())?.into_iter();
-        let op = ops::build(op, &mut edabits)?;
+        let op = ops::build(op, &mut edabits, self.execution_plan.mask_bits())?;
         log::info!("Planner: op-depth {} started, {} engine rounds", depth, op_depth_plan.rounds());
         self.current_engine_run = Some(DepthRun { op_depth: depth, op, step: 0, out: None });
         self.next_engine_depth().await

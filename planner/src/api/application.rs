@@ -149,6 +149,10 @@ pub enum Op<F: ProtocolField> {
     /// `x mod 2^m`, exactly, for an unsigned `0 ≤ x < 2^{ℓ−1−κ}` (κ = 40);
     /// `1 ≤ m ≤ ℓ − 1 − κ`.
     Mod2m { x: Vec<FieldElement<F>>, m: usize },
+    /// `[x < c]` for public `c`, as a sharing of 0 or 1, with `x` and `c`
+    /// read as integers in `[0, p)`. Exact, with no bound on `x`. Needs
+    /// uniform masks: it runs over the ML-DSA field and the Mersenne fields.
+    LessThanPub { x: Vec<FieldElement<F>>, c: Vec<FieldElement<F>> },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -168,6 +172,7 @@ pub enum OpType {
     /// `m` is part of the type: the carry tree's levels, and so the engine
     /// rounds the plan reserves, depend on it.
     Mod2m { m: usize },
+    LessThanPub,
 }
 
 /// What a field must have to run an op type.
@@ -177,7 +182,7 @@ pub enum FieldClass {
     Any,
     /// A prime field with uniform masks in `[0, p)` and their bits: a
     /// Mersenne prime, or a prime `p = 2^ℓ − 2^k + 1` (the uniform-mask
-    /// prefix). `MaskReveal`.
+    /// prefix). `MaskReveal`, `LessThanPub`.
     UniformMasks,
     /// A Mersenne prime field `p = 2^ℓ − 1`: the ops that use its two facts
     /// (`p` is all ones, `p` is odd).
@@ -189,7 +194,7 @@ impl OpType {
     pub fn field_class(self) -> FieldClass {
         match self {
             OpType::Mul | OpType::Add | OpType::Reveal => FieldClass::Any,
-            OpType::MaskReveal => FieldClass::UniformMasks,
+            OpType::MaskReveal | OpType::LessThanPub => FieldClass::UniformMasks,
             _ => FieldClass::Mersenne,
         }
     }
@@ -232,6 +237,7 @@ impl<F: ProtocolField> Op<F> {
             Op::Truncate { .. } => OpType::Truncate,
             Op::FixedMul { .. } => OpType::FixedMul,
             Op::Mod2m { m, .. } => OpType::Mod2m { m: *m },
+            Op::LessThanPub { .. } => OpType::LessThanPub,
         }
     }
 
@@ -239,7 +245,7 @@ impl<F: ProtocolField> Op<F> {
     pub fn len(&self) -> usize {
         match self {
             Op::Mul { x, .. } | Op::Add { x, .. } | Op::Reveal { x } | Op::MaskReveal { x }
-            | Op::Truncate { x, .. } | Op::FixedMul { x, .. } | Op::Mod2m { x, .. } => x.len(),
+            | Op::Truncate { x, .. } | Op::FixedMul { x, .. } | Op::Mod2m { x, .. } | Op::LessThanPub { x, .. } => x.len(),
             Op::Compare { a, .. } | Op::ComparePub { a, .. } | Op::Max { a, .. } | Op::Min { a, .. }
             | Op::MaxPub { a, .. } | Op::MinPub { a, .. } => a.len(),
         }
@@ -277,6 +283,7 @@ impl<F: ProtocolField> Op<F> {
                 Self::check_d(*d, ell.expect("checked above"))
             }
             Op::Mod2m { m, .. } => mod2m::check_m(*m, ell.expect("checked above")),
+            Op::LessThanPub { x, c } => pair(x.len(), c.len(), "x, c"),
         }
     }
 
@@ -390,6 +397,10 @@ mod tests {
         let err = Op::<F>::MaskReveal { x: v(2) }.validate(None, false).unwrap_err();
         assert!(err.to_string().contains("uniform masks"), "{err}");
         assert!(Op::<F>::Compare { a: v(2), b: v(2) }.validate(None, true).is_err());
+        // LessThanPub, like MaskReveal, needs only uniform masks.
+        assert!(Op::<F>::LessThanPub { x: v(2), c: v(2) }.validate(None, true).is_ok());
+        assert!(Op::<F>::LessThanPub { x: v(2), c: v(2) }.validate(None, false).is_err());
+        assert!(Op::<F>::LessThanPub { x: v(2), c: v(3) }.validate(None, true).is_err());
         assert!(OpDepthInput::<F>::op(0, Op::Add { x: v(1), y: v(1) }).is_err());
     }
 
