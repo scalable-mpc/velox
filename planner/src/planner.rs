@@ -9,14 +9,23 @@
 //!   what the application returned. For an `Op` it checks the op against its
 //!   declared parameters, draws the op-depth's edaBits and builds the
 //!   [`Operation`]; `Waiting` and `Done` pass straight to the engine.
-//! - [`next_engine_depth_or_finish_op_depth`](Planner::next_engine_depth_or_finish_op_depth)
-//!   hands the engine the running op's operands for its next step, at that
-//!   step's engine depth. When the op has no steps left, it gives the op's
-//!   result to the application and starts whatever the application
-//!   schedules next.
+//! - [`next_engine_depth`](Planner::next_engine_depth) hands the engine the
+//!   running op's operands for its next step, at that step's engine depth.
+//!   When the op has no steps left, it gives the op's result to the
+//!   application and starts whatever the application schedules next.
 //!
 //! Between the two, `on_depth_complete` gives an engine depth's results back
-//! to the op. The Planner knows no operation's arithmetic (that is `ops`) and
+//! to the op.
+//!
+//! One op-depth does not come from the application. When the plan has a
+//! uniform-mask prefix (`ops::uniform_mask`, over a prime `2^ℓ − 2^k + 1`
+//! such as the ML-DSA field), `on_preprocessing_complete` first runs it as
+//! op-depth 0, through `next_engine_depth`. When the prefix ends,
+//! [`start_application`](Planner::start_application) fills the edaBit pool
+//! with the good masks and gives the application its random wires. Without a
+//! prefix, `on_preprocessing_complete` calls `start_application` directly.
+//!
+//! The Planner knows no operation's arithmetic (that is `ops`) and
 //! decides no engine protocol (that is the engine).
 
 use anyhow::{bail, Result};

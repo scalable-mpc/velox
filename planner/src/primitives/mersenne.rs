@@ -2,12 +2,14 @@
 //! read through `ProtocolField`'s optional capability so the Planner itself
 //! stays generic over every protocol field.
 //!
-//! Every function here assumes the field is a Mersenne prime field. That is
+//! `ell` and `bit` assume that the field is a Mersenne prime field.
+//! `canonical`, `from_u128` and `pow2` do not read `ℓ`, so the uniform-mask
+//! prefix can use `pow2` over the ML-DSA field. The Mersenne assumption is
 //! checked once, where it can be refused cleanly: `Plan::compile` rejects a
 //! declaration with a Mersenne-only op over any other field, and
 //! `Op::validate` rejects the op itself. Past those two gates nothing in the
-//! Planner reaches these functions over a non-Mersenne field, which is why
-//! a `None` here is a panic rather than an error.
+//! Planner reaches `ell` or `bit` over a non-Mersenne field, which is why
+//! a `None` there is a panic rather than an error.
 
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;

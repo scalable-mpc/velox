@@ -15,8 +15,11 @@
 //!
 //! 1. a header giving the semantics, the rounds, the steps, and the
 //!    preprocessing per element;
-//! 2. `steps(ell)`: the op's steps — the one thing the plan (which sizes
-//!    the engine's preprocessing from them) and the op share;
+//! 2. `steps(..)`: the op's steps — the one thing the plan (which sizes
+//!    the engine's preprocessing from them) and the op share. Its argument
+//!    is what the step count depends on: `ell` for the comparison family,
+//!    `m` for `Mod2m`, the prime's `MaskShape` for the uniform-mask prefix,
+//!    and none for the one-step ops;
 //! 3. the state struct — inputs, preprocessing drawn, intermediates, output,
 //!    in step order;
 //! 4. `impl Operation`: `operands` and `on_step_complete` as a `match` on the
@@ -26,6 +29,10 @@
 //! [`drelu`] (reveal → carry tree → xor, the front of every comparison) and
 //! [`fixed_point`] (the ΠTrunc local steps, the back of both truncating
 //! ops).
+//!
+//! One operation is not an application op: [`uniform_mask`], the prefix
+//! that the Planner runs itself before op-depth 1 over a prime
+//! `2^ℓ − 2^k + 1`. It keeps the template, but no `Op` variant builds it.
 //!
 //! Public operands are `FieldElement`s like sharings; under Shamir the
 //! arithmetic on them is identical, which is why every `Pub` variant is the
