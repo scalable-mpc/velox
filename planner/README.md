@@ -31,9 +31,9 @@ The Planner is generic over every protocol field. Each op type has a
 `FieldClass`:
 
 - `Any` — `Mul`, `Add`, `Reveal` run over every field.
-- `UniformMasks` — `MaskReveal` needs uniform masks in `[0, p)` with their
-  bits: a Mersenne prime, or a prime `p = 2^ℓ − 2^k + 1` such as the ML-DSA
-  field (`ℓ = 23`, `k = 13`). Over the second kind the Planner runs the
+- `UniformMasks` — `MaskReveal` and `LessThanPub` need uniform masks in
+  `[0, p)` with their bits: a Mersenne prime, or a prime `p = 2^ℓ − 2^k + 1`
+  such as the ML-DSA field (`ℓ = 23`, `k = 13`). Over the second kind the Planner runs the
   uniform-mask prefix (`ops::uniform_mask`) before op-depth 1: it tests
   candidate edaBits with 6 multiplications each and keeps those below `p`.
 - `Mersenne` — the comparison family, `Truncate`, `FixedMul` and `Mod2m`
@@ -193,7 +193,7 @@ over another field makes `Planner::new` fail with a message naming the op;
 
 | Variant | Produced by | Meaning |
 |---|---|---|
-| `Shares(Vec)` | `Mul`, `Add`, `Compare*`, `Max*`, `Min*`, `Truncate`, `FixedMul`, `Mod2m` | degree-`t` sharings, elementwise in operand order |
+| `Shares(Vec)` | `Mul`, `Add`, `Compare*`, `Max*`, `Min*`, `Truncate`, `FixedMul`, `Mod2m`, `LessThanPub` | degree-`t` sharings, elementwise in operand order |
 | `Public(Vec)` | `Reveal` | field elements every party holds identically |
 | `Masked { public, mask }` | `MaskReveal` | the public `x_i + r_i` and, alongside, the `EdaBit` of each `r_i` (its sharing and its bit sharings) |
 
@@ -235,6 +235,7 @@ they differ. "Rounds" is engine depths, i.e. network round trips.
 | `Truncate { x, d }` | `Shares(Trunc_d(x) ± 2)` | 1 | reveal of `x + 2^{ℓ−2} + r` | 0 | 1 | `|x| < 2^{ℓ−2}` |
 | `FixedMul { x, y, d }` | `Shares(Trunc_d(x·y) ± 2)` | 1 | masked multiply, mask `r + 2^{ℓ−2}` | 1 (masked) | 1 | `|x·y| < 2^{ℓ−2}` |
 | `Mod2m { x, m }` | `Shares(x mod 2^m)`, exact | `1 + ⌈log₂ m⌉` (7 at m = 63) | reveal of `x + r` (edaBit without its top bit), `⌈log₂ m⌉` tree levels on the low `m` bits | 88 at m = 63 | 1 | `0 ≤ x < 2^{ℓ−41}`, `1 ≤ m ≤ ℓ − 41`; statistical, `2^{−40}` |
+| `LessThanPub { x, c }` | `Shares([x < c])`, exact | `1 + ⌈log₂ ℓ⌉`: 6 at ℓ = 23, 7 [6] | reveal of `x + r`, then two carry trees side by side over the bits of `r` (`[a < r]`, `[b < r]` with `b = a − c`) | 58 at ℓ = 23, 170 [82] | 1 | `x`, `c` any values in `[0, p)`; a field with uniform masks (ML-DSA or Mersenne) |
 | `Compare { a, b }` / `ComparePub { a, c }` | `Shares([a < b])` | 8 [7] | reveal, 6 [5] tree levels, 1 multiply | 86 [42] | 1 | `|a|,|b| < 2^{ℓ−2}` |
 | `Max { a, b }` / `MaxPub { a, c }` | `Shares(max(a,b))` | 9 [8] | Compare's steps + 1 multiply | 87 [43] | 1 | same |
 | `Min { a, b }` / `MinPub { a, c }` | `Shares(min(a,b))` | 9 [8] | Compare's steps + 1 multiply | 87 [43] | 1 | same |
@@ -344,6 +345,7 @@ bits dropped.
 | `Truncate` | `x, d` |
 | `FixedMul` | `x, y, d` |
 | `Mod2m` | `x, m` |
+| `LessThanPub` | `x, c` |
 
 Methods: `op_type() -> OpType`; `len()` / `is_empty()` (elements, from the
 first operand); `params() -> OpParams` (type + width, what a declaration is
@@ -352,9 +354,9 @@ compared to); `validate(ell: Option<usize>, has_masks: bool) -> Result<()>`
 `F::MERSENNE_BITS`, `has_masks` says whether the field has uniform masks;
 `d ∈ 1..=ℓ−3`). `Debug` prints `Type(n elements[, d=…])`.
 
-**`enum OpType`** — `Mul, Add, Compare, ComparePub, Max, Min, MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul, Mod2m { m }`.
+**`enum OpType`** — `Mul, Add, Compare, ComparePub, Max, Min, MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul, Mod2m { m }, LessThanPub`.
 `Copy + Eq + Hash`. `field_class()` is `Any` for `Mul`, `Add`, `Reveal`,
-`UniformMasks` for `MaskReveal` and `Mersenne` for the rest;
+`UniformMasks` for `MaskReveal` and `LessThanPub`, and `Mersenne` for the rest;
 `check_field(ell, has_masks)` refuses a type the field cannot run;
 `edabits_per_element()` is 0 for the `Any` class and 1 for everything else.
 
@@ -534,6 +536,7 @@ steps, preprocessing) → `steps()` → the struct → `impl Operation`.
 | `truncate.rs` | `Truncate` | `x, d, eda, out` | 0: reveal `x + 2^{ℓ−2} + r`; `unmask` on completion |
 | `fixed_mul.rs` | `FixedMul` | `x, y, d, eda, out` | 0: masked multiply with mask `r + 2^{ℓ−2}`; `unmask` on completion |
 | `mod2m.rs` | `Mod2m` | `tree, x, m, eda, c_low, slots, out` | 0: reveal `x + r`; 1..L: tree levels on `c mod 2^m` and `¬[r_i]`; then `c' − [r_lo] + 2^m·[u]` |
+| `less_than_pub.rs` | `LessThanPub` | `tree, x, c, eda, a_below_c, slots, out` | 0: reveal `x + r`; 1..L: the levels of the `[a < r]` and `[b < r]` trees, side by side; then `[a < c] + carry_a − carry_b` |
 | `uniform_mask.rs` | `UniformMasks` (the Planner's prefix, not an application op) | `shape, candidates, coefficients, s, rho, powers, acc, e` | 0: `s²`; 1: `s³, s⁴`; Horner in `s⁴`; `ρ · acc`; reveal `e`. `keep_good` keeps the candidates with `e = 0` |
 | `compare.rs` | `Compare` | `drelu: DReLU` | DReLU's; result `1 − DReLU` |
 | `max.rs` | `Max` | `diff, other, drelu, out` | DReLU's, then multiply `DReLU · diff`; `+ other` |

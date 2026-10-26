@@ -4,7 +4,8 @@
 //! polynomial): an engine where `Multiply` is the product, `Reveal` the
 //! identity and `MaskedMultiply` is `x·y + mask` exercises every line of the
 //! Planner except the network. Each op is checked against its integer
-//! reference, at ℓ = 61, 31 and 127.
+//! reference, at ℓ = 61, 31 and 127, and over the ML-DSA field
+//! (`q = 2^23 − 2^13 + 1`) for the ops that need only uniform masks.
 
 use std::collections::VecDeque;
 
@@ -395,6 +396,51 @@ fn ml_dsa_field_masks_come_from_the_uniform_mask_prefix() {
         let composed: u128 = bits.iter().enumerate().map(|(i, b)| b << i).sum();
         assert!(composed < Q, "the mask is below q");
         assert_eq!(F::canonical_u128(&r.value), Some(composed));
+    }
+}
+
+/// `LessThanPub` over the ML-DSA field, through the full Planner: the
+/// uniform-mask prefix, one reveal, then the two 23-bit carry trees side by
+/// side at five engine depths. Each result is exactly `[x < c]`, also at the
+/// edges of `[0, q)` and around an ML-DSA rejection bound.
+#[test]
+fn ml_dsa_field_less_than_pub_is_exact() {
+    type F = fields::MlDsaField;
+    const Q: u128 = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+    let edges = [0, 1, Q / 2, Q - 2, Q - 1];
+    let mut pairs: Vec<(u128, u128)> = edges.iter().flat_map(|&x| edges.map(|c| (x, c))).collect();
+    // ML-DSA-65: 2(γ1 − β) − 1 with γ1 = 2^19, β = 196.
+    let bound = 2 * ((1 << 19) - 196) - 1;
+    pairs.extend((0..20).map(|i| (bound - 10 + i, bound)));
+    let mut rng = Rng(0x51ed);
+    pairs.extend((0..500).map(|_| ((rng.next() as u128) % Q, (rng.next() as u128) % Q)));
+    let n = pairs.len();
+    let x: Vec<E<F>> = pairs.iter().map(|&(x, _)| from_u128::<F>(x)).collect();
+    let c: Vec<E<F>> = pairs.iter().map(|&(_, c)| from_u128::<F>(c)).collect();
+    let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(OpType::LessThanPub, n)], 0))
+        .then(move |_| OpDepthInput::Op { depth: 1, op: Op::LessThanPub { x: x.clone(), c: c.clone() } });
+    let mut planner = Planner::new(script).unwrap();
+    let candidates = planner.plan().mask_test().unwrap().1;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, 41));
+
+    let mut expected = vec![
+        Batch::Multiply(1, candidates),
+        Batch::Multiply(2, 2 * candidates),
+        Batch::Multiply(3, candidates),
+        Batch::Multiply(4, candidates),
+        Batch::Multiply(5, candidates),
+        Batch::Reveal(6, candidates),
+        Batch::Reveal(7, n),
+    ];
+    let widths = CarryTree::new(23).level_widths();
+    assert_eq!(widths.len(), 5);
+    expected.extend(widths.iter().enumerate().map(|(level, w)| Batch::Multiply(8 + level, 2 * w * n)));
+    assert_eq!(batches, expected);
+
+    let OpResult::Shares(out) = &planner.app().results[0] else { panic!("LessThanPub returns shares") };
+    for ((x, c), got) in pairs.iter().zip(out) {
+        assert_eq!(F::canonical_u128(got), Some(u128::from(x < c)), "x = {x}, c = {c}");
     }
 }
 
