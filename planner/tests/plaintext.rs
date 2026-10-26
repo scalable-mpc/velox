@@ -444,6 +444,57 @@ fn ml_dsa_field_less_than_pub_is_exact() {
     }
 }
 
+/// `CanonicalMod2m` with the ML-DSA `m = 4` over the ML-DSA field, through
+/// the full Planner: the uniform-mask prefix (with this seed, one candidate
+/// is rejected), one reveal, five levels of the 23-bit and 4-bit trees side
+/// by side, and the selection. Each result is exactly `x mod 16`, also for
+/// `x = −16·w + (q − 1)/2` as ML-DSA computes it.
+#[test]
+fn ml_dsa_field_canonical_mod2m_is_exact() {
+    type F = fields::MlDsaField;
+    const Q: u128 = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+    const N: usize = 600;
+    const SEED: u64 = 4;
+    let mut values: Vec<u128> = vec![0, 1, 15, 16, 17, Q / 2, Q - 17, Q - 16, Q - 2, Q - 1];
+    let mut rng = Rng(0xc0de);
+    values.extend((0..N - values.len()).map(|i| {
+        let w = (rng.next() as u128) % Q;
+        if i % 2 == 0 { w } else { ((Q - 16) * w + (Q - 1) / 2) % Q }
+    }));
+    let x: Vec<E<F>> = values.iter().map(|&v| from_u128::<F>(v)).collect();
+    let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(OpType::CanonicalMod2m { m: 4 }, N)], 0))
+        .then(move |_| OpDepthInput::Op { depth: 1, op: Op::CanonicalMod2m { x: x.clone(), m: 4 } });
+    let mut planner = Planner::new(script).unwrap();
+    let candidates = planner.plan().mask_test().unwrap().1;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, SEED));
+
+    // The run's candidates, rebuilt from the plaintext engine's bits: one
+    // of them is at or above q.
+    let mut bits = Rng(SEED | 1);
+    let has_rejected_candidate = (0..candidates).any(|_| (0..23).map(|i| ((bits.next() & 1) as u128) << i).sum::<u128>() >= Q);
+    assert!(has_rejected_candidate, "this seed exercises a rejection");
+
+    let mut expected = vec![
+        Batch::Multiply(1, candidates),
+        Batch::Multiply(2, 2 * candidates),
+        Batch::Multiply(3, candidates),
+        Batch::Multiply(4, candidates),
+        Batch::Multiply(5, candidates),
+        Batch::Reveal(6, candidates),
+        Batch::Reveal(7, N),
+    ];
+    let (wrap, low) = (CarryTree::new(23).level_widths(), CarryTree::new(4).level_widths());
+    expected.extend((0..wrap.len()).map(|level| Batch::Multiply(8 + level, (wrap[level] + 2 * low.get(level).copied().unwrap_or(0)) * N)));
+    expected.push(Batch::Multiply(8 + wrap.len(), N));
+    assert_eq!(batches, expected);
+
+    let OpResult::Shares(out) = &planner.app().results[0] else { panic!("CanonicalMod2m returns shares") };
+    for (v, got) in values.iter().zip(out) {
+        assert_eq!(F::canonical_u128(got), Some(v % 16), "x = {v}");
+    }
+}
+
 /// A circuit over several op-depths, with a prefix run (fewer elements
 /// than declared), an Add-only depth, and the plan checked
 /// against the batches actually run.
