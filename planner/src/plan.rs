@@ -106,7 +106,7 @@ impl Plan {
                     bail!("op-depth {}: {}", index + 1, e);
                 }
             }
-            let rounds = ops::steps_of(params.op_type, ell).into_iter().map(|step| place(step, params.elements)).collect();
+            let rounds = ops::steps_of(params.op_type, mask_bits).into_iter().map(|step| place(step, params.elements)).collect();
             op_depths.push(OpDepthPlan { params: *params, rounds });
         }
         Ok(Self {

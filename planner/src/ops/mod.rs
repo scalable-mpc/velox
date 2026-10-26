@@ -87,11 +87,11 @@ impl OpStep {
     }
 }
 
-/// The steps of an op type. `ell` is `Some(ℓ)` over a Mersenne prime
-/// field; the comparison family's steps depend on it, and `Plan::compile`
-/// has already refused those types when it is `None`.
-pub fn steps_of(op_type: OpType, ell: Option<usize>) -> Vec<OpStep> {
-    let ell = || ell.expect("a Mersenne-only op type planned over a non-Mersenne field");
+/// The steps of an op type. `mask_bits` is `Plan::mask_bits`, the width of
+/// one edaBit, and the comparison family's carry tree runs over these bits.
+/// `Plan::compile` has already refused the types that the field cannot run.
+pub fn steps_of(op_type: OpType, mask_bits: Option<usize>) -> Vec<OpStep> {
+    let bits = || mask_bits.expect("an op type with edaBits planned over a field without uniform masks");
     match op_type {
         OpType::Mul => mul::steps(),
         OpType::Add => add::steps(),
@@ -100,9 +100,9 @@ pub fn steps_of(op_type: OpType, ell: Option<usize>) -> Vec<OpStep> {
         OpType::Truncate => truncate::steps(),
         OpType::FixedMul => fixed_mul::steps(),
         OpType::Mod2m { m } => mod2m::steps(m),
-        OpType::Compare | OpType::ComparePub => compare::steps(ell()),
-        OpType::Max | OpType::MaxPub => max::steps(ell()),
-        OpType::Min | OpType::MinPub => min::steps(ell()),
+        OpType::Compare | OpType::ComparePub => compare::steps(bits()),
+        OpType::Max | OpType::MaxPub => max::steps(bits()),
+        OpType::Min | OpType::MinPub => min::steps(bits()),
     }
 }
 
