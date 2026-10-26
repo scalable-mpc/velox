@@ -107,6 +107,7 @@ pub fn steps_of(op_type: OpType, mask_bits: Option<usize>) -> Vec<OpStep> {
         OpType::Max | OpType::MaxPub => max::steps(bits()),
         OpType::Min | OpType::MinPub => min::steps(bits()),
         OpType::LessThanPub => less_than_pub::steps(bits()),
+        OpType::CanonicalMod2m { m } => canonical_mod2m::steps(bits(), m),
     }
 }
 
@@ -188,6 +189,10 @@ pub fn build<F: ProtocolField>(
         Op::LessThanPub { x, c } => {
             let bits = mask_bits.expect("validated: the field has uniform masks");
             Box::new(less_than_pub::LessThanPub::new(x, c, bits, draw(n)?))
+        }
+        Op::CanonicalMod2m { x, m } => {
+            let bits = mask_bits.expect("validated: the field has uniform masks");
+            Box::new(canonical_mod2m::CanonicalMod2m::new(x, m, bits, draw(n)?))
         }
     })
 }

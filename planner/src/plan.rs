@@ -106,6 +106,12 @@ impl Plan {
                     bail!("op-depth {}: {}", index + 1, e);
                 }
             }
+            // `m < ℓ` also keeps the op's slices of the mask bits in range.
+            if let (OpType::CanonicalMod2m { m }, Some(bits)) = (params.op_type, mask_bits) {
+                if m == 0 || m >= bits {
+                    bail!("op-depth {}: CanonicalMod2m by {} bits is outside 1..={} for {}-bit masks", index + 1, m, bits - 1, bits);
+                }
+            }
             let rounds = ops::steps_of(params.op_type, mask_bits).into_iter().map(|step| place(step, params.elements)).collect();
             op_depths.push(OpDepthPlan { params: *params, rounds });
         }
@@ -256,6 +262,23 @@ mod tests {
         }
         let plan = compile(63, 127).unwrap();
         assert_eq!(plan.planner_bits(), 127, "one edaBit");
+    }
+
+    /// `CanonicalMod2m` takes `1 ≤ m < ℓ` for the edaBit width `ℓ`: 23 over
+    /// the ML-DSA field, 61 over M61.
+    #[test]
+    fn canonical_mod2m_out_of_range_is_refused_at_compile() {
+        let q = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+        let compile = |m, ell, prime| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::CanonicalMod2m { m }, 1)], 0), ell, prime);
+        assert_eq!(compile(4, None, Some(q)).unwrap().op_depth(1).unwrap().rounds(), 7);
+        assert!(compile(22, None, Some(q)).is_ok());
+        assert!(compile(60, Some(61), None).is_ok());
+        for (m, ell, prime) in [(0, None, Some(q)), (23, None, Some(q)), (61, Some(61), None)] {
+            let err = compile(m, ell, prime).unwrap_err();
+            assert!(err.to_string().starts_with("op-depth 1: CanonicalMod2m"), "m={m}: {err}");
+        }
+        let err = compile(4, None, Some(101)).unwrap_err();
+        assert!(err.to_string().contains("uniform masks"), "{err}");
     }
 
     #[test]

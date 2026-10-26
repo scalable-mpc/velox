@@ -153,6 +153,10 @@ pub enum Op<F: ProtocolField> {
     /// read as integers in `[0, p)`. Exact, with no bound on `x`. Needs
     /// uniform masks: it runs over the ML-DSA field and the Mersenne fields.
     LessThanPub { x: Vec<FieldElement<F>>, c: Vec<FieldElement<F>> },
+    /// `x mod 2^m`, exactly, for any `x` read as an integer in `[0, p)`;
+    /// `1 ≤ m < ℓ` with `ℓ` the edaBit width. Needs uniform masks. ML-DSA's
+    /// `w1` uses it with `m = 4`.
+    CanonicalMod2m { x: Vec<FieldElement<F>>, m: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -173,6 +177,8 @@ pub enum OpType {
     /// rounds the plan reserves, depend on it.
     Mod2m { m: usize },
     LessThanPub,
+    /// `m` is part of the type, as for `Mod2m`.
+    CanonicalMod2m { m: usize },
 }
 
 /// What a field must have to run an op type.
@@ -182,7 +188,7 @@ pub enum FieldClass {
     Any,
     /// A prime field with uniform masks in `[0, p)` and their bits: a
     /// Mersenne prime, or a prime `p = 2^ℓ − 2^k + 1` (the uniform-mask
-    /// prefix). `MaskReveal`, `LessThanPub`.
+    /// prefix). `MaskReveal`, `LessThanPub`, `CanonicalMod2m`.
     UniformMasks,
     /// A Mersenne prime field `p = 2^ℓ − 1`: the ops that use its two facts
     /// (`p` is all ones, `p` is odd).
@@ -194,7 +200,7 @@ impl OpType {
     pub fn field_class(self) -> FieldClass {
         match self {
             OpType::Mul | OpType::Add | OpType::Reveal => FieldClass::Any,
-            OpType::MaskReveal | OpType::LessThanPub => FieldClass::UniformMasks,
+            OpType::MaskReveal | OpType::LessThanPub | OpType::CanonicalMod2m { .. } => FieldClass::UniformMasks,
             _ => FieldClass::Mersenne,
         }
     }
@@ -238,6 +244,7 @@ impl<F: ProtocolField> Op<F> {
             Op::FixedMul { .. } => OpType::FixedMul,
             Op::Mod2m { m, .. } => OpType::Mod2m { m: *m },
             Op::LessThanPub { .. } => OpType::LessThanPub,
+            Op::CanonicalMod2m { m, .. } => OpType::CanonicalMod2m { m: *m },
         }
     }
 
@@ -245,7 +252,8 @@ impl<F: ProtocolField> Op<F> {
     pub fn len(&self) -> usize {
         match self {
             Op::Mul { x, .. } | Op::Add { x, .. } | Op::Reveal { x } | Op::MaskReveal { x }
-            | Op::Truncate { x, .. } | Op::FixedMul { x, .. } | Op::Mod2m { x, .. } | Op::LessThanPub { x, .. } => x.len(),
+            | Op::Truncate { x, .. } | Op::FixedMul { x, .. } | Op::Mod2m { x, .. } | Op::LessThanPub { x, .. }
+            | Op::CanonicalMod2m { x, .. } => x.len(),
             Op::Compare { a, .. } | Op::ComparePub { a, .. } | Op::Max { a, .. } | Op::Min { a, .. }
             | Op::MaxPub { a, .. } | Op::MinPub { a, .. } => a.len(),
         }
@@ -284,6 +292,8 @@ impl<F: ProtocolField> Op<F> {
             }
             Op::Mod2m { m, .. } => mod2m::check_m(*m, ell.expect("checked above")),
             Op::LessThanPub { x, c } => pair(x.len(), c.len(), "x, c"),
+            // `covers` makes the run use the declared `m`, and `Plan::compile` checked it.
+            Op::CanonicalMod2m { .. } => Ok(()),
         }
     }
 
@@ -302,6 +312,7 @@ impl<F: ProtocolField> std::fmt::Debug for Op<F> {
         match self {
             Op::Truncate { d, .. } | Op::FixedMul { d, .. } => write!(f, "{:?}({} elements, d={})", self.op_type(), self.len(), d),
             Op::Mod2m { m, .. } => write!(f, "Mod2m({} elements, m={})", self.len(), m),
+            Op::CanonicalMod2m { m, .. } => write!(f, "CanonicalMod2m({} elements, m={})", self.len(), m),
             _ => write!(f, "{:?}({} elements)", self.op_type(), self.len()),
         }
     }
