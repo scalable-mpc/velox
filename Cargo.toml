@@ -11,6 +11,7 @@ members = [
     "apps/erc20",
     "apps/fhe_decrypt",
     "apps/reveal_probe",
+    "apps/threshold_mldsa",
     "velox",
     "config"
 ]

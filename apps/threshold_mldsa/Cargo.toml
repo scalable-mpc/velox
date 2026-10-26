@@ -1,0 +1,11 @@
+[package]
+name = "threshold_mldsa"
+version = "0.1.0"
+edition = "2021"
+
+# Threshold ML-DSA signing (issue 19, Quorus by Bienstock et al., USENIX
+# Security 2026) on the Planner over the ML-DSA field F_q, q = 8380417.
+# See src/lib.rs.
+
+[dependencies]
+velox = { package = "velox", path = "../../velox" }
