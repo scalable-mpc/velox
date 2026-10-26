@@ -445,8 +445,8 @@ fn ml_dsa_field_less_than_pub_is_exact() {
 }
 
 /// `CanonicalMod2m` with the ML-DSA `m = 4` over the ML-DSA field, through
-/// the full Planner: the uniform-mask prefix (with this seed, one candidate
-/// is rejected), one reveal, five levels of the 23-bit and 4-bit trees side
+/// the full Planner: the uniform-mask prefix (this seed rejects 2 of the
+/// 645 candidates), one reveal, five levels of the 23-bit and 4-bit trees side
 /// by side, and the selection. Each result is exactly `x mod 16`, also for
 /// `x = −16·w + (q − 1)/2` as ML-DSA computes it.
 #[test]
@@ -469,8 +469,8 @@ fn ml_dsa_field_canonical_mod2m_is_exact() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let batches = rt.block_on(run(&mut planner, SEED));
 
-    // The run's candidates, rebuilt from the plaintext engine's bits: one
-    // of them is at or above q.
+    // The run's candidates, rebuilt from the plaintext engine's bits: 2 of
+    // them are at or above q.
     let mut bits = Rng(SEED | 1);
     let has_rejected_candidate = (0..candidates).any(|_| (0..23).map(|i| ((bits.next() & 1) as u128) << i).sum::<u128>() >= Q);
     assert!(has_rejected_candidate, "this seed exercises a rejection");
