@@ -347,6 +347,57 @@ fn a_non_mersenne_field_runs_mul_add_and_reveal() {
     }
 }
 
+/// Over the ML-DSA field, `q = 2^23 − 2^13 + 1`, `MaskReveal` draws masks
+/// from the uniform-mask prefix: six engine depths before op-depth 1, over
+/// the candidates. Every mask is below `q`, its bits are 0/1 and compose it,
+/// and `c − r` recovers `x`. 3,000 masks make about 3 rejections likely.
+#[test]
+fn ml_dsa_field_masks_come_from_the_uniform_mask_prefix() {
+    type F = fields::MlDsaField;
+    const Q: u128 = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+    const N: usize = 3000;
+    let xs: Vec<E<F>> = (0..N as u64).map(|i| E::<F>::from(i * 2797 % Q as u64)).collect();
+    let x_op = xs.clone();
+    let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(OpType::MaskReveal, N)], 0))
+        .then(move |_| OpDepthInput::Op { depth: 1, op: Op::MaskReveal { x: x_op.clone() } });
+    let mut planner = Planner::new(script).unwrap();
+    let candidates = planner.plan().mask_test().unwrap().1;
+    assert_eq!(candidates, N + 40 + 24);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, 23));
+    let c = candidates;
+    assert_eq!(
+        batches,
+        vec![
+            Batch::Multiply(1, c),
+            Batch::Multiply(2, 2 * c),
+            Batch::Multiply(3, c),
+            Batch::Multiply(4, c),
+            Batch::Multiply(5, c),
+            Batch::Reveal(6, c),
+            Batch::Reveal(7, N),
+        ]
+    );
+    let OpResult::Masked { public, mask } = &planner.app().results[0] else { panic!("MaskReveal returns Masked") };
+    // The candidates, rebuilt from the plaintext engine's bits (the
+    // Planner's come first): the kept masks are the first N below q.
+    let mut rng = Rng(23 | 1);
+    let candidate_values: Vec<u128> =
+        (0..c).map(|_| (0..23).map(|i| ((rng.next() & 1) as u128) << i).sum()).collect();
+    let good: Vec<u128> = candidate_values.iter().copied().filter(|r| *r < Q).take(N).collect();
+    assert!(candidate_values.iter().any(|r| *r >= Q), "this seed exercises a rejection");
+    assert_eq!(mask.iter().map(|r| F::canonical_u128(&r.value).unwrap()).collect::<Vec<_>>(), good);
+    for ((opened, r), x) in public.iter().zip(mask).zip(&xs) {
+        assert_eq!(&(opened - &r.value), x, "c − r recovers x");
+        assert_eq!(r.bits.len(), 23);
+        let bits: Vec<u128> = r.bits.iter().map(|b| F::canonical_u128(b).unwrap()).collect();
+        assert!(bits.iter().all(|b| *b <= 1), "bits are 0/1");
+        let composed: u128 = bits.iter().enumerate().map(|(i, b)| b << i).sum();
+        assert!(composed < Q, "the mask is below q");
+        assert_eq!(F::canonical_u128(&r.value), Some(composed));
+    }
+}
+
 /// A circuit over several op-depths, with a prefix run (fewer elements
 /// than declared), an Add-only depth, and the plan checked
 /// against the batches actually run.

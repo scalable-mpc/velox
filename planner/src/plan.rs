@@ -98,12 +98,8 @@ impl Plan {
             if params.elements == 0 {
                 bail!("op-depth {} declares {:?} over no elements", index + 1, params.op_type);
             }
-            if params.op_type.needs_mersenne() && ell.is_none() {
-                bail!(
-                    "op-depth {} declares {:?}, which needs a Mersenne prime field (m61base, m31base or m127base)",
-                    index + 1,
-                    params.op_type
-                );
+            if let Err(e) = params.op_type.check_field(ell, mask_bits.is_some()) {
+                bail!("op-depth {}: {}", index + 1, e);
             }
             if let (OpType::Mod2m { m }, Some(ell)) = (params.op_type, ell) {
                 if let Err(e) = mod2m::check_m(m, ell) {
@@ -277,6 +273,35 @@ mod tests {
         assert_eq!(counts.gates_per_depth, vec![0, 120, 116, 60, 28, 12, 4, 4, 4]);
         assert_eq!(counts.masked_gates_per_depth, vec![0; 9]);
         assert_eq!(plan.random_wires(), RandomWires::new(4 * 61, 0));
+    }
+
+    /// Over the ML-DSA field, `q = 2^23 − 2^13 + 1`, edaBits come from the
+    /// uniform-mask prefix: its six rounds take engine depths 1..=6, sized to
+    /// the candidates, and the op-depths follow.
+    #[test]
+    fn a_prime_with_uniform_masks_plans_the_prefix_first() {
+        let q = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+        let counts = PlannerCounts::new(vec![OpParams::new(OpType::Mul, 2), OpParams::new(OpType::MaskReveal, 100)], 0)
+            .with_random_wires(3, 0);
+        let plan = Plan::compile(&counts, None, Some(q)).unwrap();
+        let (shape, candidates) = plan.mask_test().unwrap();
+        assert_eq!((shape.bits, shape.low_bits, candidates), (23, 13, 100 + 40 + 1));
+        assert_eq!(plan.prefix().iter().map(|r| r.engine_depth).collect::<Vec<_>>(), (1..=6).collect::<Vec<_>>());
+        assert_eq!(plan.prefix().iter().map(|r| r.gates).collect::<Vec<_>>(), vec![141, 282, 141, 141, 141, 141]);
+        assert_eq!(plan.op_depth(1).unwrap().rounds[0].engine_depth, 7);
+        assert_eq!(plan.op_depth(2).unwrap().rounds[0].engine_depth, 8);
+        assert_eq!(plan.engine_depths(), 8);
+        assert_eq!(plan.preprocessing_counts().gates_per_depth, vec![141, 282, 141, 141, 141, 0, 2, 0]);
+        assert_eq!(plan.random_wires(), RandomWires::new(141 * 23 + 3, 0));
+        // No prefix when nothing uses edaBits, and the Mersenne-only ops are
+        // still refused.
+        let plain = Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mul, 2)], 0), None, Some(q)).unwrap();
+        assert!(plain.prefix().is_empty() && plain.planner_bits() == 0);
+        let err = Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Compare, 1)], 0), None, Some(q)).unwrap_err();
+        assert!(err.to_string().contains("Mersenne"), "{err}");
+        // A prime of another shape has no uniform masks.
+        let err = Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::MaskReveal, 1)], 0), None, Some(101)).unwrap_err();
+        assert!(err.to_string().contains("uniform masks"), "{err}");
     }
 
     #[test]

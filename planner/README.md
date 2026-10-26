@@ -27,13 +27,22 @@ nothing here touches the network. The engine hosts the Planner as one of its
     mpc::Context           (the engine: preprocessing, multiplication, reveal, verification, output)
 ```
 
-The Planner is generic over every protocol field. `Mul`, `Add` and `Reveal`
-run over any of them; the comparison family, `Truncate`, `FixedMul` and
-`MaskReveal` need a Mersenne prime field `p = 2^ℓ − 1` (ℓ = 61 or 31, i.e.
-`m61base` / `m31base`), because they depend on `bits(p − b) = ¬bits(b)` and
-`msb(v) = lsb(2v)`. The Planner reads that at runtime through
-`ProtocolField::MERSENNE_BITS` and refuses those ops by name over any other
-field — when the plan is compiled, before preprocessing. Every application in
+The Planner is generic over every protocol field. Each op type has a
+`FieldClass`:
+
+- `Any` — `Mul`, `Add`, `Reveal` run over every field.
+- `UniformMasks` — `MaskReveal` needs uniform masks in `[0, p)` with their
+  bits: a Mersenne prime, or a prime `p = 2^ℓ − 2^k + 1` such as the ML-DSA
+  field (`ℓ = 23`, `k = 13`). Over the second kind the Planner runs the
+  uniform-mask prefix (`ops::uniform_mask`) before op-depth 1: it tests
+  candidate edaBits with 6 multiplications each and keeps those below `p`.
+- `Mersenne` — the comparison family, `Truncate`, `FixedMul` and `Mod2m`
+  need `p = 2^ℓ − 1` (ℓ = 61, 31 or 127), because they depend on
+  `bits(p − b) = ¬bits(b)` and `msb(v) = lsb(2v)`.
+
+The Planner reads `ProtocolField::MERSENNE_BITS` and `PRIME_MODULUS` at
+runtime and refuses an op by name over a field that cannot run it — when the
+plan is compiled, before preprocessing. Every application in
 the workspace — `anonymous_broadcast`, `btx_setup` (over BLS12-381),
 `reveal_probe`, `bristol_circuit`, `erc20` — is a `PlannerApplication`; none
 implements the engine's `Application` itself.
@@ -343,9 +352,10 @@ agree in length; the field can run the op — `ell` is `F::MERSENNE_BITS`;
 `d ∈ 1..=ℓ−3`). `Debug` prints `Type(n elements[, d=…])`.
 
 **`enum OpType`** — `Mul, Add, Compare, ComparePub, Max, Min, MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul, Mod2m { m }`.
-`Copy + Eq + Hash`. `needs_mersenne()` is false for `Mul`, `Add`, `Reveal` and
-true for the rest; `edabits_per_element()` is 0 for `Mul`, `Add`, `Reveal`
-and 1 for everything else.
+`Copy + Eq + Hash`. `field_class()` is `Any` for `Mul`, `Add`, `Reveal`,
+`UniformMasks` for `MaskReveal` and `Mersenne` for the rest;
+`check_field(ell, has_masks)` refuses a type the field cannot run;
+`edabits_per_element()` is 0 for the `Any` class and 1 for everything else.
 
 **`struct OpParams { op_type: OpType, elements: usize }`** — an op without its
 operands; what an application declares for each op-depth before the operands
