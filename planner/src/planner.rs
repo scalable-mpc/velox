@@ -29,13 +29,14 @@ use crate::{
         application::{OpDepthInput, PlannerApplication, PlannerCounts},
         engine::{Application, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires},
     },
-    ops::{self, EngineOperands, Operation},
+    ops::{self, uniform_mask, EngineOperands, Operation},
     plan::Plan,
-    primitives::edabit::EdaBitPool,
+    primitives::edabit::{EdaBit, EdaBitPool},
 };
 
 /// The op-depth currently being executed.
 struct DepthRun<F: ProtocolField> {
+    /// Counting from 1; 0 is the uniform-mask prefix.
     op_depth: usize,
     op: Box<dyn Operation<F>>,
     /// The next of the op's steps.
@@ -51,13 +52,16 @@ pub struct Planner<F: ProtocolField, A: PlannerApplication<F>> {
     current_engine_run: Option<DepthRun<F>>,
     /// Highest op-depth completed; op-depths run in order.
     completed: usize,
+    /// The application's random wires, held while the uniform-mask prefix
+    /// runs.
+    app_wires: Option<RandomWireShares<F>>,
 }
 
 impl<F: ProtocolField, A: PlannerApplication<F>> Planner<F, A> {
     /// Compile the application's declaration into the engine's plan.
     pub fn new(app: A) -> Result<Self> {
         let counts: PlannerCounts = app.preprocessing_count();
-        let plan = Plan::compile(&counts, F::MERSENNE_BITS)?;
+        let plan = Plan::compile(&counts, F::MERSENNE_BITS, F::PRIME_MODULUS)?;
         let pool = EdaBitPool::plan(&plan.edabits_per_depth());
         log::info!(
             "Planner: {} op-depths over {} engine depths, {} edaBits ({} random bits)",
@@ -66,7 +70,7 @@ impl<F: ProtocolField, A: PlannerApplication<F>> Planner<F, A> {
             plan.edabits_total(),
             plan.planner_bits()
         );
-        Ok(Self { app, execution_plan: plan, edabit_pool: pool, current_engine_run: None, completed: 0 })
+        Ok(Self { app, execution_plan: plan, edabit_pool: pool, current_engine_run: None, completed: 0, app_wires: None })
     }
 
     pub fn plan(&self) -> &Plan {
@@ -120,9 +124,12 @@ impl<F: ProtocolField, A: PlannerApplication<F>> Planner<F, A> {
         }
         // The op-depth's plan lists, step by step, the engine depth each of the
         // op's steps runs at and the kind of batch it must be.
-        let op_depth_plan = self.execution_plan.op_depth(run.op_depth).expect("scheduled against the plan");
-        while run.step < op_depth_plan.rounds.len() {
-            let round = &op_depth_plan.rounds[run.step];
+        let rounds = match run.op_depth {
+            0 => self.execution_plan.prefix(),
+            op_depth => &self.execution_plan.op_depth(op_depth).expect("scheduled against the plan").rounds,
+        };
+        while run.step < rounds.len() {
+            let round = &rounds[run.step];
             let operands = run.op.operands(run.step);
             if operands.batch_type() != round.step.engine_op {
                 bail!(
@@ -146,10 +153,23 @@ impl<F: ProtocolField, A: PlannerApplication<F>> Planner<F, A> {
 
         // Every step has run: the op-depth is finished.
         let run = self.current_engine_run.take().expect("checked above");
+        if run.op_depth == 0 {
+            let masks = uniform_mask::keep_good(run.op.into_result(), self.edabit_pool.total())?;
+            log::info!("Planner: uniform-mask prefix complete, {} masks kept", masks.len());
+            return Box::pin(self.start_application(masks)).await;
+        }
         self.completed = run.op_depth;
         log::info!("Planner: op-depth {} complete", run.op_depth);
         let app_input = self.app.on_depth_complete(run.op_depth, run.op.into_result()).await;
         Box::pin(self.start_scheduled_op_depth(app_input)).await
+    }
+
+    /// Fill the edaBit pool and hand the application its random wires.
+    async fn start_application(&mut self, edabits: Vec<EdaBit<F>>) -> Result<DepthInput<F>> {
+        self.edabit_pool.fill(edabits)?;
+        let wires = self.app_wires.take().expect("set when preprocessing completed");
+        let app_input = self.app.on_preprocessing_complete(wires).await;
+        self.start_scheduled_op_depth(app_input).await
     }
 }
 
@@ -173,7 +193,9 @@ impl<F: ProtocolField, A: PlannerApplication<F>> Application<F> for Planner<F, A
     }
 
     /// The Planner's own random bits come off the front of what the engine
-    /// delivers and fill the edaBit pool; the rest go to the application.
+    /// delivers and become edaBits; the rest go to the application. Over a
+    /// prime field that is not Mersenne, the edaBits are candidates, and the
+    /// uniform-mask prefix runs before the application starts.
     async fn on_preprocessing_complete(&mut self, wires: RandomWireShares<F>) -> Result<DepthInput<F>> {
         let planner_bits = self.execution_plan.planner_bits();
         if wires.bits.len() < planner_bits {
@@ -181,10 +203,19 @@ impl<F: ProtocolField, A: PlannerApplication<F>> Application<F> for Planner<F, A
         }
         let mut bits = wires.bits;
         let app_bits = bits.split_off(planner_bits);
-        self.edabit_pool.fill(&bits)?;
+        let edabits: Vec<EdaBit<F>> = match self.execution_plan.mask_bits() {
+            Some(width) => bits.chunks(width).map(|signs| EdaBit::from_signs(signs, width)).collect::<Result<_>>()?,
+            None => Vec::new(),
+        };
         drop(bits);
-        let app_input = self.app.on_preprocessing_complete(RandomWireShares::new(app_bits, wires.sharings)).await;
-        self.start_scheduled_op_depth(app_input).await
+        self.app_wires = Some(RandomWireShares::new(app_bits, wires.sharings));
+        let Some((shape, _)) = self.execution_plan.mask_test() else {
+            return self.start_application(edabits).await;
+        };
+        self.current_engine_run =
+            Some(DepthRun { op_depth: 0, op: Box::new(uniform_mask::UniformMasks::new(shape, edabits)), step: 0, out: None });
+        log::info!("Planner: uniform-mask prefix started, {} engine rounds", self.execution_plan.prefix().len());
+        self.next_engine_depth().await
     }
 
     /// An engine depth finished — products of a multiply, or the public

@@ -80,7 +80,9 @@ impl<F: ProtocolField> std::fmt::Debug for OpDepthInput<F> {
 pub enum OpResult<F: ProtocolField> {
     Shares(Vec<FieldElement<F>>),
     Public(Vec<FieldElement<F>>),
-    /// `MaskReveal`: the public `x + r` and `r`'s edaBit, elementwise.
+    /// `MaskReveal`: the public `x + r` and `r`'s edaBit, elementwise. (The
+    /// Planner's uniform-mask prefix uses it too: the opened test value and
+    /// the candidate.)
     Masked { public: Vec<FieldElement<F>>, mask: Vec<EdaBit<F>> },
 }
 

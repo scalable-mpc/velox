@@ -5,9 +5,11 @@
 //! them as `r / sqrt(r²)`). A 0/1 bit is `[b] = (1 + [s]) / 2`, and `ℓ` of
 //! them compose `[r] = Σ 2^i [b_i]` — Liu et al.'s `ΠSolvedBits` output
 //! `([r], [r]_B)`, or an edaBit in Escudero et al.'s terms. Both steps are
-//! linear, so nothing here communicates. `r` ranges over `[0, 2^ℓ)`; the
-//! one value `2^ℓ − 1 ≡ 0 mod p` occurs with probability `2^-ℓ` and is
-//! accepted, as the paper does.
+//! linear, so nothing here communicates. Over `p = 2^ℓ − 1`, `r` ranges
+//! over `[0, 2^ℓ)`; the one value `2^ℓ − 1 ≡ 0 mod p` occurs with
+//! probability `2^-ℓ` and is accepted, as the paper does. Over another
+//! prime field, these are candidates, and the uniform-mask prefix
+//! (`uniform_mask`) keeps only those below `p`.
 
 use anyhow::{bail, Result};
 use fields::ProtocolField;
@@ -23,10 +25,11 @@ pub struct EdaBit<F: ProtocolField> {
 }
 
 impl<F: ProtocolField> EdaBit<F> {
-    /// From `ℓ` sharings of `±1`.
-    pub fn from_signs(signs: &[FieldElement<F>]) -> Result<Self> {
-        if signs.len() != mersenne::ell::<F>() {
-            bail!("an edaBit needs {} sign sharings, got {}", mersenne::ell::<F>(), signs.len());
+    /// From `bits` sharings of `±1`: `ℓ` over a Mersenne field, the mask
+    /// width of a uniform-mask candidate otherwise.
+    pub fn from_signs(signs: &[FieldElement<F>], bits: usize) -> Result<Self> {
+        if signs.len() != bits {
+            bail!("an edaBit needs {} sign sharings, got {}", bits, signs.len());
         }
         let half = FieldElement::<F>::from(2u64).inv().expect("2 is invertible in an odd field");
         let one = FieldElement::<F>::one();
@@ -81,28 +84,19 @@ impl<F: ProtocolField> EdaBitPool<F> {
         Self { edabits: Vec::new(), offsets, total }
     }
 
-    /// Bits the engine must supply: `ℓ` per edaBit. Zero, without asking
-    /// for `ℓ`, when the circuit uses none — which is every circuit over a
-    /// non-Mersenne field.
-    pub fn bits_needed(&self) -> usize {
-        if self.total == 0 {
-            return 0;
-        }
-        self.total * mersenne::ell::<F>()
+    /// edaBits the pool holds when filled.
+    pub fn total(&self) -> usize {
+        self.total
     }
 
-    /// Assemble the pool from the first `bits_needed()` engine signs.
-    pub fn fill(&mut self, signs: &[FieldElement<F>]) -> Result<()> {
-        if signs.len() < self.bits_needed() {
-            bail!("the edaBit pool needs {} random bits, got {}", self.bits_needed(), signs.len());
+    /// Fill the pool, op-depth 1's slice first. Over a Mersenne field these
+    /// are the edaBits as made; over another prime field, the candidates the
+    /// uniform-mask prefix kept.
+    pub fn fill(&mut self, edabits: Vec<EdaBit<F>>) -> Result<()> {
+        if edabits.len() != self.total {
+            bail!("the edaBit pool needs {} edaBits, got {}", self.total, edabits.len());
         }
-        if self.total == 0 {
-            return Ok(());
-        }
-        self.edabits = signs[..self.bits_needed()]
-            .chunks(mersenne::ell::<F>())
-            .map(EdaBit::from_signs)
-            .collect::<Result<_>>()?;
+        self.edabits = edabits;
         Ok(())
     }
 
@@ -143,7 +137,7 @@ mod tests {
     fn check<F: ProtocolField>() {
         let p = (1u128 << mersenne::ell::<F>()) - 1;
         for r in [0u128, 1, 5, p / 2, p / 2 + 1, p - 2, p - 1] {
-            let e = EdaBit::<F>::from_signs(&signs_of::<F>(r)).unwrap();
+            let e = EdaBit::<F>::from_signs(&signs_of::<F>(r), mersenne::ell::<F>()).unwrap();
             assert_eq!(mersenne::canonical::<F>(&e.value), r % p, "value of r={r}");
             for i in 0..mersenne::ell::<F>() {
                 assert_eq!(mersenne::canonical::<F>(&e.bits[i]), (r >> i) & 1, "bit {i} of r={r}");
@@ -155,7 +149,7 @@ mod tests {
                 assert_eq!(mersenne::canonical::<F>(&e.trunc_shift(d)), trunc_ref::<F>(r, d), "trunc_{d} of r={r}");
             }
         }
-        assert!(EdaBit::<F>::from_signs(&signs_of::<F>(3)[..mersenne::ell::<F>() - 1]).is_err());
+        assert!(EdaBit::<F>::from_signs(&signs_of::<F>(3)[..mersenne::ell::<F>() - 1], mersenne::ell::<F>()).is_err());
     }
 
     #[test]
@@ -169,10 +163,11 @@ mod tests {
     fn pool_slices_by_depth() {
         type F = Mersenne61Field;
         let mut pool = EdaBitPool::<F>::plan(&[2, 0, 1]);
-        assert_eq!(pool.bits_needed(), 3 * 61);
+        assert_eq!(pool.total(), 3);
         assert!(pool.for_depth(1, 1).is_err(), "not filled yet");
-        let signs: Vec<_> = (0..3).flat_map(|r| signs_of::<F>(100 + r)).collect();
-        pool.fill(&signs).unwrap();
+        let edabits = |count: u128| -> Vec<EdaBit<F>> { (0..count).map(|r| EdaBit::from_signs(&signs_of::<F>(100 + r), 61).unwrap()).collect() };
+        assert!(pool.fill(edabits(2)).is_err(), "one short");
+        pool.fill(edabits(3)).unwrap();
         assert_eq!(mersenne::canonical::<F>(&pool.for_depth(1, 2).unwrap()[1].value), 101);
         assert_eq!(mersenne::canonical::<F>(&pool.for_depth(3, 1).unwrap()[0].value), 102);
         assert_eq!(pool.for_depth(1, 1).unwrap(), pool.for_depth(1, 1).unwrap(), "read, not drained");

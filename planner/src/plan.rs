@@ -21,7 +21,11 @@ use crate::{
         application::{OpParams, OpType, PlannerCounts},
         engine::{PreprocessingCounts, RandomWires},
     },
-    ops::{self, mod2m, EngineOperationType, OpStep},
+    ops::{
+        self, mod2m,
+        uniform_mask::{self, MaskShape},
+        EngineOperationType, OpStep,
+    },
 };
 
 /// One engine depth: a step of an op's schedule, placed at a depth and
@@ -52,21 +56,44 @@ impl OpDepthPlan {
 
 #[derive(Clone, Debug)]
 pub struct Plan {
+    /// The uniform-mask prefix, at engine depths `1..`: empty over a
+    /// Mersenne field and when no op-depth uses edaBits.
+    prefix: Vec<EngineRound>,
     op_depths: Vec<OpDepthPlan>,
     /// `Some(ℓ)` over the Mersenne prime field `2^ℓ − 1`, `None` over any
     /// other protocol field.
     ell: Option<usize>,
+    /// Bits of one edaBit: `ℓ` over a Mersenne field, the mask width over a
+    /// prime `2^ℓ − 2^k + 1`, `None` when the field has no uniform masks.
+    mask_bits: Option<usize>,
+    /// Over a prime `2^ℓ − 2^k + 1` that is not Mersenne, when an op-depth
+    /// uses edaBits: the shape of the prime and the candidates the prefix tests.
+    mask_test: Option<(MaskShape, usize)>,
     output: usize,
     app_rand_bits: usize,
     app_sharings: usize,
 }
 
 impl Plan {
-    /// `ell` is `F::MERSENNE_BITS`: a declaration with a Mersenne-only op
-    /// over any other field is refused here, before preprocessing.
-    pub fn compile(counts: &PlannerCounts, ell: Option<usize>) -> Result<Self> {
-        let mut op_depths = Vec::with_capacity(counts.depth());
+    /// `ell` is `F::MERSENNE_BITS` and `prime` is `F::PRIME_MODULUS`: a
+    /// declaration with an op the field cannot run is refused here, before
+    /// preprocessing.
+    pub fn compile(counts: &PlannerCounts, ell: Option<usize>, prime: Option<u128>) -> Result<Self> {
+        let shape = if ell.is_none() { prime.and_then(MaskShape::of_prime) } else { None };
+        let mask_bits = ell.or(shape.map(|s| s.bits));
+        let masks: usize = counts.ops.iter().map(|p| p.edabits()).sum();
+        let mask_test = shape.filter(|_| masks > 0).map(|shape| (shape, shape.candidates_for(masks)));
         let mut engine_depth = 1;
+        let mut place = |step: OpStep, elements: usize| {
+            let round = EngineRound { step, engine_depth, gates: step.num_engine_operands * elements };
+            engine_depth += 1;
+            round
+        };
+        let prefix = match mask_test {
+            Some((shape, candidates)) => uniform_mask::steps(shape).into_iter().map(|step| place(step, candidates)).collect(),
+            None => Vec::new(),
+        };
+        let mut op_depths = Vec::with_capacity(counts.depth());
         for (index, params) in counts.ops.iter().enumerate() {
             if params.elements == 0 {
                 bail!("op-depth {} declares {:?} over no elements", index + 1, params.op_type);
@@ -83,17 +110,35 @@ impl Plan {
                     bail!("op-depth {}: {}", index + 1, e);
                 }
             }
-            let rounds = ops::steps_of(params.op_type, ell)
-                .into_iter()
-                .map(|step| {
-                    let round = EngineRound { step, engine_depth, gates: step.num_engine_operands * params.elements };
-                    engine_depth += 1;
-                    round
-                })
-                .collect();
+            let rounds = ops::steps_of(params.op_type, ell).into_iter().map(|step| place(step, params.elements)).collect();
             op_depths.push(OpDepthPlan { params: *params, rounds });
         }
-        Ok(Self { op_depths, ell, output: counts.output, app_rand_bits: counts.rand_bits, app_sharings: counts.sharings })
+        Ok(Self {
+            prefix,
+            op_depths,
+            ell,
+            mask_bits,
+            mask_test,
+            output: counts.output,
+            app_rand_bits: counts.rand_bits,
+            app_sharings: counts.sharings,
+        })
+    }
+
+    /// The uniform-mask prefix's rounds, run before op-depth 1.
+    pub fn prefix(&self) -> &[EngineRound] {
+        &self.prefix
+    }
+
+    /// The prefix's shape and the number of candidates it tests, when the
+    /// plan has a prefix.
+    pub fn mask_test(&self) -> Option<(MaskShape, usize)> {
+        self.mask_test
+    }
+
+    /// Bits of one edaBit, when the field has uniform masks.
+    pub fn mask_bits(&self) -> Option<usize> {
+        self.mask_bits
     }
 
     /// The plan of op-depth `op_depth`, counting from 1.
@@ -109,9 +154,9 @@ impl Plan {
         self.ell
     }
 
-    /// Engine depths in all.
+    /// Engine depths in all, the prefix's included.
     pub fn engine_depths(&self) -> usize {
-        self.op_depths.iter().map(|d| d.rounds.len()).sum()
+        self.prefix.len() + self.op_depths.iter().map(|d| d.rounds.len()).sum::<usize>()
     }
 
     /// edaBits each op-depth consumes, op-depth 1 first.
@@ -124,9 +169,11 @@ impl Plan {
     }
 
     /// Bits the Planner keeps for itself off the front of what the engine
-    /// delivers: `ℓ` per edaBit.
+    /// delivers: the mask width per edaBit made. With a prefix, the Planner
+    /// makes one edaBit per candidate, not one per edaBit used.
     pub fn planner_bits(&self) -> usize {
-        self.edabits_total() * self.ell.unwrap_or(0)
+        let edabits_made = self.mask_test.map_or(self.edabits_total(), |(_, candidates)| candidates);
+        edabits_made * self.mask_bits.unwrap_or(0)
     }
 
     /// The engine's profile: plain and masked gates per engine depth, 0 at
@@ -134,7 +181,7 @@ impl Plan {
     pub fn preprocessing_counts(&self) -> PreprocessingCounts {
         let mut gates = Vec::with_capacity(self.engine_depths());
         let mut masked = Vec::with_capacity(self.engine_depths());
-        for round in self.op_depths.iter().flat_map(|d| d.rounds.iter()) {
+        for round in self.prefix.iter().chain(self.op_depths.iter().flat_map(|d| d.rounds.iter())) {
             let (plain, mask) = match round.step.engine_op {
                 EngineOperationType::Multiply => (round.gates, 0),
                 EngineOperationType::MaskedMultiply => (0, round.gates),
@@ -159,7 +206,7 @@ mod tests {
     use crate::api::application::OpType;
 
     fn rounds(op_type: OpType, ell: usize) -> usize {
-        Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 3)], 0), Some(ell)).unwrap().op_depth(1).unwrap().rounds()
+        Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 3)], 0), Some(ell), None).unwrap().op_depth(1).unwrap().rounds()
     }
 
     /// Over a non-Mersenne field the plan takes `Mul`, `Add` and `Reveal`,
@@ -171,12 +218,12 @@ mod tests {
             1,
         )
         .with_random_wires(7, 2);
-        let plan = Plan::compile(&counts, None).unwrap();
+        let plan = Plan::compile(&counts, None, None).unwrap();
         assert_eq!(plan.engine_depths(), 2);
         assert_eq!(plan.planner_bits(), 0);
         assert_eq!(plan.random_wires(), RandomWires::new(7, 2));
         for op_type in [OpType::Compare, OpType::MaxPub, OpType::Truncate, OpType::FixedMul, OpType::MaskReveal] {
-            let err = Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 1)], 0), None).unwrap_err();
+            let err = Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 1)], 0), None, None).unwrap_err();
             assert!(err.to_string().contains("Mersenne"), "{op_type:?}: {err}");
         }
     }
@@ -205,7 +252,7 @@ mod tests {
     /// preprocessing, naming the op-depth.
     #[test]
     fn mod2m_out_of_range_is_refused_at_compile() {
-        let compile = |m, ell| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mod2m { m }, 1)], 0), Some(ell));
+        let compile = |m, ell| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mod2m { m }, 1)], 0), Some(ell), None);
         assert!(compile(20, 61).is_ok());
         for (m, ell) in [(0, 61), (21, 61), (1, 31), (87, 127)] {
             let err = compile(m, ell).unwrap_err();
@@ -217,7 +264,7 @@ mod tests {
 
     #[test]
     fn a_comparison_depth_is_planned_level_by_level() {
-        let plan = Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Max, 4)], 0), Some(61)).unwrap();
+        let plan = Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Max, 4)], 0), Some(61), None).unwrap();
         let op_depth = plan.op_depth(1).unwrap();
         let batches: Vec<EngineOperationType> = op_depth.rounds.iter().map(|r| r.step.engine_op).collect();
         assert_eq!(batches[0], EngineOperationType::Reveal);
@@ -244,7 +291,7 @@ mod tests {
             9,
         )
         .with_random_wires(5, 3);
-        let plan = Plan::compile(&counts, Some(61)).unwrap();
+        let plan = Plan::compile(&counts, Some(61), None).unwrap();
         assert_eq!(plan.op_depth(1).unwrap().rounds[0].engine_depth, 1);
         assert_eq!(plan.op_depth(2).unwrap().rounds(), 0);
         assert_eq!(plan.op_depth(3).unwrap().rounds[0].engine_depth, 2);
@@ -257,6 +304,6 @@ mod tests {
         assert_eq!(plan.edabits_per_depth(), vec![0, 0, 2, 3]);
         assert_eq!(plan.random_wires(), RandomWires::new(5 * 61 + 5, 3));
         assert!(plan.op_depth(5).is_none());
-        assert!(Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mul, 0)], 0), Some(61)).is_err());
+        assert!(Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mul, 0)], 0), Some(61), None).is_err());
     }
 }

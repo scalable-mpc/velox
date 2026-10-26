@@ -52,6 +52,7 @@ pub mod mod2m;
 pub mod mul;
 pub mod reveal;
 pub mod truncate;
+pub mod uniform_mask;
 
 /// Shorthand every op file uses.
 pub(crate) type E<F> = FieldElement<F>;

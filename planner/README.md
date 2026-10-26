@@ -268,7 +268,10 @@ random_wires()         ───────► plan.random_wires()             
 inputs()               ───────────────────────────────────────────► app.inputs()
 input_sharing_termination(p,s) ────────────────────────────────────► app.input_sharing_termination(p,s)
                                 start_scheduled_op_depth ◄─────────── returns OpDepthInput
-on_preprocessing_complete(w) ─► take planner_bits() off w.bits, fill EdaBitPool
+on_preprocessing_complete(w) ─► take planner_bits() off w.bits, make edaBits
+                                (over 2^ℓ − 2^k + 1: run the uniform-mask prefix,
+                                 engine depths 1..=6, keep the good candidates)
+                                fill EdaBitPool
                                 ──────────────────────────────────► app.on_preprocessing_complete(rest)
                                 start_scheduled_op_depth ◄─────────── returns OpDepthInput
                                    Op{depth, op}: check, draw edaBits, build the Operation
@@ -458,18 +461,22 @@ one engine depth: a step of an op, placed and sized to the declared width
 **`struct OpDepthPlan { params: OpParams, rounds: Vec<EngineRound> }`** — one
 op-depth; `rounds()` is its count.
 
-**`struct Plan`** — every op-depth end to end, plus `ell`, `output`, and the
-application's own `rand_bits` / `sharings`.
+**`struct Plan`** — the uniform-mask prefix and every op-depth end to end,
+plus `ell`, the mask width, `output`, and the application's own
+`rand_bits` / `sharings`.
 
 | Method | Returns |
 |---|---|
-| `compile(&PlannerCounts, ell: Option<usize>) -> Result<Plan>` | the plan; errors on an op-depth of zero elements, and on a Mersenne-only op when `ell` is `None` |
+| `compile(&PlannerCounts, ell: Option<usize>, prime: Option<u128>) -> Result<Plan>` | the plan; errors on an op-depth of zero elements, and on an op the field cannot run |
+| `prefix() -> &[EngineRound]` | the uniform-mask prefix at engine depths `1..`; empty over a Mersenne field or when no op uses edaBits |
+| `mask_test() -> Option<(MaskShape, usize)>` | the prefix's prime shape and the candidates it tests |
+| `mask_bits()` | bits of one edaBit, when the field has uniform masks |
 | `op_depth(d) -> Option<&OpDepthPlan>` | op-depth `d` (from 1) |
 | `op_depths() -> &[OpDepthPlan]` | all |
 | `ell()` | `Some(ℓ)` over a Mersenne prime field, `None` otherwise |
-| `engine_depths()` | total engine depths |
+| `engine_depths()` | total engine depths, the prefix's included |
 | `edabits_per_depth() -> Vec<usize>` / `edabits_total()` | edaBit layout |
-| `planner_bits()` | engine random bits the Planner keeps: `ℓ × edabits_total` |
+| `planner_bits()` | engine random bits the Planner keeps: mask width × edaBits made (`edabits_total`, or the prefix's candidates) |
 | `preprocessing_counts() -> PreprocessingCounts` | the engine profile: plain gates at multiply rounds, masked at masked-multiply rounds, 0 at reveals |
 | `random_wires() -> RandomWires` | `planner_bits + app bits`, app sharings |
 
@@ -515,6 +522,7 @@ steps, preprocessing) → `steps()` → the struct → `impl Operation`.
 | `truncate.rs` | `Truncate` | `x, d, eda, out` | 0: reveal `x + 2^{ℓ−2} + r`; `unmask` on completion |
 | `fixed_mul.rs` | `FixedMul` | `x, y, d, eda, out` | 0: masked multiply with mask `r + 2^{ℓ−2}`; `unmask` on completion |
 | `mod2m.rs` | `Mod2m` | `tree, x, m, eda, c_low, slots, out` | 0: reveal `x + r`; 1..L: tree levels on `c mod 2^m` and `¬[r_i]`; then `c' − [r_lo] + 2^m·[u]` |
+| `uniform_mask.rs` | `UniformMasks` (the Planner's prefix, not an application op) | `shape, candidates, coefficients, s, rho, powers, acc, e` | 0: `s²`; 1: `s³, s⁴`; Horner in `s⁴`; `ρ · acc`; reveal `e`. `keep_good` keeps the candidates with `e = 0` |
 | `compare.rs` | `Compare` | `drelu: DReLU` | DReLU's; result `1 − DReLU` |
 | `max.rs` | `Max` | `diff, other, drelu, out` | DReLU's, then multiply `DReLU · diff`; `+ other` |
 | `min.rs` | `Min` | `a, diff, drelu, out` | DReLU's, then multiply `DReLU · diff`; `a −` |
@@ -551,13 +559,13 @@ engine sign bits: `[b] = (1 + [s]) / 2`, `[r] = Σ 2^i [b_i]`.
 
 | Method | |
 |---|---|
-| `from_signs(&[±1 sharings]) -> Result<Self>` | needs exactly ℓ; composes the value from the bits |
+| `from_signs(&[±1 sharings], bits) -> Result<Self>` | needs exactly `bits` signs; composes the value from the bits |
 | `msb()` | `[r_{ℓ−1}]` |
 | `trunc_shift(d)` | `[Trunc_d(r)]` from the bits (Theorem 3.1) |
 
 **`struct EdaBitPool<F>`** — the circuit's edaBits, laid out per op-depth in
 fixed slices so op-depth `d` draws the same material at every party.
-`plan(&per_depth)`, `bits_needed()` (ℓ per edaBit), `fill(&signs)`,
+`plan(&per_depth)`, `total()`, `fill(edabits)` (exactly `total()`),
 `for_depth(depth, count)` (the first `count` of the depth's
 slice; read, not drained).
 
