@@ -47,6 +47,10 @@ const BLOCK: usize = 4;
 /// A shortfall of good candidates has probability below `2^-SHORTFALL_BITS`.
 const SHORTFALL_BITS: usize = 40;
 
+/// The widest mask the prefix makes. It keeps the `u128` arithmetic of
+/// [`MaskShape::candidates_for`] in range.
+const MAX_MASK_BITS: usize = 64;
+
 /// The shape of a prime `p = 2^ℓ − 2^k + 1`: an `ℓ`-bit candidate is below
 /// `p` unless its top `ℓ − k` bits are all ones and its low `k` bits are
 /// not all zeros.
@@ -61,12 +65,13 @@ pub struct MaskShape {
 impl MaskShape {
     /// The shape of `p`, if `p − 1 = 2^k · (2^t − 1)` with `t ≥ 5`, which
     /// keeps the rejection rate at or below `2^-5` (see
-    /// [`candidates_for`](Self::candidates_for)).
+    /// [`candidates_for`](Self::candidates_for)), and `ℓ = k + t` is at most
+    /// 64.
     pub fn of_prime(p: u128) -> Option<Self> {
         let low_bits = (p - 1).trailing_zeros() as usize;
         let odd = (p - 1) >> low_bits;
         let top_bits = (odd + 1).checked_ilog2()? as usize;
-        if odd + 1 != 1u128 << top_bits || top_bits < 5 {
+        if odd + 1 != 1u128 << top_bits || top_bits < 5 || low_bits + top_bits > MAX_MASK_BITS {
             return None;
         }
         Some(Self { bits: low_bits + top_bits, low_bits })
@@ -256,6 +261,14 @@ mod tests {
         assert_eq!(MaskShape::of_prime((1 << 61) - 1), Some(MaskShape { bits: 61, low_bits: 1 }));
         assert_eq!(MaskShape::of_prime(101), None, "100 = 4·25, and 26 is not a power of 2");
         assert_eq!(MaskShape::of_prime(97), None, "96 = 32·3: t = 2 is below 5");
+        // `of_prime` reads only the shape, so these numbers do not have to be prime.
+        assert_eq!(MaskShape::of_prime(u128::MAX - (1 << 64) + 2), None, "2^128 − 2^64 + 1: ℓ = 128 is above 64");
+        assert_eq!(MaskShape::of_prime((1 << 127) - 1), None, "2^127 − 1: ℓ = 127 is above 64");
+        assert_eq!(
+            MaskShape::of_prime((1 << 64) - (1 << 32) + 1),
+            Some(MaskShape { bits: 64, low_bits: 32 }),
+            "2^64 − 2^32 + 1: ℓ = 64 is at the limit"
+        );
     }
 
     #[test]
