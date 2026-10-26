@@ -347,8 +347,9 @@ bits dropped.
 
 Methods: `op_type() -> OpType`; `len()` / `is_empty()` (elements, from the
 first operand); `params() -> OpParams` (type + width, what a declaration is
-compared to); `validate(ell: Option<usize>) -> Result<()>` (operand vectors
-agree in length; the field can run the op — `ell` is `F::MERSENNE_BITS`;
+compared to); `validate(ell: Option<usize>, has_masks: bool) -> Result<()>`
+(operand vectors agree in length; the field can run the op — `ell` is
+`F::MERSENNE_BITS`, `has_masks` says whether the field has uniform masks;
 `d ∈ 1..=ℓ−3`). `Debug` prints `Type(n elements[, d=…])`.
 
 **`enum OpType`** — `Mul, Add, Compare, ComparePub, Max, Min, MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul, Mod2m { m }`.
@@ -499,8 +500,8 @@ three things the engine can run.
 one step of an op, engine-agnostic: which batch, and how many gates (or values
 opened) *per element*. `const fn new`.
 
-**`fn steps_of(op_type, ell) -> Vec<OpStep>`** — the steps of an op type;
-what the plan and the op share.
+**`fn steps_of(op_type, mask_bits) -> Vec<OpStep>`** — the steps of an op
+type; what the plan and the op share. `mask_bits` is `Plan::mask_bits()`.
 
 **`enum EngineOperands<F>`** — what an op puts into one step:
 `Reveal(Vec)`, `Multiply { x, y }`, `MaskedMultiply { x, y, mask }`.
@@ -515,10 +516,11 @@ fn on_step_complete(&mut self, step: usize, results: Vec<E<F>>) -> Result<()>; /
 fn into_result(self: Box<Self>) -> OpResult<F>;                       // the application's result
 ```
 
-**`fn build(op, edabits) -> Result<Box<dyn Operation<F>>>`** — constructs the
-op's state, drawing its edaBits (one per element where needed) from the
+**`fn build(op, edabits, mask_bits) -> Result<Box<dyn Operation<F>>>`** —
+constructs the op's state, drawing its edaBits (one per element where needed) from the
 iterator; errors if it runs out. `Pub` variants map to the same struct as
 their shared sibling.
+`mask_bits` is `Plan::mask_bits()`: `LessThanPub` sizes its carry trees with it.
 
 State structs, one file each. Each file reads: header (semantics, rounds,
 steps, preprocessing) → `steps()` → the struct → `impl Operation`.
