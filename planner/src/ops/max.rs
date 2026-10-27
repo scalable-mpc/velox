@@ -12,8 +12,8 @@ use crate::{api::application::OpResult, primitives::edabit::EdaBit};
 
 use super::{drelu::DReLU, EngineOperationType, EngineOperands, Operation, OpStep, E};
 
-pub fn steps(ell: usize) -> Vec<OpStep> {
-    let mut steps = super::drelu::steps(ell);
+pub fn steps(p_bits: usize) -> Vec<OpStep> {
+    let mut steps = super::drelu::steps(p_bits);
     steps.push(OpStep::new(EngineOperationType::Multiply, 1));
     steps
 }

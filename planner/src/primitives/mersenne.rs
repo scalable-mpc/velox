@@ -15,7 +15,7 @@ use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
 
 /// `ℓ` in `p = 2^ℓ − 1`.
-pub fn ell<F: ProtocolField>() -> usize {
+pub fn p_bits<F: ProtocolField>() -> usize {
     F::MERSENNE_BITS.expect("a Mersenne-only op reached a non-Mersenne field past Plan::compile")
 }
 
@@ -27,7 +27,7 @@ pub fn canonical<F: ProtocolField>(elem: &FieldElement<F>) -> u128 {
 
 /// Bit `i` of the canonical representative, `0` for `i ≥ ℓ`.
 pub fn bit<F: ProtocolField>(elem: &FieldElement<F>, i: usize) -> u64 {
-    if i >= ell::<F>() {
+    if i >= p_bits::<F>() {
         0
     } else {
         ((canonical(elem) >> i) & 1) as u64

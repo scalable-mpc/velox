@@ -36,13 +36,13 @@ pub const STATISTICAL_MASK_BITS: usize = 40;
 
 /// `m` must leave the mask its `κ` bits above `x`: `1 ≤ m ≤ ℓ − 1 − κ`.
 /// Checked both when the plan is compiled and when the op is run.
-pub fn check_m(m: usize, ell: usize) -> Result<()> {
-    let max = ell.saturating_sub(1 + STATISTICAL_MASK_BITS);
+pub fn check_m(m: usize, p_bits: usize) -> Result<()> {
+    let max = p_bits.saturating_sub(1 + STATISTICAL_MASK_BITS);
     if m == 0 || m > max {
         if max == 0 {
-            bail!("Mod2m needs an ℓ above {}, and this field has ℓ = {}", 1 + STATISTICAL_MASK_BITS, ell);
+            bail!("Mod2m needs a p_bits above {}, and this field has p_bits = {}", 1 + STATISTICAL_MASK_BITS, p_bits);
         }
-        bail!("Mod2m by {} bits is outside 1..={} for an {}-bit field", m, max, ell);
+        bail!("Mod2m by {} bits is outside 1..={} for an {}-bit field", m, max, p_bits);
     }
     Ok(())
 }
@@ -93,7 +93,7 @@ impl<F: ProtocolField> Operation<F> for Mod2m<F> {
     fn operands(&self, step: usize) -> EngineOperands<F> {
         match step {
             0 => {
-                let top = mersenne::pow2::<F>(mersenne::ell::<F>() - 1);
+                let top = mersenne::pow2::<F>(mersenne::p_bits::<F>() - 1);
                 EngineOperands::Reveal(
                     self.x.iter().zip(self.eda.iter()).map(|(x, r)| x + &r.value - r.msb() * &top).collect(),
                 )

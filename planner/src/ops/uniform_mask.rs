@@ -57,9 +57,9 @@ const MAX_MASK_BITS: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MaskShape {
     /// `ℓ`: the bits of a mask.
-    pub bits: usize,
+    pub p_bits_0: usize,
     /// `k`: the low bits.
-    pub low_bits: usize,
+    pub p_bits_1: usize,
 }
 
 impl MaskShape {
@@ -68,18 +68,18 @@ impl MaskShape {
     /// [`candidates_for`](Self::candidates_for)), and `ℓ = k + t` is at most
     /// 64.
     pub fn of_prime(p: u128) -> Option<Self> {
-        let low_bits = (p - 1).trailing_zeros() as usize;
-        let odd = (p - 1) >> low_bits;
+        let p_bits_1 = (p - 1).trailing_zeros() as usize;
+        let odd = (p - 1) >> p_bits_1;
         let top_bits = (odd + 1).checked_ilog2()? as usize;
-        if odd + 1 != 1u128 << top_bits || top_bits < 5 || low_bits + top_bits > MAX_MASK_BITS {
+        if odd + 1 != 1u128 << top_bits || top_bits < 5 || p_bits_1 + top_bits > MAX_MASK_BITS {
             return None;
         }
-        Some(Self { bits: low_bits + top_bits, low_bits })
+        Some(Self { p_bits_0: p_bits_1 + top_bits, p_bits_1 })
     }
 
     /// `t = ℓ − k`.
     pub fn top_bits(&self) -> usize {
-        self.bits - self.low_bits
+        self.p_bits_0 - self.p_bits_1
     }
 
     /// Candidates to make for `masks` good ones. A candidate is bad with
@@ -91,7 +91,7 @@ impl MaskShape {
         if masks == 0 {
             return 0;
         }
-        let bad = (8 * masks as u128 * ((1u128 << self.low_bits) - 1)).div_ceil(1u128 << self.bits);
+        let bad = (8 * masks as u128 * ((1u128 << self.p_bits_1) - 1)).div_ceil(1u128 << self.p_bits_0);
         masks + SHORTFALL_BITS + bad as usize
     }
 
@@ -129,10 +129,10 @@ pub struct UniformMasks<F: ProtocolField> {
 
 impl<F: ProtocolField> UniformMasks<F> {
     pub fn new(shape: MaskShape, candidates: Vec<EdaBit<F>>) -> Self {
-        let s = candidates.iter().map(|c| c.bits[shape.low_bits..].iter().fold(E::<F>::zero(), |acc, b| acc + b)).collect();
+        let s = candidates.iter().map(|c| c.bits[shape.p_bits_1..].iter().fold(E::<F>::zero(), |acc, b| acc + b)).collect();
         let rho = candidates
             .iter()
-            .map(|c| (0..shape.low_bits).fold(E::<F>::zero(), |acc, i| acc + &c.bits[i] * mersenne::pow2::<F>(i)))
+            .map(|c| (0..shape.p_bits_1).fold(E::<F>::zero(), |acc, i| acc + &c.bits[i] * mersenne::pow2::<F>(i)))
             .collect();
         // The coefficients of `s(s − 1)···(s − t + 1)`: multiply by `(s − j)`
         // for each `j < t`.
@@ -257,17 +257,17 @@ mod tests {
 
     #[test]
     fn shapes() {
-        assert_eq!(MaskShape::of_prime(Q), Some(MaskShape { bits: 23, low_bits: 13 }));
-        assert_eq!(MaskShape::of_prime((1 << 61) - 1), Some(MaskShape { bits: 61, low_bits: 1 }));
+        assert_eq!(MaskShape::of_prime(Q), Some(MaskShape { p_bits_0: 23, p_bits_1: 13 }));
+        assert_eq!(MaskShape::of_prime((1 << 61) - 1), Some(MaskShape { p_bits_0: 61, p_bits_1: 1 }));
         assert_eq!(MaskShape::of_prime(101), None, "100 = 4·25, and 26 is not a power of 2");
         assert_eq!(MaskShape::of_prime(97), None, "96 = 32·3: t = 2 is below 5");
         // `of_prime` reads only the shape, so these numbers do not have to be prime.
-        assert_eq!(MaskShape::of_prime(u128::MAX - (1 << 64) + 2), None, "2^128 − 2^64 + 1: ℓ = 128 is above 64");
-        assert_eq!(MaskShape::of_prime((1 << 127) - 1), None, "2^127 − 1: ℓ = 127 is above 64");
+        assert_eq!(MaskShape::of_prime(u128::MAX - (1 << 64) + 2), None, "2^128 − 2^64 + 1: p_bits_0 = 128 is above 64");
+        assert_eq!(MaskShape::of_prime((1 << 127) - 1), None, "2^127 − 1: p_bits_0 = 127 is above 64");
         assert_eq!(
             MaskShape::of_prime((1 << 64) - (1 << 32) + 1),
-            Some(MaskShape { bits: 64, low_bits: 32 }),
-            "2^64 − 2^32 + 1: ℓ = 64 is at the limit"
+            Some(MaskShape { p_bits_0: 64, p_bits_1: 32 }),
+            "2^64 − 2^32 + 1: p_bits_0 = 64 is at the limit"
         );
     }
 

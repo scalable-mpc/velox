@@ -12,8 +12,8 @@ use crate::{api::application::OpResult, primitives::edabit::EdaBit};
 
 use super::{drelu::DReLU, EngineOperands, Operation, OpStep, E};
 
-pub fn steps(ell: usize) -> Vec<OpStep> {
-    super::drelu::steps(ell)
+pub fn steps(p_bits: usize) -> Vec<OpStep> {
+    super::drelu::steps(p_bits)
 }
 
 pub struct Compare<F: ProtocolField> {

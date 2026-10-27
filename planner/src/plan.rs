@@ -62,7 +62,7 @@ pub struct Plan {
     op_depths: Vec<OpDepthPlan>,
     /// `Some(ℓ)` over the Mersenne prime field `2^ℓ − 1`, `None` over any
     /// other protocol field.
-    ell: Option<usize>,
+    p_bits: Option<usize>,
     /// Bits of one edaBit: `ℓ` over a Mersenne field, the mask width over a
     /// prime `2^ℓ − 2^k + 1`, `None` when the field has no uniform masks.
     mask_bits: Option<usize>,
@@ -78,9 +78,9 @@ impl Plan {
     /// `ell` is `F::MERSENNE_BITS` and `prime` is `F::PRIME_MODULUS`: a
     /// declaration with an op the field cannot run is refused here, before
     /// preprocessing.
-    pub fn compile(counts: &PlannerCounts, ell: Option<usize>, prime: Option<u128>) -> Result<Self> {
-        let shape = if ell.is_none() { prime.and_then(MaskShape::of_prime) } else { None };
-        let mask_bits = ell.or(shape.map(|s| s.bits));
+    pub fn compile(counts: &PlannerCounts, p_bits: Option<usize>, prime: Option<u128>) -> Result<Self> {
+        let shape = if p_bits.is_none() { prime.and_then(MaskShape::of_prime) } else { None };
+        let mask_bits = p_bits.or(shape.map(|s| s.p_bits_0));
         let masks: usize = counts.ops.iter().map(|p| p.edabits()).sum();
         let mask_test = shape.filter(|_| masks > 0).map(|shape| (shape, shape.candidates_for(masks)));
         let mut engine_depth = 1;
@@ -98,11 +98,11 @@ impl Plan {
             if params.elements == 0 {
                 bail!("op-depth {} declares {:?} over no elements", index + 1, params.op_type);
             }
-            if let Err(e) = params.op_type.check_field(ell, mask_bits.is_some()) {
+            if let Err(e) = params.op_type.check_field(p_bits, mask_bits.is_some()) {
                 bail!("op-depth {}: {}", index + 1, e);
             }
-            if let (OpType::Mod2m { m }, Some(ell)) = (params.op_type, ell) {
-                if let Err(e) = mod2m::check_m(m, ell) {
+            if let (OpType::Mod2m { m }, Some(p_bits)) = (params.op_type, p_bits) {
+                if let Err(e) = mod2m::check_m(m, p_bits) {
                     bail!("op-depth {}: {}", index + 1, e);
                 }
             }
@@ -118,7 +118,7 @@ impl Plan {
         Ok(Self {
             prefix,
             op_depths,
-            ell,
+            p_bits,
             mask_bits,
             mask_test,
             output: counts.output,
@@ -152,8 +152,8 @@ impl Plan {
         &self.op_depths
     }
 
-    pub fn ell(&self) -> Option<usize> {
-        self.ell
+    pub fn p_bits(&self) -> Option<usize> {
+        self.p_bits
     }
 
     /// Engine depths in all, the prefix's included.
@@ -207,8 +207,8 @@ mod tests {
     use super::*;
     use crate::api::application::OpType;
 
-    fn rounds(op_type: OpType, ell: usize) -> usize {
-        Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 3)], 0), Some(ell), None).unwrap().op_depth(1).unwrap().rounds()
+    fn rounds(op_type: OpType, p_bits: usize) -> usize {
+        Plan::compile(&PlannerCounts::new(vec![OpParams::new(op_type, 3)], 0), Some(p_bits), None).unwrap().op_depth(1).unwrap().rounds()
     }
 
     /// Over a non-Mersenne field the plan takes `Mul`, `Add` and `Reveal`,
@@ -254,11 +254,11 @@ mod tests {
     /// preprocessing, naming the op-depth.
     #[test]
     fn mod2m_out_of_range_is_refused_at_compile() {
-        let compile = |m, ell| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mod2m { m }, 1)], 0), Some(ell), None);
+        let compile = |m, p_bits| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::Mod2m { m }, 1)], 0), Some(p_bits), None);
         assert!(compile(20, 61).is_ok());
-        for (m, ell) in [(0, 61), (21, 61), (1, 31), (87, 127)] {
-            let err = compile(m, ell).unwrap_err();
-            assert!(err.to_string().starts_with("op-depth 1: Mod2m"), "m={m} ℓ={ell}: {err}");
+        for (m, p_bits) in [(0, 61), (21, 61), (1, 31), (87, 127)] {
+            let err = compile(m, p_bits).unwrap_err();
+            assert!(err.to_string().starts_with("op-depth 1: Mod2m"), "m={m} p_bits={p_bits}: {err}");
         }
         let plan = compile(63, 127).unwrap();
         assert_eq!(plan.planner_bits(), 127, "one edaBit");
@@ -269,12 +269,12 @@ mod tests {
     #[test]
     fn canonical_mod2m_out_of_range_is_refused_at_compile() {
         let q = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
-        let compile = |m, ell, prime| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::CanonicalMod2m { m }, 1)], 0), ell, prime);
+        let compile = |m, p_bits, prime| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::CanonicalMod2m { m }, 1)], 0), p_bits, prime);
         assert_eq!(compile(4, None, Some(q)).unwrap().op_depth(1).unwrap().rounds(), 7);
         assert!(compile(22, None, Some(q)).is_ok());
         assert!(compile(60, Some(61), None).is_ok());
-        for (m, ell, prime) in [(0, None, Some(q)), (23, None, Some(q)), (61, Some(61), None)] {
-            let err = compile(m, ell, prime).unwrap_err();
+        for (m, p_bits, prime) in [(0, None, Some(q)), (23, None, Some(q)), (61, Some(61), None)] {
+            let err = compile(m, p_bits, prime).unwrap_err();
             assert!(err.to_string().starts_with("op-depth 1: CanonicalMod2m"), "m={m}: {err}");
         }
         let err = compile(4, None, Some(101)).unwrap_err();
@@ -308,7 +308,7 @@ mod tests {
             .with_random_wires(3, 0);
         let plan = Plan::compile(&counts, None, Some(q)).unwrap();
         let (shape, candidates) = plan.mask_test().unwrap();
-        assert_eq!((shape.bits, shape.low_bits, candidates), (23, 13, 100 + 40 + 1));
+        assert_eq!((shape.p_bits_0, shape.p_bits_1, candidates), (23, 13, 100 + 40 + 1));
         assert_eq!(plan.prefix().iter().map(|r| r.engine_depth).collect::<Vec<_>>(), (1..=6).collect::<Vec<_>>());
         assert_eq!(plan.prefix().iter().map(|r| r.gates).collect::<Vec<_>>(), vec![141, 282, 141, 141, 141, 141]);
         assert_eq!(plan.op_depth(1).unwrap().rounds[0].engine_depth, 7);

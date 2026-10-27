@@ -209,7 +209,7 @@ fn comparison_family<F: ProtocolField + MersennePrimeField>(pairs: Vec<(i128, i1
         pairs.iter().map(|(a, b)| *a.min(b)).collect(),
     ];
     for (i, op_type) in types.iter().enumerate() {
-        assert_eq!(signed_all(&results[i]), want[i], "{op_type:?} at ℓ={}", F::BITS);
+        assert_eq!(signed_all(&results[i]), want[i], "{op_type:?} at p_bits={}", F::BITS);
     }
 }
 
@@ -236,14 +236,14 @@ fn comparison_family_randomised_over_the_domain() {
 }
 
 fn truncation<F: ProtocolField + MersennePrimeField>(seed: u64) {
-    let ell = F::BITS;
-    let bound = 1i128 << (ell - 2);
+    let p_bits = F::BITS;
+    let bound = 1i128 << (p_bits - 2);
     let mut rng = Rng(seed);
-    for d in [1usize, 8, 16, ell - 3] {
+    for d in [1usize, 8, 16, p_bits - 3] {
         let mut xs: Vec<i128> = (0..64).map(|_| rng.signed(bound)).collect();
         xs.extend([0, 1, -1, bound - 1, -bound, (1 << d) - 1, -((1 << d) - 1), 1 << d, -(1 << d)]);
         // Factors whose product stays in the domain.
-        let half = 1i128 << ((ell - 2) / 2);
+        let half = 1i128 << ((p_bits - 2) / 2);
         let pairs: Vec<(i128, i128)> = (0..64).map(|_| (rng.signed(half), rng.signed(half))).collect();
         let (x2, p2) = (xs.clone(), pairs.clone());
         let ops = vec![OpParams::new(OpType::Truncate, xs.len()), OpParams::new(OpType::FixedMul, pairs.len())];
@@ -265,11 +265,11 @@ fn truncation<F: ProtocolField + MersennePrimeField>(seed: u64) {
         let results = &planner.app().results;
         for (x, got) in xs.iter().zip(signed_all(&results[0])) {
             let want = trunc_ref(*x, d);
-            assert!((got - want).abs() <= 2, "Trunc_{d}({x}) = {got}, want {want} ± 2 at ℓ={ell}");
+            assert!((got - want).abs() <= 2, "Trunc_{d}({x}) = {got}, want {want} ± 2 at p_bits={p_bits}");
         }
         for ((x, y), got) in pairs.iter().zip(signed_all(&results[1])) {
             let want = trunc_ref(x * y, d);
-            assert!((got - want).abs() <= 2, "FixedMul_{d}({x}, {y}) = {got}, want {want} ± 2 at ℓ={ell}");
+            assert!((got - want).abs() <= 2, "FixedMul_{d}({x}, {y}) = {got}, want {want} ± 2 at p_bits={p_bits}");
         }
     }
 }
@@ -613,7 +613,7 @@ fn mod2m<F: ProtocolField + MersennePrimeField>(cases: Vec<(usize, Vec<u128>)>, 
     for ((m, xs), result) in cases.iter().zip(&planner.app().results) {
         let OpResult::Shares(got) = result else { panic!("Mod2m returns shares") };
         for (x, e) in xs.iter().zip(got) {
-            assert_eq!(F::to_canonical_u128(e), x % (1u128 << m), "{x} mod 2^{m} at ℓ={}", F::BITS);
+            assert_eq!(F::to_canonical_u128(e), x % (1u128 << m), "{x} mod 2^{m} at p_bits={}", F::BITS);
         }
     }
 }

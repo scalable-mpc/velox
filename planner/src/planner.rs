@@ -108,7 +108,7 @@ impl<F: ProtocolField, A: PlannerApplication<F>> Planner<F, A> {
         let Some(op_depth_plan) = self.execution_plan.op_depth(depth) else {
             bail!("op-depth {} is outside the {} declared", depth, self.execution_plan.op_depths().len());
         };
-        op.validate(self.execution_plan.ell(), self.execution_plan.mask_bits().is_some())?;
+        op.validate(self.execution_plan.p_bits(), self.execution_plan.mask_bits().is_some())?;
         if !op_depth_plan.params.covers(&op.params()) {
             bail!("op-depth {} runs {:?} but declared {:?}", depth, op.params(), op_depth_plan.params);
         }

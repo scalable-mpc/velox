@@ -214,13 +214,13 @@ impl OpType {
     /// Refuse the type, by name, when the field cannot run it. `ell` is
     /// `Some(ℓ)` over a Mersenne prime field; `has_masks` says whether the
     /// field has uniform masks.
-    pub fn check_field(self, ell: Option<usize>, has_masks: bool) -> Result<()> {
+    pub fn check_field(self, p_bits: Option<usize>, has_masks: bool) -> Result<()> {
         match self.field_class() {
-            FieldClass::Mersenne if ell.is_none() => {
+            FieldClass::Mersenne if p_bits.is_none() => {
                 bail!("{:?} needs a Mersenne prime field (m61base, m31base or m127base)", self)
             }
             FieldClass::UniformMasks if !has_masks => {
-                bail!("{:?} needs uniform masks: a Mersenne prime field or a prime p = 2^ℓ − 2^k + 1", self)
+                bail!("{:?} needs uniform masks: a Mersenne prime field or a prime p = 2^p_bits_0 − 2^p_bits_1 + 1", self)
             }
             _ => Ok(()),
         }
@@ -272,8 +272,8 @@ impl<F: ProtocolField> Op<F> {
     /// in range for `ℓ` bits. `ell` is `Some(ℓ)` over a Mersenne prime field
     /// and `None` over any other; `has_masks` says whether the field has
     /// uniform masks.
-    pub fn validate(&self, ell: Option<usize>, has_masks: bool) -> Result<()> {
-        self.op_type().check_field(ell, has_masks)?;
+    pub fn validate(&self, p_bits: Option<usize>, has_masks: bool) -> Result<()> {
+        self.op_type().check_field(p_bits, has_masks)?;
         let pair = |l: usize, r: usize, what: &str| -> Result<()> {
             if l != r {
                 bail!("{:?}: {} operands of length {} and {}", self.op_type(), what, l, r);
@@ -285,22 +285,22 @@ impl<F: ProtocolField> Op<F> {
             Op::Compare { a, b } | Op::Max { a, b } | Op::Min { a, b } => pair(a.len(), b.len(), "a, b"),
             Op::ComparePub { a, c } | Op::MaxPub { a, c } | Op::MinPub { a, c } => pair(a.len(), c.len(), "a, c"),
             Op::Reveal { .. } | Op::MaskReveal { .. } => Ok(()),
-            Op::Truncate { d, .. } => Self::check_d(*d, ell.expect("checked above")),
+            Op::Truncate { d, .. } => Self::check_d(*d, p_bits.expect("checked above")),
             Op::FixedMul { x, y, d } => {
                 pair(x.len(), y.len(), "x, y")?;
-                Self::check_d(*d, ell.expect("checked above"))
+                Self::check_d(*d, p_bits.expect("checked above"))
             }
-            Op::Mod2m { m, .. } => mod2m::check_m(*m, ell.expect("checked above")),
+            Op::Mod2m { m, .. } => mod2m::check_m(*m, p_bits.expect("checked above")),
             Op::LessThanPub { x, c } => pair(x.len(), c.len(), "x, c"),
             // `covers` makes the run use the declared `m`, and `Plan::compile` checked it.
             Op::CanonicalMod2m { .. } => Ok(()),
         }
     }
 
-    fn check_d(d: usize, ell: usize) -> Result<()> {
+    fn check_d(d: usize, p_bits: usize) -> Result<()> {
         // ΠTrunc's correction term is 2^{ℓ−d−2}, so d ≤ ℓ − 3 keeps it ≥ 2.
-        if d == 0 || d + 2 >= ell {
-            bail!("truncation by {} bits is outside 1..={} for an {}-bit field", d, ell - 3, ell);
+        if d == 0 || d + 2 >= p_bits {
+            bail!("truncation by {} bits is outside 1..={} for an {}-bit field", d, p_bits - 3, p_bits);
         }
         Ok(())
     }
@@ -427,7 +427,7 @@ mod tests {
         assert!(mod2m(86).validate(Some(127), true).is_ok());
         assert!(mod2m(87).validate(Some(127), true).is_err());
         let err = mod2m(1).validate(Some(31), true).unwrap_err();
-        assert!(err.to_string().contains("ℓ = 31"), "{err}");
+        assert!(err.to_string().contains("p_bits = 31"), "{err}");
         assert!(mod2m(1).validate(None, false).is_err());
         assert_eq!(mod2m(7).params(), OpParams::new(OpType::Mod2m { m: 7 }, 2));
         assert_eq!(OpParams::new(OpType::Mod2m { m: 7 }, 5).edabits(), 5);

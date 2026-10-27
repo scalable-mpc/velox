@@ -43,19 +43,19 @@ impl<F: ProtocolField> EdaBit<F> {
 
     /// `[r_{ℓ−1}]`, the sign bit of `r` read as a signed integer.
     pub fn msb(&self) -> &FieldElement<F> {
-        &self.bits[mersenne::ell::<F>() - 1]
+        &self.bits[mersenne::p_bits::<F>() - 1]
     }
 
     /// `[Trunc_d(r)]` from the bits (Liu et al. Theorem 3.1, Protocol 3.1
     /// step 2): shift down by `d` and fill the top `d` bits with the MSB.
     pub fn trunc_shift(&self, d: usize) -> FieldElement<F> {
-        let ell = mersenne::ell::<F>();
-        assert!(d < ell, "truncation by {} bits of an {}-bit value", d, ell);
+        let p_bits = mersenne::p_bits::<F>();
+        assert!(d < p_bits, "truncation by {} bits of an {}-bit value", d, p_bits);
         let mut acc = FieldElement::<F>::zero();
-        for i in d..ell {
+        for i in d..p_bits {
             acc = acc + &self.bits[i] * mersenne::pow2::<F>(i - d);
         }
-        for i in (ell - d)..ell {
+        for i in (p_bits - d)..p_bits {
             acc = acc + self.msb() * mersenne::pow2::<F>(i);
         }
         acc
@@ -123,33 +123,33 @@ mod tests {
     use fields::{mersenne_31::Mersenne31Field, Mersenne127Field, Mersenne61Field};
 
     fn signs_of<F: ProtocolField>(r: u128) -> Vec<FieldElement<F>> {
-        (0..mersenne::ell::<F>())
+        (0..mersenne::p_bits::<F>())
             .map(|i| if (r >> i) & 1 == 1 { FieldElement::<F>::one() } else { -FieldElement::<F>::one() })
             .collect()
     }
 
     /// Plaintext `Trunc_d` of a field element read as a signed integer.
     fn trunc_ref<F: ProtocolField>(r: u128, d: usize) -> u128 {
-        let p = (1u128 << mersenne::ell::<F>()) - 1;
+        let p = (1u128 << mersenne::p_bits::<F>()) - 1;
         if r <= (p - 1) / 2 { r >> d } else { (p - ((p - r) >> d)) % p }
     }
 
     fn check<F: ProtocolField>() {
-        let p = (1u128 << mersenne::ell::<F>()) - 1;
+        let p = (1u128 << mersenne::p_bits::<F>()) - 1;
         for r in [0u128, 1, 5, p / 2, p / 2 + 1, p - 2, p - 1] {
-            let e = EdaBit::<F>::from_signs(&signs_of::<F>(r), mersenne::ell::<F>()).unwrap();
+            let e = EdaBit::<F>::from_signs(&signs_of::<F>(r), mersenne::p_bits::<F>()).unwrap();
             assert_eq!(mersenne::canonical::<F>(&e.value), r % p, "value of r={r}");
-            for i in 0..mersenne::ell::<F>() {
+            for i in 0..mersenne::p_bits::<F>() {
                 assert_eq!(mersenne::canonical::<F>(&e.bits[i]), (r >> i) & 1, "bit {i} of r={r}");
             }
-            assert_eq!(mersenne::canonical::<F>(e.msb()), r >> (mersenne::ell::<F>() - 1));
-            for d in [1usize, 2, 7, 16, mersenne::ell::<F>() - 2] {
+            assert_eq!(mersenne::canonical::<F>(e.msb()), r >> (mersenne::p_bits::<F>() - 1));
+            for d in [1usize, 2, 7, 16, mersenne::p_bits::<F>() - 2] {
                 // r = p reads as 0 in the field; Theorem 3.1 is stated for r < p.
                 if r == p { continue; }
                 assert_eq!(mersenne::canonical::<F>(&e.trunc_shift(d)), trunc_ref::<F>(r, d), "trunc_{d} of r={r}");
             }
         }
-        assert!(EdaBit::<F>::from_signs(&signs_of::<F>(3)[..mersenne::ell::<F>() - 1], mersenne::ell::<F>()).is_err());
+        assert!(EdaBit::<F>::from_signs(&signs_of::<F>(3)[..mersenne::p_bits::<F>() - 1], mersenne::p_bits::<F>()).is_err());
     }
 
     #[test]
