@@ -24,9 +24,9 @@
 //! `x mod 2^m = (a + p − r) mod 2^m = m₁`. Over a Mersenne field the edaBit
 //! can be `r = p` (all ones): then `a = x`, `w = 1`, and `m₁ = x mod 2^m`.
 //!
-//! Multiplications per element: the `mask_bits`-bit tree, two `m`-bit trees and 1
-//! (36 over the ML-DSA field with `m = 4`). Preprocessing: one edaBit per
-//! element.
+//! Multiplications per element: the `mask_bits`-bit tree, two `m`-bit trees
+//! and 1 (36 over the ML-DSA field with `m = 4`). Preprocessing: one edaBit
+//! per element.
 
 use anyhow::{bail, Result};
 use fields::ProtocolField;
