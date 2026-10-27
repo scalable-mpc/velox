@@ -22,7 +22,7 @@ public bits of `y`, hence `r`, hence the secret `a = (y − r)/2`.
 ## Replacement: BitLTL / CarryOutL
 
 `[a < b] = 1 − CarryOut(a, ¬b, c_in = 1)` — the carry out of the top bit of
-`2^k + a − b`. Both operands are `< 2^ℓ`, so it slots straight into
+`2^k + a − b`. Both operands are `< 2^p_bits`, so it slots straight into
 `ΠDReLU` step 3 as `[c] ← BitLTL(y, [r]_B)`. The Mersenne complement trick
 (`bits(p − b) = ¬bits(b)`) is the same one BitLTL uses for `2^k − 1 − b`.
 
@@ -47,24 +47,24 @@ Two specialisations because `a` (the revealed `y`) is public:
   `P = 0` for free and costs the single multiplication `P_H · G_L`. The final
   `G + P · c_in` step disappears.
 
-Cost at `ℓ = 61`: 6 depths, level widths **30, 29, 15, 7, 3, 1** = **85**
+Cost at `p_bits = 61`: 6 depths, level widths **30, 29, 15, 7, 3, 1** = **85**
 multiplications per comparison (CdH's generic bound is `2k − 2 = 120`; the
-earlier Sklansky prefix-OR plan was ~180 at the same depth). At `ℓ = 31`:
+earlier Sklansky prefix-OR plan was ~180 at the same depth). At `p_bits = 31`:
 5 depths, 41 multiplications.
 
 ## Operations, in Velox terms
 
 Everything reduces to two engine primitives — a batched public **Reveal** of
 degree-t sharings (new) and **Multiply** (existing) — plus **solved bits**:
-ℓ random 0/1 bits assembled locally into `[r] = Σ 2^i [r_i]` from the ±1 signs
-`rand_bit` already produces (`b = (1 + s)/2`). The `r = 2^ℓ − 1 ≡ 0` event has
-probability `2^{-ℓ}` and is ignored, as in the paper.
+p_bits random 0/1 bits assembled locally into `[r] = Σ 2^i [r_i]` from the ±1 signs
+`rand_bit` already produces (`b = (1 + s)/2`). The `r = 2^p_bits − 1 ≡ 0` event has
+probability `2^{-p_bits}` and is ignored, as in the paper.
 
-| Op | Protocol | Rounds | Comm / op (per party, ℓ=61) | Preprocessing / op |
+| Op | Protocol | Rounds | Comm / op (per party, p_bits=61) | Preprocessing / op |
 |---|---|---|---|---|
 | `DReLU(a)` | reveal `y = 2a + r`; `b = y_0 ⊕ [r_0]`; `c = BitLTL(y, [r]_B)`; out `1 − (b ⊕ c)` | 1 + 6 + 1 = 8 | ~86 mults ≈ 260 elems + 1 reveal | 61 bits, ~86 masks, ~43 zero-sharings |
-| `Trunc_d(a)` | ΠTrunc: reveal `c = a + 2^{ℓ−2} + r`, rest local; error `±2` | 1 | ~3 elems | 61 bits |
-| `FixedMul_d(a,b)` | ΠFixed-Mult via a `MaskedMultiply` engine primitive: reveal `c = ab + r + 2^{ℓ−2}`, rest local | 1 | as a mult | 61 bits + ~0.5 zero-sharing |
+| `Trunc_d(a)` | ΠTrunc: reveal `c = a + 2^{p_bits−2} + r`, rest local; error `±2` | 1 | ~3 elems | 61 bits |
+| `FixedMul_d(a,b)` | ΠFixed-Mult via a `MaskedMultiply` engine primitive: reveal `c = ab + r + 2^{p_bits−2}`, rest local | 1 | as a mult | 61 bits + ~0.5 zero-sharing |
 | `Lt(a,b)` | `1 − DReLU(a − b)` | 8 | | |
 | `Relu(a)`, `Max(a,b)` | DReLU then one multiplication | 9 | | |
 
@@ -133,7 +133,7 @@ new preprocessing types.
   compares against the right depth. Implemented in T5.
 - **E4.** `DepthInput::MaskedMultiply { depth, x, y, mask }` — the existing
   multiplication protocol with the caller's `[mask]` (the solved-bits `[r]`
-  plus the `2^{ℓ−2}` offset, supplied by the ops layer) in place of a
+  plus the `2^{p_bits−2}` offset, supplied by the ops layer) in place of a
   pool-drawn mask, and the public `c = xy + mask` handed back through
   `on_reveal_complete` instead of being folded. The engine still draws the
   2t zero-sharing that randomises the degree-2t opening, and registers
@@ -156,13 +156,13 @@ an `OpDepthInput`:
 ```rust
 pub enum Op<F> {                       // one vector op per op-depth
     Mul { x, y }, Add { x, y },        // Add is local, 0 rounds
-    Compare { a, b },                  // [a < b]         8 rounds at ℓ = 61
+    Compare { a, b },                  // [a < b]         8 rounds at p_bits = 61
     ComparePub { a, c },               // [a < c], c public
     Max { a, b }, Min { a, b },        // select on the comparison bit, 9 rounds
     MaxPub { a, c }, MinPub { a, c },  // one operand public; Relu = MaxPub(x, 0)
     Reveal { x },                      // public values; x must be fresh-masked
     MaskReveal { x },                  // c = x + r public, plus r's edaBit
-    Truncate { x, d }, FixedMul { x, y, d },   // Liu §3, ±2 error, |x| < 2^{ℓ−2}
+    Truncate { x, d }, FixedMul { x, y, d },   // Liu §3, ±2 error, |x| < 2^{p_bits−2}
 }
 pub enum OpDepthInput<F> { Waiting, Op { depth, op: Op<F> }, Done(Vec<F>) }
 pub enum OpResult<F>     { Shares(Vec<F>), Public(Vec<F>), Masked { public, mask: Vec<EdaBit<F>> } }
@@ -186,7 +186,7 @@ else; mixing kinds in one op-depth is a possible additive layer later.
 |---|---|
 | `Add` | 0 |
 | `Mul`, `Reveal`, `MaskReveal`, `Truncate`, `FixedMul` | 1 |
-| `Compare`, `ComparePub` | 2 + carry-tree levels (8 at ℓ = 61, 7 at 31) |
+| `Compare`, `ComparePub` | 2 + carry-tree levels (8 at p_bits = 61, 7 at 31) |
 | `Max`, `Min`, `MaxPub`, `MinPub` | one more |
 
 The Planner holds no applications; existing applications stay on the raw
@@ -197,7 +197,7 @@ The Planner holds no applications; existing applications stay on the raw
 Sharings are linear, so a plaintext value is a valid sharing (a degree-0
 polynomial). A fake engine where `Multiply` is the product and `Reveal` is the
 identity drives the entire adapter — layout, scheduling, carry tree,
-truncation — against integer references, exhaustively for small ℓ and
+truncation — against integer references, exhaustively for small p_bits and
 randomised at 61. Only the engine's own reveal is outside that harness; the
 `testdata/10` fixture covers it.
 
@@ -218,7 +218,7 @@ One PR each. Ask before every commit.
   field, not the protocol), implemented for `Mersenne61Field` and
   `Mersenne31Field`. Compile-time restriction at no cost to the engine: the
   ops adapter bounds `F: ProtocolField + MersennePrimeField`. Also, so the
-  engine can actually run at ℓ = 31: `ProtocolField` for `Mersenne31Field`
+  engine can actually run at p_bits = 31: `ProtocolField` for `Mersenne31Field`
   (`Ext` = the existing Fp8 tower, `CONV_RATIO` 8) and for
   `Degree8ExtensionField` (Tonelli–Shanks `sqrt`, 32-byte serialization),
   plus `--field m31` / `m31base` arms in every binary.
@@ -243,7 +243,7 @@ One PR each. Ask before every commit.
 - **T4 — the Planner, offline.** `planner/`: edaBits, `CarryTree`, the op
   vocabulary, `Layout`, per-op executors, `Planner: Application`, and a
   plaintext fake engine running every op against its integer reference at
-  ℓ = 61 and 31. The bulk of the work; reviewable without running parties.
+  p_bits = 61 and 31. The bulk of the work; reviewable without running parties.
 - **T5 — `mpc`: reveal verification (E2)** and the derived
   `delinearization_depth` (E3).
 - **T5b — `mpc`: `MaskedMultiply` (E4).** Caller-supplied mask in
@@ -273,7 +273,7 @@ T0 so that no later task rediscovers a shortfall at depth 5005.
 | `MaskedMultiply` depth | same table | Draws the 2t zero-sharing like a multiplication but **not** a pool mask. Done in T2: `masked_gates_per_depth`, `plan` charges zero sharings only, `for_masked_depth` hands them out. Consumed in T5b. |
 | Verification of `MaskedMultiply` tuples | `num_tuples = rand_bit_batch_size·(t+1) + num_mult_gates` drives `compression_levels` and hence `verification_groups` | Done in T2: `mult_gates()` counts plain and masked gates. |
 | E2 reveal check | none | Done in T5: the fold reuses the delinearization coin and `[Δ]` is opened unmasked (its polynomial is a combination of the fresh-blinded reveal sharings, independent of every secret), so no coin and no mask are drawn. |
-| Solved bits | `rand_bit_batch_size = batch_size_for(num_rand_bits + group)`, from `random_wires().bits` | The adapter adds `ℓ·(#compares + #truncs + #fixed_muls)` to the bits it reports. Surplus bits from the `t+1` rounding are already squared and verified. T4. |
+| Solved bits | `rand_bit_batch_size = batch_size_for(num_rand_bits + group)`, from `random_wires().bits` | The adapter adds `p_bits·(#compares + #truncs + #fixed_muls)` to the bits it reports. Surplus bits from the `t+1` rounding are already squared and verified. T4. |
 
 ## Follow-ups (out of scope)
 

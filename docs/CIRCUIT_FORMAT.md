@@ -122,25 +122,25 @@ sharings: it costs no round and no preprocessing.
 ### The op gates
 
 These read their operands as **signed integers**: a field element `x ≤ (p−1)/2`
-is `x`, anything above is `x − p`. That needs `p = 2^ℓ − 1` (the Planner's
+is `x`, anything above is `x − p`. That needs `p = 2^p_bits − 1` (the Planner's
 comparison and truncation tricks depend on it), which is why they run over
 `m61base`/`m31base` only. Domains: every operand and every product must satisfy
-`|v| < 2^{ℓ−2}` — `2^59` at ℓ = 61, `2^29` at ℓ = 31.
+`|v| < 2^{p_bits−2}` — `2^59` at p_bits = 61, `2^29` at p_bits = 31.
 
-| Gate | Line | Semantics | Rounds (ℓ = 61 / 31) | Mults per gate | Random bits per gate |
+| Gate | Line | Semantics | Rounds (p_bits = 61 / 31) | Mults per gate | Random bits per gate |
 |---|---|---|---|---|---|
-| `LT` | `2 1 a b out LT` | `out = [a < b]`, 0 or 1 | 8 / 7 | 86 / 42 | ℓ |
-| `DRELU` | `1 1 a out DRELU` | `out = [a ≥ 0]`, 0 or 1 | 8 / 7 | 86 / 42 | ℓ |
-| `RELU` | `1 1 a out RELU` | `out = max(a, 0)` | 9 / 8 | 87 / 43 | ℓ |
-| `MAX` | `2 1 a b out MAX` | `out = max(a, b)` | 9 / 8 | 87 / 43 | ℓ |
-| `MIN` | `2 1 a b out MIN` | `out = min(a, b)` | 9 / 8 | 87 / 43 | ℓ |
-| `TRUNC d` | `1 1 a out TRUNC d` | `out = Trunc_d(a)`, drop the low `d` bits keeping the sign | 1 | 0 | ℓ |
-| `FMUL d` | `2 1 a b out FMUL d` | `out = Trunc_d(a · b)`, a fixed-point multiplication with `d` fractional bits | 1 | 1 (masked) | ℓ |
+| `LT` | `2 1 a b out LT` | `out = [a < b]`, 0 or 1 | 8 / 7 | 86 / 42 | p_bits |
+| `DRELU` | `1 1 a out DRELU` | `out = [a ≥ 0]`, 0 or 1 | 8 / 7 | 86 / 42 | p_bits |
+| `RELU` | `1 1 a out RELU` | `out = max(a, 0)` | 9 / 8 | 87 / 43 | p_bits |
+| `MAX` | `2 1 a b out MAX` | `out = max(a, b)` | 9 / 8 | 87 / 43 | p_bits |
+| `MIN` | `2 1 a b out MIN` | `out = min(a, b)` | 9 / 8 | 87 / 43 | p_bits |
+| `TRUNC d` | `1 1 a out TRUNC d` | `out = Trunc_d(a)`, drop the low `d` bits keeping the sign | 1 | 0 | p_bits |
+| `FMUL d` | `2 1 a b out FMUL d` | `out = Trunc_d(a · b)`, a fixed-point multiplication with `d` fractional bits | 1 | 1 (masked) | p_bits |
 
 `TRUNC` and `FMUL` are exact up to an additive error in `{0, ±1, ±2}` (Liu et
-al., USENIX Security 2024, §3); `d` must lie in `1 ..= ℓ − 3`. A check against
+al., USENIX Security 2024, §3); `d` must lie in `1 ..= p_bits − 3`. A check against
 the cleartext reference (`circuit::evaluate_circuit`) allows that on those
-wires. The other op gates are exact. Each op gate consumes one edaBit — ℓ of
+wires. The other op gates are exact. Each op gate consumes one edaBit — p_bits of
 the engine's random bits — which the Planner reserves from the circuit's
 declaration.
 
@@ -274,7 +274,7 @@ Two multiplications, multiplicative depth 1 — the `ADD` rides along with level
 Level 0 is the `SUB`. Level 1 has seven op groups in file order — `MUL`, `LT`
 (both `LT` gates), `RELU`, `MAX`, `MIN`, `FMUL 4`, `DRELU` — then the `ADD`;
 level 2 is the `TRUNC 4` of the product. Eight op-depths, 46 engine rounds at
-ℓ = 61 (41 at ℓ = 31). With `3` and `5` in `testdata/inputs/circuit_input_0.txt`
+p_bits = 61 (41 at p_bits = 31). With `3` and `5` in `testdata/inputs/circuit_input_0.txt`
 and `11` and `-7` in `circuit_input_1.txt` (input files are not tracked —
 `.gitignore` excludes `*.txt` — so write them locally) the outputs are
 `[15, 1, 12, 11, −7, 0 ± 2, −4 ± 2, 2, 0]`; the parties log them as signed
