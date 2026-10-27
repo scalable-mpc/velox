@@ -1,4 +1,4 @@
-//! Fields whose modulus is a Mersenne prime `p = 2^ℓ − 1`.
+//! Fields whose modulus is a Mersenne prime `p = 2^p_bits − 1`.
 //!
 //! The comparison and truncation protocols (Liu–Xie–Yu, USENIX Sec'24; issue
 //! #5) work only over such a field, and they rest on two facts about it:
@@ -38,8 +38,8 @@ use lambdaworks_math::field::{element::FieldElement, traits::IsPrimeField};
 
 /// A prime field with modulus `p = 2^BITS − 1`.
 pub trait MersennePrimeField: IsPrimeField {
-    /// `ℓ` in `p = 2^ℓ − 1`: the number of solved bits behind one random
-    /// mask, and the width of the bitwise comparison's carry tree.
+    /// `p_bits` in `p = 2^p_bits − 1`: the number of solved bits behind one
+    /// random mask, and the width of the bitwise comparison's carry tree.
     const BITS: usize;
 
     /// The modulus, derived from [`BITS`](Self::BITS) so an implementor cannot

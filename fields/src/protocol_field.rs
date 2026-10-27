@@ -179,20 +179,20 @@ pub trait ProtocolField: IsField<BaseType: Send + Sync> + Send + Sync + Sized + 
     //
     // The protocols that read the bits of an opened value need its integer
     // in `[0, p)`, so they need a prime field. The comparison and truncation
-    // protocols also need the modulus to be a Mersenne prime `2^ℓ − 1` (see
-    // `MersennePrimeField`). Code that is generic over every protocol field —
-    // the Planner — asks through these items what the field has, and refuses
-    // an operation when the field does not have it, instead of carrying the
-    // bound on everything it touches.
+    // protocols also need the modulus to be a Mersenne prime
+    // `2^p_bits − 1` (see `MersennePrimeField`). Code that is generic over
+    // every protocol field — the Planner — asks through these items what the
+    // field has, and refuses an operation when the field does not have it,
+    // instead of carrying the bound on everything it touches.
 
     /// `Some(p)` when the field is the prime field `F_p` with `p < 2^128`,
     /// `None` otherwise. The extension fields are `None`: their elements are
     /// not integers mod a prime.
     const PRIME_MODULUS: Option<u128> = None;
 
-    /// `Some(ℓ)` when the modulus is the Mersenne prime `2^ℓ − 1`, `None`
-    /// otherwise. Every field with `Some(ℓ)` here has
-    /// `PRIME_MODULUS == Some(2^ℓ − 1)`.
+    /// `Some(p_bits)` when the modulus is the Mersenne prime `2^p_bits − 1`,
+    /// `None` otherwise. Every field with `Some(p_bits)` here has
+    /// `PRIME_MODULUS == Some(2^p_bits − 1)`.
     const MERSENNE_BITS: Option<usize> = None;
 
     /// The integer in `[0, p)` that `elem` represents, when

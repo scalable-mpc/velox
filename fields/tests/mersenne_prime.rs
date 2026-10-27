@@ -79,8 +79,8 @@ where
     assert_eq!(F::bit(&fe(p - 1), F::BITS - 1), 1, "p-1 has its top bit set");
 
     // -- Fact 1: bits(p − b) = ¬bits(b) for b ≠ 0 (the BitLTL complement
-    //    trick). For b = 0, p − b = p ≡ 0, which is exactly the 2^-ℓ case the
-    //    protocols accept, so it is excluded here.
+    //    trick). For b = 0, p − b = p ≡ 0, which is exactly the 2^-p_bits case
+    //    the protocols accept, so it is excluded here.
     for b in samples(1_000, 0xc0de).map(|b| b % p).filter(|&b| b != 0) {
         let neg = fe(p - b);
         for i in 0..F::BITS {
@@ -90,7 +90,7 @@ where
     }
 
     // -- Fact 2: msb(a) = lsb(2a) (the DReLU sign trick; needs p odd). The MSB
-    //    is bit ℓ−1, set exactly when a > (p−1)/2, i.e. a is "negative".
+    //    is bit p_bits−1, set exactly when a > (p−1)/2, i.e. a is "negative".
     for a in samples(1_000, 0xd0ab).map(|a| a % p) {
         let doubled = fe(a) + fe(a);
         assert_eq!(F::bit(&fe(a), F::BITS - 1), F::bit(&doubled, 0), "a={a}");

@@ -8,7 +8,7 @@ pub mod protocol_field;
 pub use protocol_field::{FieldSer, ProtocolField};
 
 pub mod mersenne_prime;
-/// Fields with modulus `2^ℓ − 1`; what the comparison/truncation layer is
+/// Fields with modulus `2^p_bits − 1`; what the comparison/truncation layer is
 /// generic over. Implemented for the Mersenne-61 and Mersenne-31 base fields.
 pub use mersenne_prime::MersennePrimeField;
 

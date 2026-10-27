@@ -4,9 +4,9 @@
 //! # A caveat that is the engine's, not this field's
 //!
 //! [`ProtocolField::Ext`] covers the ACSS DZK proof only. That is
-//! acceptable for benchmarking the comparison layer at `ℓ = 31` (half the
-//! carry tree of `ℓ = 61`) and not for a deployment; lifting verification is
-//! tracked separately.
+//! acceptable for benchmarking the comparison layer at `p_bits = 31` (half
+//! the carry tree of `p_bits = 61`) and not for a deployment; lifting
+//! verification is tracked separately.
 
 use lambdaworks_math::{
     errors::ByteConversionError,

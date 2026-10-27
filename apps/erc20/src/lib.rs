@@ -32,14 +32,14 @@
 //!
 //! Transfers run in epochs: every transfer of an epoch is checked against the
 //! balances at the start of the epoch, so the whole epoch shares the three
-//! op-depths above — 10 rounds at ℓ = 61, 9 at ℓ = 31, however many
+//! op-depths above — 10 rounds at p_bits = 61, 9 at p_bits = 31, however many
 //! transfers it holds. [`Ledger::epochs`] starts a new epoch whenever a
 //! transfer's sender has already sent or received in the current one, which
 //! makes the result exactly that of running the transfers one by one.
 //!
 //! Balances and amounts must stay inside the comparison's domain,
-//! `|v| < 2^{ℓ−2}`. The final balances are the circuit's outputs, opened to
-//! every party: a benchmark application, not a wallet — a deployment would
+//! `|v| < 2^{p_bits−2}`. The final balances are the circuit's outputs, opened
+//! to every party: a benchmark application, not a wallet — a deployment would
 //! open each balance to its owner only, which the engine does not offer.
 
 use std::collections::{HashMap, HashSet};
