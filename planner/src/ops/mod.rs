@@ -50,6 +50,7 @@ use crate::{
 };
 
 pub mod add;
+pub mod canonical_mod;
 pub mod canonical_mod2m;
 pub mod compare;
 pub mod drelu;
