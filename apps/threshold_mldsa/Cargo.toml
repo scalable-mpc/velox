@@ -9,3 +9,8 @@ edition = "2021"
 
 [dependencies]
 velox = { package = "velox", path = "../../velox" }
+sha3 = "0.9"
+
+[dev-dependencies]
+# RustCrypto ML-DSA: the tests check that it accepts our signatures.
+ml-dsa = { version = "0.1.1", default-features = false }
