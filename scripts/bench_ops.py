@@ -50,7 +50,7 @@ OPS = {
     "FMUL": (f"FMUL {D}", 2),
 }
 APPROX = {"TRUNC", "FMUL"}
-# |inputs| < 2^13 keeps every op in domain at ℓ = 31 (|v|, |x·y| < 2^29).
+# |inputs| < 2^13 keeps every op in domain at p_bits = 31 (|v|, |x·y| < 2^29).
 BOUND = 1 << 13
 
 
