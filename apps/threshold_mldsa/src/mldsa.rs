@@ -12,7 +12,7 @@ pub const DROPPED_BITS: u32 = 13;
 /// One ML-DSA parameter set (FIPS 204, Table 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParameterSet {
-    /// The FIPS 204 name, for example `"ML-DSA-65"`.
+    /// The FIPS 204 name, for example `"ML-DSA-44"`.
     pub name: &'static str,
     /// The rows of the matrix `A`.
     pub k: usize,
@@ -35,32 +35,19 @@ pub struct ParameterSet {
     pub lambda: usize,
 }
 
-/// ML-DSA-65, security category 3.
-pub const ML_DSA_65: ParameterSet = ParameterSet {
-    name: "ML-DSA-65",
-    k: 6,
-    l: 5,
-    eta: 4,
-    tau: 49,
-    beta: 196,
-    gamma1: 1 << 19,
-    gamma2: (Q - 1) / 32,
-    omega: 55,
-    lambda: 192,
-};
-
-/// ML-DSA-87, security category 5.
-pub const ML_DSA_87: ParameterSet = ParameterSet {
-    name: "ML-DSA-87",
-    k: 8,
-    l: 7,
+/// ML-DSA-44, security category 2: the one parameter set the app signs
+/// with.
+pub const ML_DSA_44: ParameterSet = ParameterSet {
+    name: "ML-DSA-44",
+    k: 4,
+    l: 4,
     eta: 2,
-    tau: 60,
-    beta: 120,
-    gamma1: 1 << 19,
-    gamma2: (Q - 1) / 32,
-    omega: 75,
-    lambda: 256,
+    tau: 39,
+    beta: 78,
+    gamma1: 1 << 17,
+    gamma2: (Q - 1) / 88,
+    omega: 80,
+    lambda: 128,
 };
 
 #[cfg(test)]
@@ -68,14 +55,13 @@ mod tests {
     use super::*;
 
     /// The relations between the parameters that the threshold protocol
-    /// uses: `β = τ·η`, and `(q − 1)/(2γ2) = 16`, so the high bits `w1` are
-    /// the low 4 bits of `−16·w + (q − 1)/2` (Quorus, Protocol 6).
+    /// uses: `β = τ·η`, and `(q − 1)/(2γ2) = 44` exactly, so the high bits
+    /// `w1` are `(−44·w + (q − 1)/2 mod q) mod 44` (Quorus, Protocol 8).
     #[test]
     fn parameter_relations() {
-        for set in [ML_DSA_65, ML_DSA_87] {
-            assert_eq!(set.beta, set.tau as u32 * set.eta, "{}", set.name);
-            assert_eq!((Q - 1) / (2 * set.gamma2), 16, "{}", set.name);
-            assert_eq!((Q - 1) % (2 * set.gamma2), 0, "{}", set.name);
-        }
+        let set = ML_DSA_44;
+        assert_eq!(set.beta, set.tau as u32 * set.eta);
+        assert_eq!((Q - 1) / (2 * set.gamma2), 44);
+        assert_eq!((Q - 1) % (2 * set.gamma2), 0);
     }
 }
