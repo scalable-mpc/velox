@@ -55,8 +55,7 @@ const MAX_MASK_BITS: usize = 64;
 
 /// The shape of a prime `p = 2^p_bits_0 − 2^p_bits_1 + 1`: a `p_bits_0`-bit
 /// candidate is below `p` unless its top `p_bits_0 − p_bits_1` bits are all
-/// ones and its low `p_bits_1` bits are
-/// not all zeros.
+/// ones and its low `p_bits_1` bits are not all zeros.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MaskShape {
     /// `p_bits_0`: the bits of a mask.
@@ -66,10 +65,10 @@ pub struct MaskShape {
 }
 
 impl MaskShape {
-    /// The shape of `p`, if `p − 1 = 2^p_bits_1 · (2^t − 1)` with `t ≥ 5`, which
-    /// keeps the rejection rate at or below `2^-5` (see
-    /// [`candidates_for`](Self::candidates_for)), and `p_bits_0 = p_bits_1 + t`
-    /// is at most 64.
+    /// The shape of `p`, if `p − 1 = 2^p_bits_1 · (2^t − 1)` with `t ≥ 5`,
+    /// which keeps the rejection rate at or below `2^-5` (see
+    /// [`candidates_for`](Self::candidates_for)), and
+    /// `p_bits_0 = p_bits_1 + t` is at most 64.
     pub fn of_prime(p: u128) -> Option<Self> {
         let p_bits_1 = (p - 1).trailing_zeros() as usize;
         let odd = (p - 1) >> p_bits_1;

@@ -9,10 +9,10 @@
 //! ```
 //!
 //! up to an error in `{0, ±1, ±2}`. `2^{p_bits−2}` shifts
-//! `v ∈ [−2^{p_bits−2}, 2^{p_bits−2})`
-//! into `[0, (p−1)/2]`, where Theorem 3.2 holds for any `r`; the last term
-//! shifts back (Corollary 3.3). The `(1 − r_msb) · c_msb` term is the one
-//! wrap-around case, detected from the public MSB of `c`.
+//! `v ∈ [−2^{p_bits−2}, 2^{p_bits−2})` into `[0, (p−1)/2]`, where Theorem 3.2
+//! holds for any `r`; the last term shifts back (Corollary 3.3). The
+//! `(1 − r_msb) · c_msb` term is the one wrap-around case, detected from the
+//! public MSB of `c`.
 
 use fields::ProtocolField;
 

@@ -3,13 +3,13 @@
 //! stays generic over every protocol field.
 //!
 //! `p_bits` and `bit` assume that the field is a Mersenne prime field.
-//! `canonical`, `from_u128` and `pow2` do not read `p_bits`, so the uniform-mask
-//! prefix can use `pow2` over the ML-DSA field. The Mersenne assumption is
-//! checked once, where it can be refused cleanly: `Plan::compile` rejects a
-//! declaration with a Mersenne-only op over any other field, and
-//! `Op::validate` rejects the op itself. Past those two gates nothing in the
-//! Planner reaches `p_bits` or `bit` over a non-Mersenne field, which is why
-//! a `None` there is a panic rather than an error.
+//! `canonical`, `from_u128` and `pow2` do not read `p_bits`, so the
+//! uniform-mask prefix can use `pow2` over the ML-DSA field. The Mersenne
+//! assumption is checked once, where it can be refused cleanly:
+//! `Plan::compile` rejects a declaration with a Mersenne-only op over any
+//! other field, and `Op::validate` rejects the op itself. Past those two gates
+//! nothing in the Planner reaches `p_bits` or `bit` over a non-Mersenne field,
+//! which is why a `None` there is a panic rather than an error.
 
 use fields::ProtocolField;
 use lambdaworks_math::field::element::FieldElement;
@@ -35,8 +35,8 @@ pub fn bit<F: ProtocolField>(elem: &FieldElement<F>, i: usize) -> u64 {
 }
 
 /// The element `x` represents. A public value or a power of two at
-/// `p_bits = 127` does not fit the `u64` that `FieldElement::from` takes, so the
-/// high word goes in as a multiple of `2^64 = (2^32)^2`.
+/// `p_bits = 127` does not fit the `u64` that `FieldElement::from` takes, so
+/// the high word goes in as a multiple of `2^64 = (2^32)^2`.
 pub fn from_u128<F: ProtocolField>(x: u128) -> FieldElement<F> {
     let low = FieldElement::<F>::from(x as u64);
     match (x >> 64) as u64 {

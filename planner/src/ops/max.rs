@@ -1,5 +1,5 @@
-//! `Max { a, b }` / `MaxPub { a, c }` — `max(a, b)`. `|a|, |b| < 2^{p_bits−2}`.
-//! `Relu(x)` is `MaxPub(x, 0)`.
+//! `Max { a, b }` / `MaxPub { a, c }` — `max(a, b)`.
+//! `|a|, |b| < 2^{p_bits−2}`. `Relu(x)` is `MaxPub(x, 0)`.
 //!
 //! Rounds: 3 + tree levels (9 at p_bits = 61). Steps: the [`DReLU`] pipeline
 //! on `a − b`, then one multiply, the select: `max = DReLU · (a − b) + b`.

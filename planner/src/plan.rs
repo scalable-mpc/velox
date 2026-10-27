@@ -67,9 +67,9 @@ pub struct Plan {
     /// a prime `2^p_bits_0 − 2^p_bits_1 + 1`, `None` when the field has no
     /// uniform masks.
     mask_bits: Option<usize>,
-    /// Over a prime `2^p_bits_0 − 2^p_bits_1 + 1` that is not Mersenne, when an
-    /// op-depth uses edaBits: the shape of the prime and the candidates the
-    /// prefix tests.
+    /// Over a prime `2^p_bits_0 − 2^p_bits_1 + 1` that is not Mersenne, when
+    /// an op-depth uses edaBits: the shape of the prime and the candidates
+    /// the prefix tests.
     mask_test: Option<(MaskShape, usize)>,
     output: usize,
     app_rand_bits: usize,
@@ -108,7 +108,8 @@ impl Plan {
                     bail!("op-depth {}: {}", index + 1, e);
                 }
             }
-            // `m < mask_bits` also keeps the op's slices of the mask bits in range.
+            // `m < mask_bits` also keeps the op's slices of the mask bits in
+            // range.
             if let (OpType::CanonicalMod2m { m }, Some(bits)) = (params.op_type, mask_bits) {
                 if m == 0 || m >= bits {
                     bail!("op-depth {}: CanonicalMod2m by {} bits is outside 1..={} for {}-bit masks", index + 1, m, bits - 1, bits);

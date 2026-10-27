@@ -7,8 +7,8 @@
 //!
 //! - step `0`, reveal: open `c = x + r`, with `r = Σ_{i<p_bits−1} 2^i [r_i]`
 //!   the edaBit without its top bit.
-//!   `x + r < 2^{p_bits−1−κ} + 2^{p_bits−1} < p`, so `c`
-//!   is the integer sum, and it hides `x` up to a statistical distance of
+//!   `x + r < 2^{p_bits−1−κ} + 2^{p_bits−1} < p`, so `c` is the integer sum,
+//!   and it hides `x` up to a statistical distance of
 //!   `x / 2^{p_bits−1} < 2^{−κ}`.
 //! - steps `1..=L`, multiply: the carry tree over the public bits of
 //!   `c' = c mod 2^m` and `¬[r_i]`, `i < m`, gives `[u] = [c' < r_lo]` with

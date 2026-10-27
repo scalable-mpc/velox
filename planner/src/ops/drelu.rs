@@ -1,6 +1,6 @@
 //! The comparison pipeline every comparing op shares: `DReLU(v) = [v ≥ 0]`
-//! for a sharing `v` with `|v| < 2^{p_bits−1}` (Liu et al. Protocol 5.1, with the
-//! bitwise less-than replaced by the carry tree).
+//! for a sharing `v` with `|v| < 2^{p_bits−1}` (Liu et al. Protocol 5.1, with
+//! the bitwise less-than replaced by the carry tree).
 //!
 //! Steps, `L` being the tree's levels (6 at p_bits = 61):
 //!

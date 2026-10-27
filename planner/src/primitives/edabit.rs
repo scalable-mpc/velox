@@ -2,8 +2,8 @@
 //! locally from the engine's random bits.
 //!
 //! The engine hands random bits out as sharings of `±1` (`rand_bit` builds
-//! them as `r / sqrt(r²)`). A 0/1 bit is `[b] = (1 + [s]) / 2`, and `p_bits` of
-//! them compose `[r] = Σ 2^i [b_i]` — Liu et al.'s `ΠSolvedBits` output
+//! them as `r / sqrt(r²)`). A 0/1 bit is `[b] = (1 + [s]) / 2`, and `p_bits`
+//! of them compose `[r] = Σ 2^i [b_i]` — Liu et al.'s `ΠSolvedBits` output
 //! `([r], [r]_B)`, or an edaBit in Escudero et al.'s terms. Both steps are
 //! linear, so nothing here communicates. Over `p = 2^p_bits − 1`, `r` ranges
 //! over `[0, 2^p_bits)`; the one value `2^p_bits − 1 ≡ 0 mod p` occurs with
