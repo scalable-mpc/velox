@@ -33,12 +33,12 @@ The Planner is generic over every protocol field. Each op type has a
 - `Any` — `Mul`, `Add`, `Reveal` run over every field.
 - `UniformMasks` — `MaskReveal`, `LessThanPub` and `CanonicalMod2m` need
   uniform masks in `[0, p)` with their bits: a Mersenne prime, or a prime
-  `p = 2^ℓ − 2^k + 1` such as the ML-DSA field (`ℓ = 23`, `k = 13`). Over
-  the second kind the Planner runs the uniform-mask prefix
-  (`ops::uniform_mask`) before op-depth 1: it tests
+  `p = 2^p_bits_0 − 2^p_bits_1 + 1` such as the ML-DSA field
+  (`p_bits_0 = 23`, `p_bits_1 = 13`). Over the second kind the Planner runs
+  the uniform-mask prefix (`ops::uniform_mask`) before op-depth 1: it tests
   candidate edaBits with 6 multiplications each and keeps those below `p`.
 - `Mersenne` — the comparison family, `Truncate`, `FixedMul` and `Mod2m`
-  need `p = 2^ℓ − 1` (ℓ = 61, 31 or 127), because they depend on
+  need `p = 2^p_bits − 1` (p_bits = 61, 31 or 127), because they depend on
   `bits(p − b) = ¬bits(b)` and `msb(v) = lsb(2v)`.
 
 The Planner reads `ProtocolField::MERSENNE_BITS` and `PRIME_MODULUS` at
@@ -204,10 +204,11 @@ an error naming what arrived.
 ### 1.5 Contracts the application must honour
 
 - **Domains.** `Compare`, `Max`, `Min` and their `Pub` variants need
-  `|a|, |b| < 2^{ℓ−2}` as signed integers, so that `a − b` keeps its sign in
-  the top bit. `Truncate` needs `|x| < 2^{ℓ−2}`; `FixedMul` needs
-  `|x · y| < 2^{ℓ−2}`. Both truncating ops are exact up to an additive error in
-  `{0, ±1, ±2}` (Liu et al. §3), and `d` must lie in `1 ..= ℓ − 3`.
+  `|a|, |b| < 2^{p_bits−2}` as signed integers, so that `a − b` keeps its
+  sign in the top bit. `Truncate` needs `|x| < 2^{p_bits−2}`; `FixedMul` needs
+  `|x · y| < 2^{p_bits−2}`. Both truncating ops are exact up to an additive
+  error in `{0, ±1, ±2}` (Liu et al. §3), and `d` must lie in
+  `1 ..= p_bits − 3`.
 - **Reveal privacy.** `Op::Reveal { x }` opens `x` as is. What a party learns
   in the engine's two-level reconstruction is the sharing polynomial of a
   public combination of the revealed values, which is harmless only when those
@@ -224,8 +225,8 @@ an error naming what arrived.
 
 ## 2. The operations
 
-Per element of the vector op. ℓ = 61 figures first, ℓ = 31 in brackets where
-they differ. "Rounds" is engine depths, i.e. network round trips.
+Per element of the vector op. p_bits = 61 figures first, p_bits = 31 in
+brackets where they differ. "Rounds" is engine depths, i.e. network round trips.
 
 | `Op` | Result | Rounds | Engine steps | Mults / element | edaBits / element | Domain |
 |---|---|---|---|---|---|---|
@@ -233,16 +234,17 @@ they differ. "Rounds" is engine depths, i.e. network round trips.
 | `Add { x, y }` | `Shares(x+y)` | 0 | none (local) | 0 | 0 | — |
 | `Reveal { x }` | `Public(x)` | 1 | reveal | 0 | 0 | `x` fresh-blinded |
 | `MaskReveal { x }` | `Masked{x+r, eda(r)}` | 1 | reveal | 0 | 1 | — |
-| `Truncate { x, d }` | `Shares(Trunc_d(x) ± 2)` | 1 | reveal of `x + 2^{ℓ−2} + r` | 0 | 1 | `|x| < 2^{ℓ−2}` |
-| `FixedMul { x, y, d }` | `Shares(Trunc_d(x·y) ± 2)` | 1 | masked multiply, mask `r + 2^{ℓ−2}` | 1 (masked) | 1 | `|x·y| < 2^{ℓ−2}` |
-| `Mod2m { x, m }` | `Shares(x mod 2^m)`, exact | `1 + ⌈log₂ m⌉` (7 at m = 63) | reveal of `x + r` (edaBit without its top bit), `⌈log₂ m⌉` tree levels on the low `m` bits | 88 at m = 63 | 1 | `0 ≤ x < 2^{ℓ−41}`, `1 ≤ m ≤ ℓ − 41`; statistical, `2^{−40}` |
-| `LessThanPub { x, c }` | `Shares([x < c])`, exact | `1 + ⌈log₂ ℓ⌉`: 6 at ℓ = 23, 7 [6] | reveal of `x + r`, then two carry trees side by side over the bits of `r` (`[a < r]`, `[b < r]` with `b = a − c`) | 58 at ℓ = 23, 170 [82] | 1 | `x`, `c` any values in `[0, p)`; a field with uniform masks (ML-DSA or Mersenne) |
-| `CanonicalMod2m { x, m }` | `Shares(x mod 2^m)`, exact | `2 + ⌈log₂ ℓ⌉`: 7 at ℓ = 23 | reveal of `x + r`; the wrap tree `[a < r]` (ℓ bits) and two `m`-bit trees side by side; 1 multiply to select | 36 at ℓ = 23, m = 4 | 1 | `x` any value in `[0, p)`, `1 ≤ m < ℓ`; a field with uniform masks |
-| `Compare { a, b }` / `ComparePub { a, c }` | `Shares([a < b])` | 8 [7] | reveal, 6 [5] tree levels, 1 multiply | 86 [42] | 1 | `|a|,|b| < 2^{ℓ−2}` |
+| `Truncate { x, d }` | `Shares(Trunc_d(x) ± 2)` | 1 | reveal of `x + 2^{p_bits−2} + r` | 0 | 1 | `|x| < 2^{p_bits−2}` |
+| `FixedMul { x, y, d }` | `Shares(Trunc_d(x·y) ± 2)` | 1 | masked multiply, mask `r + 2^{p_bits−2}` | 1 (masked) | 1 | `|x·y| < 2^{p_bits−2}` |
+| `Mod2m { x, m }` | `Shares(x mod 2^m)`, exact | `1 + ⌈log₂ m⌉` (7 at m = 63) | reveal of `x + r` (edaBit without its top bit), `⌈log₂ m⌉` tree levels on the low `m` bits | 88 at m = 63 | 1 | `0 ≤ x < 2^{p_bits−41}`, `1 ≤ m ≤ p_bits − 41`; statistical, `2^{−40}` |
+| `LessThanPub { x, c }` | `Shares([x < c])`, exact | `1 + ⌈log₂ mask_bits⌉`: 6 at mask_bits = 23, 7 [6] | reveal of `x + r`, then two carry trees side by side over the bits of `r` (`[a < r]`, `[b < r]` with `b = a − c`) | 58 at mask_bits = 23, 170 [82] | 1 | `x`, `c` any values in `[0, p)`; a field with uniform masks (ML-DSA or Mersenne) |
+| `CanonicalMod2m { x, m }` | `Shares(x mod 2^m)`, exact | `2 + ⌈log₂ mask_bits⌉`: 7 at mask_bits = 23 | reveal of `x + r`; the wrap tree `[a < r]` (mask_bits bits) and two `m`-bit trees side by side; 1 multiply to select | 36 at mask_bits = 23, m = 4 | 1 | `x` any value in `[0, p)`, `1 ≤ m < mask_bits`; a field with uniform masks |
+| `Compare { a, b }` / `ComparePub { a, c }` | `Shares([a < b])` | 8 [7] | reveal, 6 [5] tree levels, 1 multiply | 86 [42] | 1 | `|a|,|b| < 2^{p_bits−2}` |
 | `Max { a, b }` / `MaxPub { a, c }` | `Shares(max(a,b))` | 9 [8] | Compare's steps + 1 multiply | 87 [43] | 1 | same |
 | `Min { a, b }` / `MinPub { a, c }` | `Shares(min(a,b))` | 9 [8] | Compare's steps + 1 multiply | 87 [43] | 1 | same |
 
-`Relu(x)` is `MaxPub { a: x, c: 0 }`. One edaBit costs ℓ engine random bits.
+`Relu(x)` is `MaxPub { a: x, c: 0 }`. One edaBit costs p_bits engine random
+bits.
 
 The comparison family shares one pipeline, `DReLU(v) = [v ≥ 0]` on `v = a − b`
 (Liu et al. Protocol 5.1 with the bitwise less-than replaced by
@@ -251,8 +253,8 @@ Catrina–de Hoogh's `CarryOutL` tree, which opens nothing):
 1. reveal `y = 2v + r`, `r` an edaBit; over a Mersenne prime
    `msb(v) = lsb(2v) = y_0 ⊕ r_0 ⊕ [y < r]`;
 2. the carry tree over the public bits of `y` and the sharings `¬[r]` gives
-   `[c] = [y < r]` in `⌈log₂ ℓ⌉` multiply rounds of widths 30, 29, 15, 7, 3, 1
-   at ℓ = 61 (15, 15, 7, 3, 1 at ℓ = 31);
+   `[c] = [y < r]` in `⌈log₂ p_bits⌉` multiply rounds of widths 30, 29, 15,
+   7, 3, 1 at p_bits = 61 (15, 15, 7, 3, 1 at p_bits = 31);
 3. one multiply `[b]·[c]` with `[b] = y_0 ⊕ [r_0]` (affine), then
    `DReLU = 1 − ([b] + [c] − 2[b][c])`.
 
@@ -260,10 +262,10 @@ Catrina–de Hoogh's `CarryOutL` tree, which opens nothing):
 `Min = a − DReLU·(a − b)`.
 
 The truncating ops share the local half of Liu et al.'s ΠTrunc: on the opened
-`c = v + 2^{ℓ−2} + r`,
+`c = v + 2^{p_bits−2} + r`,
 
 ```
-[Trunc_d(v)] = Trunc_d(c) − [Trunc_d(r)] + (1 − [r_msb]) · c_msb · (2^{ℓ−d} − 1) − 2^{ℓ−d−2}
+[Trunc_d(v)] = Trunc_d(c) − [Trunc_d(r)] + (1 − [r_msb]) · c_msb · (2^{p_bits−d} − 1) − 2^{p_bits−d−2}
 ```
 
 with `[Trunc_d(r)]` and `[r_msb]` read off the edaBit's bits.
@@ -276,12 +278,12 @@ The engine drives; the Planner translates each hook in both directions.
 engine                          Planner                                       application
 ──────                          ───────                                       ───────────
 preprocessing_count()  ───────► plan.preprocessing_counts()  ◄─── compiled from app.preprocessing_count()
-random_wires()         ───────► plan.random_wires()                  (= app's wires + ℓ bits per edaBit)
+random_wires()         ───────► plan.random_wires()                  (= app's wires + p_bits bits per edaBit)
 inputs()               ───────────────────────────────────────────► app.inputs()
 input_sharing_termination(p,s) ────────────────────────────────────► app.input_sharing_termination(p,s)
                                 start_scheduled_op_depth ◄─────────── returns OpDepthInput
 on_preprocessing_complete(w) ─► take planner_bits() off w.bits, make edaBits
-                                (over 2^ℓ − 2^k + 1: run the uniform-mask prefix,
+                                (over 2^p_bits_0 − 2^p_bits_1 + 1: run the uniform-mask prefix,
                                  engine depths 1..=6, keep the good candidates)
                                 fill EdaBitPool
                                 ──────────────────────────────────► app.on_preprocessing_complete(rest)
@@ -352,16 +354,16 @@ bits dropped.
 
 Methods: `op_type() -> OpType`; `len()` / `is_empty()` (elements, from the
 first operand); `params() -> OpParams` (type + width, what a declaration is
-compared to); `validate(ell: Option<usize>, has_masks: bool) -> Result<()>`
-(operand vectors agree in length; the field can run the op — `ell` is
+compared to); `validate(p_bits: Option<usize>, has_masks: bool) -> Result<()>`
+(operand vectors agree in length; the field can run the op — `p_bits` is
 `F::MERSENNE_BITS`, `has_masks` says whether the field has uniform masks;
-`d ∈ 1..=ℓ−3`). `Debug` prints `Type(n elements[, d=…])`.
+`d ∈ 1..=p_bits−3`). `Debug` prints `Type(n elements[, d=…])`.
 
 **`enum OpType`** — `Mul, Add, Compare, ComparePub, Max, Min, MaxPub, MinPub, Reveal, MaskReveal, Truncate, FixedMul, Mod2m { m }, LessThanPub, CanonicalMod2m { m }`.
 `Copy + Eq + Hash`. `field_class()` is `Any` for `Mul`, `Add`, `Reveal`,
 `UniformMasks` for `MaskReveal`, `LessThanPub` and `CanonicalMod2m`, and
 `Mersenne` for the rest;
-`check_field(ell, has_masks)` refuses a type the field cannot run;
+`check_field(p_bits, has_masks)` refuses a type the field cannot run;
 `edabits_per_element()` is 0 for the `Any` class and 1 for everything else.
 
 **`struct OpParams { op_type: OpType, elements: usize }`** — an op without its
@@ -479,18 +481,18 @@ one engine depth: a step of an op, placed and sized to the declared width
 op-depth; `rounds()` is its count.
 
 **`struct Plan`** — the uniform-mask prefix and every op-depth end to end,
-plus `ell`, the mask width, `output`, and the application's own
+plus `p_bits`, the mask width, `output`, and the application's own
 `rand_bits` / `sharings`.
 
 | Method | Returns |
 |---|---|
-| `compile(&PlannerCounts, ell: Option<usize>, prime: Option<u128>) -> Result<Plan>` | the plan; errors on an op-depth of zero elements, and on an op the field cannot run |
+| `compile(&PlannerCounts, p_bits: Option<usize>, prime: Option<u128>) -> Result<Plan>` | the plan; errors on an op-depth of zero elements, and on an op the field cannot run |
 | `prefix() -> &[EngineRound]` | the uniform-mask prefix at engine depths `1..`; empty over a Mersenne field or when no op uses edaBits |
 | `mask_test() -> Option<(MaskShape, usize)>` | the prefix's prime shape and the candidates it tests |
 | `mask_bits()` | bits of one edaBit, when the field has uniform masks |
 | `op_depth(d) -> Option<&OpDepthPlan>` | op-depth `d` (from 1) |
 | `op_depths() -> &[OpDepthPlan]` | all |
-| `ell()` | `Some(ℓ)` over a Mersenne prime field, `None` otherwise |
+| `p_bits()` | the bits of `p = 2^p_bits − 1` over a Mersenne prime field, `None` otherwise |
 | `engine_depths()` | total engine depths, the prefix's included |
 | `edabits_per_depth() -> Vec<usize>` / `edabits_total()` | edaBit layout |
 | `planner_bits()` | engine random bits the Planner keeps: mask width × edaBits made (`edabits_total`, or the prefix's candidates) |
@@ -537,8 +539,8 @@ steps, preprocessing) → `steps()` → the struct → `impl Operation`.
 | `add.rs` | `Add` | `out` (summed at construction) | none |
 | `reveal.rs` | `Reveal` | `x, out` | 0: reveal |
 | `mask_reveal.rs` | `MaskReveal` | `x, eda, out` | 0: reveal `x + r` |
-| `truncate.rs` | `Truncate` | `x, d, eda, out` | 0: reveal `x + 2^{ℓ−2} + r`; `unmask` on completion |
-| `fixed_mul.rs` | `FixedMul` | `x, y, d, eda, out` | 0: masked multiply with mask `r + 2^{ℓ−2}`; `unmask` on completion |
+| `truncate.rs` | `Truncate` | `x, d, eda, out` | 0: reveal `x + 2^{p_bits−2} + r`; `unmask` on completion |
+| `fixed_mul.rs` | `FixedMul` | `x, y, d, eda, out` | 0: masked multiply with mask `r + 2^{p_bits−2}`; `unmask` on completion |
 | `mod2m.rs` | `Mod2m` | `tree, x, m, eda, c_low, slots, out` | 0: reveal `x + r`; 1..L: tree levels on `c mod 2^m` and `¬[r_i]`; then `c' − [r_lo] + 2^m·[u]` |
 | `less_than_pub.rs` | `LessThanPub` | `tree, x, c, eda, a_below_c, slots, out` | 0: reveal `x + r`; 1..L: the levels of the `[a < r]` and `[b < r]` trees, side by side; then `[a < c] + carry_a − carry_b` |
 | `canonical_mod2m.rs` | `CanonicalMod2m` | `wrap_tree, low_tree, x, m, eda, slots, a_low, w, m0, m1, out` | 0: reveal `x + r`; 1..L: the wrap tree and the two low trees, side by side; L+1: multiply `[w]·([m₁] − [m₀])`; then `[m₀] +` the product |
@@ -554,33 +556,33 @@ Shared pipelines (not `Operation`s themselves):
   `b` (`y_0 ⊕ [r_0]`), `c` (`[y < r]`), `out` (`[v ≥ 0]`). `new(v, eda)`,
   `steps()` (= levels + 2), `result()`, and `operands` / `on_step_complete`
   with the template's shape so `Compare`/`Max`/`Min` delegate their leading
-  steps. `fn steps(ell) -> Vec<OpStep>` gives reveal, one multiply per tree
+  steps. `fn steps(p_bits) -> Vec<OpStep>` gives reveal, one multiply per tree
   level of that level's width, one multiply.
 - `fixed_point.rs` — the local half of ΠTrunc: `pow2(exp)`, `offset()`
-  (`2^{ℓ−2}`), and `unmask(c, eda, d)` (steps 6–8 of Protocol 3.1, `Trunc_d`
-  of the public `c` included).
+  (`2^{p_bits−2}`), and `unmask(c, eda, d)` (steps 6–8 of Protocol 3.1,
+  `Trunc_d` of the public `c` included).
 
 `E<F>` is the crate's shorthand for `FieldElement<F>`; `no_such_step(op_type,
 step)` is the error an op returns for a step outside its list.
 
 ### 4.6 `primitives` — edaBits and the carry tree
 
-**`mod mersenne`** — `ell::<F>()`, `canonical::<F>(e)`,
+**`mod mersenne`** — `p_bits::<F>()`, `canonical::<F>(e)`,
 `bit::<F>(e, i)`: the Mersenne arithmetic the ops need, read through
 `ProtocolField::MERSENNE_BITS` / `canonical_u128`. `canonical` works over
-any prime field; `ell` and `bit` need a Mersenne field. They panic over a
+any prime field; `p_bits` and `bit` need a Mersenne field. They panic over a
 field that does not have what they need, which cannot happen past
 `Plan::compile` and `Op::validate`, the two places that refuse those ops
 cleanly.
 
 **`struct EdaBit<F: ProtocolField> { value: FieldElement<F>, bits: Vec<FieldElement<F>> }`** —
-a random `r` with sharings of its bits, LSB first. Assembled locally from ℓ
+a random `r` with sharings of its bits, LSB first. Assembled locally from p_bits
 engine sign bits: `[b] = (1 + [s]) / 2`, `[r] = Σ 2^i [b_i]`.
 
 | Method | |
 |---|---|
 | `from_signs(&[±1 sharings], bits) -> Result<Self>` | needs exactly `bits` signs; composes the value from the bits |
-| `msb()` | `[r_{ℓ−1}]` |
+| `msb()` | `[r_{p_bits−1}]` |
 | `trunc_shift(d)` | `[Trunc_d(r)]` from the bits (Theorem 3.1) |
 
 **`struct EdaBitPool<F>`** — the circuit's edaBits, laid out per op-depth in
@@ -613,13 +615,13 @@ Option<u64> }`** — a `(P, G)` pair; `leaf_a` marks an affine leaf.
 
 1. Add the variant to `Op` and `OpType` in `api/application.rs`; extend
    `op_type`, `len`, `validate`, `Debug`, and `edabits_per_element`.
-2. Write `ops/<name>.rs` on the template: header, `steps()` (or `steps(ell)`),
-   the state struct, `impl Operation`. Every step must be one engine batch of
-   one type, and `operands(step)` must return that type.
+2. Write `ops/<name>.rs` on the template: header, `steps()` (or
+   `steps(p_bits)`), the state struct, `impl Operation`. Every step must be
+   one engine batch of one type, and `operands(step)` must return that type.
 3. Register it: `pub mod` in `ops/mod.rs`, an arm in `steps_of`, an arm in
    `build` (drawing `n` edaBits if the op needs them).
-4. Cover it in `tests/plaintext.rs` against an integer reference at ℓ = 61 and
-   ℓ = 31, and in `plan.rs`'s `rounds_per_type`.
+4. Cover it in `tests/plaintext.rs` against an integer reference at
+   p_bits = 61 and p_bits = 31, and in `plan.rs`'s `rounds_per_type`.
 
 The plan and the preprocessing budget follow automatically from `steps()`.
 
@@ -635,9 +637,9 @@ The plan and the preprocessing budget follow automatically from `steps()`.
   `Multiply` is the product, `Reveal` the identity, `MaskedMultiply` is `x·y +
   mask`). A scripted `PlannerApplication` runs each op and checks it against
   its integer reference: the comparison family exhaustively on small values and
-  randomised at ℓ = 61 and 31, truncation and `FixedMul` within ±2, reveal /
-  mask-reveal / mul / add exactly, a multi-depth circuit against its plan, and
-  undeclared ops refused.
+  randomised at p_bits = 61 and 31, truncation and `FixedMul` within ±2,
+  reveal / mask-reveal / mul / add exactly, a multi-depth circuit against its
+  plan, and undeclared ops refused.
 
 ```
 cargo test -p planner
