@@ -60,14 +60,16 @@ pub struct Plan {
     /// Mersenne field and when no op-depth uses edaBits.
     prefix: Vec<EngineRound>,
     op_depths: Vec<OpDepthPlan>,
-    /// `Some(ℓ)` over the Mersenne prime field `2^ℓ − 1`, `None` over any
-    /// other protocol field.
+    /// The bits of `p` over the Mersenne prime field `2^p_bits − 1`, `None`
+    /// over any other protocol field.
     p_bits: Option<usize>,
-    /// Bits of one edaBit: `ℓ` over a Mersenne field, the mask width over a
-    /// prime `2^ℓ − 2^k + 1`, `None` when the field has no uniform masks.
+    /// Bits of one edaBit: `p_bits` over a Mersenne field, the mask width over
+    /// a prime `2^p_bits_0 − 2^p_bits_1 + 1`, `None` when the field has no
+    /// uniform masks.
     mask_bits: Option<usize>,
-    /// Over a prime `2^ℓ − 2^k + 1` that is not Mersenne, when an op-depth
-    /// uses edaBits: the shape of the prime and the candidates the prefix tests.
+    /// Over a prime `2^p_bits_0 − 2^p_bits_1 + 1` that is not Mersenne, when an
+    /// op-depth uses edaBits: the shape of the prime and the candidates the
+    /// prefix tests.
     mask_test: Option<(MaskShape, usize)>,
     output: usize,
     app_rand_bits: usize,
@@ -75,7 +77,7 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// `ell` is `F::MERSENNE_BITS` and `prime` is `F::PRIME_MODULUS`: a
+    /// `p_bits` is `F::MERSENNE_BITS` and `prime` is `F::PRIME_MODULUS`: a
     /// declaration with an op the field cannot run is refused here, before
     /// preprocessing.
     pub fn compile(counts: &PlannerCounts, p_bits: Option<usize>, prime: Option<u128>) -> Result<Self> {
@@ -106,7 +108,7 @@ impl Plan {
                     bail!("op-depth {}: {}", index + 1, e);
                 }
             }
-            // `m < ℓ` also keeps the op's slices of the mask bits in range.
+            // `m < mask_bits` also keeps the op's slices of the mask bits in range.
             if let (OpType::CanonicalMod2m { m }, Some(bits)) = (params.op_type, mask_bits) {
                 if m == 0 || m >= bits {
                     bail!("op-depth {}: CanonicalMod2m by {} bits is outside 1..={} for {}-bit masks", index + 1, m, bits - 1, bits);
@@ -264,8 +266,8 @@ mod tests {
         assert_eq!(plan.planner_bits(), 127, "one edaBit");
     }
 
-    /// `CanonicalMod2m` takes `1 ≤ m < ℓ` for the edaBit width `ℓ`: 23 over
-    /// the ML-DSA field, 61 over M61.
+    /// `CanonicalMod2m` takes `1 ≤ m < mask_bits` for the edaBit width
+    /// `mask_bits`: 23 over the ML-DSA field, 61 over M61.
     #[test]
     fn canonical_mod2m_out_of_range_is_refused_at_compile() {
         let q = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;

@@ -18,7 +18,8 @@
 //! to the op.
 //!
 //! One op-depth does not come from the application. When the plan has a
-//! uniform-mask prefix (`ops::uniform_mask`, over a prime `2^ℓ − 2^k + 1`
+//! uniform-mask prefix (`ops::uniform_mask`, over a prime
+//! `2^p_bits_0 − 2^p_bits_1 + 1`
 //! such as the ML-DSA field), `on_preprocessing_complete` first runs it as
 //! op-depth 0, through `next_engine_depth`. When the prefix ends,
 //! [`start_application`](Planner::start_application) fills the edaBit pool

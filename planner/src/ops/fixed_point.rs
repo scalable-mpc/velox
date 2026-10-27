@@ -1,14 +1,15 @@
 //! The local half of Liu et al.'s truncation (Protocol 3.1, ΠTrunc), shared
 //! by `Truncate` and `FixedMul`.
 //!
-//! Both open a public `c = v + 2^{ℓ−2} + r` — `v` the value to truncate,
+//! Both open a public `c = v + 2^{p_bits−2} + r` — `v` the value to truncate,
 //! `r` an edaBit — and then compute, locally,
 //!
 //! ```text
-//! [Trunc_d(v)] = Trunc_d(c) − [Trunc_d(r)] + (1 − [r_msb]) · c_msb · (2^{ℓ−d} − 1) − 2^{ℓ−d−2}
+//! [Trunc_d(v)] = Trunc_d(c) − [Trunc_d(r)] + (1 − [r_msb]) · c_msb · (2^{p_bits−d} − 1) − 2^{p_bits−d−2}
 //! ```
 //!
-//! up to an error in `{0, ±1, ±2}`. `2^{ℓ−2}` shifts `v ∈ [−2^{ℓ−2}, 2^{ℓ−2})`
+//! up to an error in `{0, ±1, ±2}`. `2^{p_bits−2}` shifts
+//! `v ∈ [−2^{p_bits−2}, 2^{p_bits−2})`
 //! into `[0, (p−1)/2]`, where Theorem 3.2 holds for any `r`; the last term
 //! shifts back (Corollary 3.3). The `(1 − r_msb) · c_msb` term is the one
 //! wrap-around case, detected from the public MSB of `c`.

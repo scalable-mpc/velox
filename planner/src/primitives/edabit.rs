@@ -2,12 +2,12 @@
 //! locally from the engine's random bits.
 //!
 //! The engine hands random bits out as sharings of `±1` (`rand_bit` builds
-//! them as `r / sqrt(r²)`). A 0/1 bit is `[b] = (1 + [s]) / 2`, and `ℓ` of
+//! them as `r / sqrt(r²)`). A 0/1 bit is `[b] = (1 + [s]) / 2`, and `p_bits` of
 //! them compose `[r] = Σ 2^i [b_i]` — Liu et al.'s `ΠSolvedBits` output
 //! `([r], [r]_B)`, or an edaBit in Escudero et al.'s terms. Both steps are
-//! linear, so nothing here communicates. Over `p = 2^ℓ − 1`, `r` ranges
-//! over `[0, 2^ℓ)`; the one value `2^ℓ − 1 ≡ 0 mod p` occurs with
-//! probability `2^-ℓ` and is accepted, as the paper does. Over another
+//! linear, so nothing here communicates. Over `p = 2^p_bits − 1`, `r` ranges
+//! over `[0, 2^p_bits)`; the one value `2^p_bits − 1 ≡ 0 mod p` occurs with
+//! probability `2^-p_bits` and is accepted, as the paper does. Over another
 //! prime field, these are candidates, and the uniform-mask prefix
 //! (`uniform_mask`) keeps only those below `p`.
 
@@ -25,7 +25,7 @@ pub struct EdaBit<F: ProtocolField> {
 }
 
 impl<F: ProtocolField> EdaBit<F> {
-    /// From `bits` sharings of `±1`: `ℓ` over a Mersenne field, the mask
+    /// From `bits` sharings of `±1`: `p_bits` over a Mersenne field, the mask
     /// width of a uniform-mask candidate otherwise.
     pub fn from_signs(signs: &[FieldElement<F>], bits: usize) -> Result<Self> {
         if signs.len() != bits {
@@ -41,7 +41,7 @@ impl<F: ProtocolField> EdaBit<F> {
         Ok(Self { value, bits })
     }
 
-    /// `[r_{ℓ−1}]`, the sign bit of `r` read as a signed integer.
+    /// `[r_{p_bits−1}]`, the sign bit of `r` read as a signed integer.
     pub fn msb(&self) -> &FieldElement<F> {
         &self.bits[mersenne::p_bits::<F>() - 1]
     }

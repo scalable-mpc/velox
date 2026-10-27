@@ -116,9 +116,9 @@ impl<F: ProtocolField> std::fmt::Debug for OpResult<F> {
 /// (`c`) are field elements every party holds in the clear.
 ///
 /// Domains: `Compare`, `Max`, `Min` and their `Pub` variants need
-/// `|a|, |b| < 2^{ℓ−2}` read as signed integers, so that `a − b` keeps its
+/// `|a|, |b| < 2^{p_bits−2}` read as signed integers, so that `a − b` keeps its
 /// sign in the top bit; `Truncate` and `FixedMul` need `|x|, |x·y| <
-/// 2^{ℓ−2}` and produce `Trunc_d(·)` up to `±2` (Liu et al. §3).
+/// 2^{p_bits−2}` and produce `Trunc_d(·)` up to `±2` (Liu et al. §3).
 pub enum Op<F: ProtocolField> {
     /// `x · y`, one round.
     Mul { x: Vec<FieldElement<F>>, y: Vec<FieldElement<F>> },
@@ -146,15 +146,16 @@ pub enum Op<F: ProtocolField> {
     /// `Trunc_d(x · y)` in one round: a fixed-point multiplication with `d`
     /// fractional bits.
     FixedMul { x: Vec<FieldElement<F>>, y: Vec<FieldElement<F>>, d: usize },
-    /// `x mod 2^m`, exactly, for an unsigned `0 ≤ x < 2^{ℓ−1−κ}` (κ = 40);
-    /// `1 ≤ m ≤ ℓ − 1 − κ`.
+    /// `x mod 2^m`, exactly, for an unsigned `0 ≤ x < 2^{p_bits−1−κ}` (κ = 40);
+    /// `1 ≤ m ≤ p_bits − 1 − κ`.
     Mod2m { x: Vec<FieldElement<F>>, m: usize },
     /// `[x < c]` for public `c`, as a sharing of 0 or 1, with `x` and `c`
     /// read as integers in `[0, p)`. Exact, with no bound on `x`. Needs
     /// uniform masks: it runs over the ML-DSA field and the Mersenne fields.
     LessThanPub { x: Vec<FieldElement<F>>, c: Vec<FieldElement<F>> },
     /// `x mod 2^m`, exactly, for any `x` read as an integer in `[0, p)`;
-    /// `1 ≤ m < ℓ` with `ℓ` the edaBit width. Needs uniform masks. ML-DSA's
+    /// `1 ≤ m < mask_bits` with `mask_bits` the edaBit width.
+    /// Needs uniform masks. ML-DSA's
     /// `w1` uses it with `m = 4`.
     CanonicalMod2m { x: Vec<FieldElement<F>>, m: usize },
 }
@@ -187,10 +188,11 @@ pub enum FieldClass {
     /// Any protocol field: `Mul`, `Add`, `Reveal`.
     Any,
     /// A prime field with uniform masks in `[0, p)` and their bits: a
-    /// Mersenne prime, or a prime `p = 2^ℓ − 2^k + 1` (the uniform-mask
+    /// Mersenne prime, or a prime `p = 2^p_bits_0 − 2^p_bits_1 + 1`
+    /// (the uniform-mask
     /// prefix). `MaskReveal`, `LessThanPub`, `CanonicalMod2m`.
     UniformMasks,
-    /// A Mersenne prime field `p = 2^ℓ − 1`: the ops that use its two facts
+    /// A Mersenne prime field `p = 2^p_bits − 1`: the ops that use its two facts
     /// (`p` is all ones, `p` is odd).
     Mersenne,
 }
@@ -211,9 +213,10 @@ impl OpType {
         usize::from(self.field_class() != FieldClass::Any)
     }
 
-    /// Refuse the type, by name, when the field cannot run it. `ell` is
-    /// `Some(ℓ)` over a Mersenne prime field; `has_masks` says whether the
-    /// field has uniform masks.
+    /// Refuse the type, by name, when the field cannot run it. `p_bits` is
+    /// `F::MERSENNE_BITS`: the bits of `p = 2^p_bits − 1` over a Mersenne
+    /// prime field, `None` otherwise; `has_masks` says whether the field has
+    /// uniform masks.
     pub fn check_field(self, p_bits: Option<usize>, has_masks: bool) -> Result<()> {
         match self.field_class() {
             FieldClass::Mersenne if p_bits.is_none() => {
@@ -269,9 +272,9 @@ impl<F: ProtocolField> Op<F> {
     }
 
     /// Operand vectors agree in length, the field can run the op, and `d` is
-    /// in range for `ℓ` bits. `ell` is `Some(ℓ)` over a Mersenne prime field
-    /// and `None` over any other; `has_masks` says whether the field has
-    /// uniform masks.
+    /// in range. `p_bits` is `F::MERSENNE_BITS`: the bits of `p = 2^p_bits − 1`
+    /// over a Mersenne prime field, `None` over any other; `has_masks` says
+    /// whether the field has uniform masks.
     pub fn validate(&self, p_bits: Option<usize>, has_masks: bool) -> Result<()> {
         self.op_type().check_field(p_bits, has_masks)?;
         let pair = |l: usize, r: usize, what: &str| -> Result<()> {
@@ -298,7 +301,7 @@ impl<F: ProtocolField> Op<F> {
     }
 
     fn check_d(d: usize, p_bits: usize) -> Result<()> {
-        // ΠTrunc's correction term is 2^{ℓ−d−2}, so d ≤ ℓ − 3 keeps it ≥ 2.
+        // ΠTrunc's correction term is 2^{p_bits−d−2}, so d ≤ p_bits − 3 keeps it ≥ 2.
         if d == 0 || d + 2 >= p_bits {
             bail!("truncation by {} bits is outside 1..={} for an {}-bit field", d, p_bits - 3, p_bits);
         }
@@ -403,7 +406,7 @@ mod tests {
         assert!(err.to_string().contains("Mersenne"), "{err}");
         assert!(Op::<F>::Truncate { x: v(1), d: 4 }.validate(None, false).is_err());
         // MaskReveal needs uniform masks, which a non-Mersenne prime of the
-        // form 2^ℓ − 2^k + 1 has; the Mersenne-only ops still do not run.
+        // form 2^p_bits_0 − 2^p_bits_1 + 1 has; the Mersenne-only ops still do not run.
         assert!(Op::<F>::MaskReveal { x: v(2) }.validate(None, true).is_ok());
         let err = Op::<F>::MaskReveal { x: v(2) }.validate(None, false).unwrap_err();
         assert!(err.to_string().contains("uniform masks"), "{err}");
@@ -415,8 +418,9 @@ mod tests {
         assert!(OpDepthInput::<F>::op(0, Op::Add { x: v(1), y: v(1) }).is_err());
     }
 
-    /// `1 ≤ m ≤ ℓ − 1 − κ`: up to 20 at ℓ = 61, up to 86 at ℓ = 127, none at
-    /// ℓ = 31, and only over a Mersenne prime field.
+    /// `1 ≤ m ≤ p_bits − 1 − κ`: up to 20 at p_bits = 61, up to 86 at
+    /// p_bits = 127, none at p_bits = 31, and only over a Mersenne prime
+    /// field.
     #[test]
     fn mod2m_validation() {
         let mod2m = |m| Op::<F>::Mod2m { x: v(2), m };

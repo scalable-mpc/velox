@@ -2,17 +2,18 @@
 //! integer in `[0, p)`, over a field with uniform masks, exactly and with no
 //! bound on `x`. ML-DSA-65 and 87 need it with `m = 4`: the high bits `w1`
 //! of `w` are the low 4 bits of `−16·w + (q − 1)/2` (Quorus, Protocol 6).
-//! `Mod2m` cannot do this: it needs `x < 2^{ℓ−41}` and a Mersenne field.
+//! `Mod2m` cannot do this: it needs `x < 2^{p_bits−41}` and a Mersenne field.
 //!
-//! Rounds: `2 + ⌈log₂ ℓ⌉`, with `ℓ` the edaBit width (7 over the ML-DSA
-//! field). Steps, `L = ⌈log₂ ℓ⌉` being the levels of the widest tree:
+//! Rounds: `2 + ⌈log₂ mask_bits⌉`, with `mask_bits` the edaBit width (7 over
+//! the ML-DSA field). Steps, `L = ⌈log₂ mask_bits⌉` being the levels of the
+//! widest tree:
 //!
 //! - step `0`, reveal: open `a = x + r mod p`, with `r` a uniform mask in
 //!   `[0, p)` and its bits. Then `a₀ = a mod 2^m` and
 //!   `a₁ = (a + p) mod 2^m` are public; `r' = r mod 2^m` is linear in the
 //!   bits of `r`.
 //! - steps `1..=L`, multiply: three carry trees per element, side by side:
-//!   the wrap bit `[w] = [a < r]` over all `ℓ` bits, and `[a₀ < r']`,
+//!   the wrap bit `[w] = [a < r]` over all `mask_bits` bits, and `[a₀ < r']`,
 //!   `[a₁ < r']` over the low `m` bits.
 //! - step `L + 1`, multiply: `[w] · ([m₁] − [m₀])`, with
 //!   `[m₀] = a₀ − [r'] + 2^m·[a₀ < r']` and `[m₁] = a₁ − [r'] + 2^m·[a₁ < r']`.
@@ -23,7 +24,7 @@
 //! `x mod 2^m = (a + p − r) mod 2^m = m₁`. Over a Mersenne field the edaBit
 //! can be `r = p` (all ones): then `a = x`, `w = 1`, and `m₁ = x mod 2^m`.
 //!
-//! Multiplications per element: the `ℓ`-bit tree, two `m`-bit trees and 1
+//! Multiplications per element: the `mask_bits`-bit tree, two `m`-bit trees and 1
 //! (36 over the ML-DSA field with `m = 4`). Preprocessing: one edaBit per
 //! element.
 

@@ -4,7 +4,7 @@
 //! polynomial): an engine where `Multiply` is the product, `Reveal` the
 //! identity and `MaskedMultiply` is `x·y + mask` exercises every line of the
 //! Planner except the network. Each op is checked against its integer
-//! reference, at ℓ = 61, 31 and 127, and over the ML-DSA field
+//! reference, at p_bits = 61, 31 and 127, and over the ML-DSA field
 //! (`q = 2^23 − 2^13 + 1`) for the ops that need only uniform masks.
 
 use std::collections::VecDeque;

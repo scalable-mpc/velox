@@ -33,7 +33,8 @@
 //!
 //! One operation is not an application op: [`uniform_mask`], the prefix
 //! that the Planner runs itself before op-depth 1 over a prime
-//! `2^ℓ − 2^k + 1`. It keeps the template, but no `Op` variant builds it.
+//! `2^p_bits_0 − 2^p_bits_1 + 1`. It keeps the template, but no `Op` variant
+//! builds it.
 //!
 //! Public operands are `FieldElement`s like sharings; under Shamir the
 //! arithmetic on them is identical, which is why every `Pub` variant is the

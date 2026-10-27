@@ -4,8 +4,8 @@
 //! the mask is uniform in `[0, p)`, so no statistical bits are needed and
 //! `x` has no bound.
 //!
-//! Rounds: `1 + ⌈log₂ ℓ⌉`, with `ℓ` the edaBit width (6 over the ML-DSA
-//! field, `ℓ = 23`). Steps, `L` being the tree's levels:
+//! Rounds: `1 + ⌈log₂ mask_bits⌉`, with `mask_bits` the edaBit width (6 over
+//! the ML-DSA field, `mask_bits = 23`). Steps, `L` being the tree's levels:
 //!
 //! - step `0`, reveal: open `a = x + r mod p`. Then `b = a − c mod p` and
 //!   `[a < c]` are public.

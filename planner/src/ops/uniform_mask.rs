@@ -3,15 +3,17 @@
 //! op an application schedules: the Planner runs it itself, on the template
 //! of the other ops.
 //!
-//! Over `p = 2^ℓ − 1` an edaBit of `ℓ` random bits is already a mask (its one
-//! extra value `2^ℓ − 1 ≡ 0` is accepted, as Liu et al. do). Over a prime
-//! `p = 2^ℓ − 2^k + 1` with `k > 1`, such as the ML-DSA field
-//! (`ℓ = 23`, `k = 13`), a candidate `r` of `ℓ` random bits is at least `p`
-//! with probability `(2^k − 1)/2^ℓ`, and such a mask would leak its masked
+//! Over `p = 2^p_bits − 1` an edaBit of `p_bits` random bits is already a
+//! mask (its one extra value `2^p_bits − 1 ≡ 0` is accepted, as Liu et al.
+//! do). Over a prime `p = 2^p_bits_0 − 2^p_bits_1 + 1` with `p_bits_1 > 1`,
+//! such as the ML-DSA field (`p_bits_0 = 23`, `p_bits_1 = 13`), a candidate
+//! `r` of `p_bits_0` random bits is at least `p` with probability
+//! `(2^p_bits_1 − 1)/2^p_bits_0`, and such a mask would leak its masked
 //! value almost completely. The prefix rejects those candidates exactly:
 //!
-//! - `s` = the number of ones in the top `t = ℓ − k` bits, and `ρ` = the low
-//!   `k` bits as a field element. Both are linear in the bits.
+//! - `s` = the number of ones in the top `t = p_bits_0 − p_bits_1` bits, and
+//!   `ρ` = the low `p_bits_1` bits as a field element. Both are linear in the
+//!   bits.
 //! - `r ≥ p` exactly when `s = t` and `ρ ≠ 0`.
 //! - Open `e = ρ · s(s − 1)···(s − t + 1)`. A good candidate, `r = p − 1`
 //!   included, opens as 0; a bad one as `t!·ρ ≠ 0`. The opened values of the
@@ -51,22 +53,23 @@ const SHORTFALL_BITS: usize = 40;
 /// [`MaskShape::candidates_for`] in range.
 const MAX_MASK_BITS: usize = 64;
 
-/// The shape of a prime `p = 2^ℓ − 2^k + 1`: an `ℓ`-bit candidate is below
-/// `p` unless its top `ℓ − k` bits are all ones and its low `k` bits are
+/// The shape of a prime `p = 2^p_bits_0 − 2^p_bits_1 + 1`: a `p_bits_0`-bit
+/// candidate is below `p` unless its top `p_bits_0 − p_bits_1` bits are all
+/// ones and its low `p_bits_1` bits are
 /// not all zeros.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MaskShape {
-    /// `ℓ`: the bits of a mask.
+    /// `p_bits_0`: the bits of a mask.
     pub p_bits_0: usize,
-    /// `k`: the low bits.
+    /// `p_bits_1`: the low bits.
     pub p_bits_1: usize,
 }
 
 impl MaskShape {
-    /// The shape of `p`, if `p − 1 = 2^k · (2^t − 1)` with `t ≥ 5`, which
+    /// The shape of `p`, if `p − 1 = 2^p_bits_1 · (2^t − 1)` with `t ≥ 5`, which
     /// keeps the rejection rate at or below `2^-5` (see
-    /// [`candidates_for`](Self::candidates_for)), and `ℓ = k + t` is at most
-    /// 64.
+    /// [`candidates_for`](Self::candidates_for)), and `p_bits_0 = p_bits_1 + t`
+    /// is at most 64.
     pub fn of_prime(p: u128) -> Option<Self> {
         let p_bits_1 = (p - 1).trailing_zeros() as usize;
         let odd = (p - 1) >> p_bits_1;
@@ -77,16 +80,16 @@ impl MaskShape {
         Some(Self { p_bits_0: p_bits_1 + top_bits, p_bits_1 })
     }
 
-    /// `t = ℓ − k`.
+    /// `t = p_bits_0 − p_bits_1`.
     pub fn top_bits(&self) -> usize {
         self.p_bits_0 - self.p_bits_1
     }
 
     /// Candidates to make for `masks` good ones. A candidate is bad with
-    /// probability `β = (2^k − 1)/2^ℓ`, so the bad ones among `C` are about
-    /// Poisson(`λ = Cβ`), and P(X ≥ S) ≤ (eλ/S)^S ≤ 2^-S when S ≥ 2eλ. The
-    /// surplus `S = 40 + ⌈8·masks·β⌉` satisfies both `S ≥ 40` and, for
-    /// `β ≤ 2^-5`, `S ≥ 2e·(masks + S)·β`.
+    /// probability `β = (2^p_bits_1 − 1)/2^p_bits_0`, so the bad ones among
+    /// `C` are about Poisson(`λ = Cβ`), and P(X ≥ S) ≤ (eλ/S)^S ≤ 2^-S when
+    /// S ≥ 2eλ. The surplus `S = 40 + ⌈8·masks·β⌉` satisfies both `S ≥ 40`
+    /// and, for `β ≤ 2^-5`, `S ≥ 2e·(masks + S)·β`.
     pub fn candidates_for(&self, masks: usize) -> usize {
         if masks == 0 {
             return 0;

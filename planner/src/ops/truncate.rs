@@ -1,7 +1,7 @@
 //! `Truncate { x, d }` — `Trunc_d(x)`: drop the low `d` bits, keep the
-//! sign; error `{0, ±1, ±2}`. `|x| < 2^{ℓ−2}`.
+//! sign; error `{0, ±1, ±2}`. `|x| < 2^{p_bits−2}`.
 //!
-//! Rounds: 1. Steps: one reveal, of `x + 2^{ℓ−2} + r`. Preprocessing: one
+//! Rounds: 1. Steps: one reveal, of `x + 2^{p_bits−2} + r`. Preprocessing: one
 //! edaBit per element.
 
 use anyhow::Result;

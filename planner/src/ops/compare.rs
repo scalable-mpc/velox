@@ -1,7 +1,7 @@
 //! `Compare { a, b }` / `ComparePub { a, c }` — `[a < b]`, a sharing of 0
-//! or 1. `|a|, |b| < 2^{ℓ−2}`.
+//! or 1. `|a|, |b| < 2^{p_bits−2}`.
 //!
-//! Rounds: 2 + tree levels (8 at ℓ = 61). Steps: the [`DReLU`] pipeline
+//! Rounds: 2 + tree levels (8 at p_bits = 61). Steps: the [`DReLU`] pipeline
 //! on `a − b`; the result is `1 − DReLU(a − b)`. Preprocessing: one edaBit
 //! per element.
 
