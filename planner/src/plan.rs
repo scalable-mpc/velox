@@ -115,6 +115,13 @@ impl Plan {
                     bail!("op-depth {}: CanonicalMod2m by {} bits is outside 1..={} for {}-bit masks", index + 1, m, bits - 1, bits);
                 }
             }
+            // `d | p − 1` gives the element of order `d` that the op needs.
+            if let OpType::CanonicalMod { d } = params.op_type {
+                let p = prime.or(p_bits.map(|b| (1u128 << b) - 1)).expect("checked: the field has uniform masks");
+                if d < 2 || (p - 1) % d as u128 != 0 {
+                    bail!("op-depth {}: CanonicalMod by {} needs d ≥ 2 that divides p − 1 = {}", index + 1, d, p - 1);
+                }
+            }
             let rounds = ops::steps_of(params.op_type, mask_bits).into_iter().map(|step| place(step, params.elements)).collect();
             op_depths.push(OpDepthPlan { params: *params, rounds });
         }
@@ -281,6 +288,22 @@ mod tests {
             assert!(err.to_string().starts_with("op-depth 1: CanonicalMod2m"), "m={m}: {err}");
         }
         let err = compile(4, None, Some(101)).unwrap_err();
+        assert!(err.to_string().contains("uniform masks"), "{err}");
+    }
+
+    /// `CanonicalMod` takes `d ≥ 2` that divides `p − 1`: 44 divides
+    /// `q − 1 = 2^13 · 3 · 11 · 31`, 5 does not.
+    #[test]
+    fn canonical_mod_needs_a_divisor_of_p_minus_1() {
+        let q = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+        let compile = |d, p_bits, prime| Plan::compile(&PlannerCounts::new(vec![OpParams::new(OpType::CanonicalMod { d }, 1)], 0), p_bits, prime);
+        assert_eq!(compile(44, None, Some(q)).unwrap().op_depth(1).unwrap().rounds(), 13);
+        assert!(compile(22, Some(61), None).is_ok());
+        for (d, p_bits, prime) in [(0, None, Some(q)), (1, None, Some(q)), (5, None, Some(q)), (4, Some(61), None)] {
+            let err = compile(d, p_bits, prime).unwrap_err();
+            assert!(err.to_string().starts_with("op-depth 1: CanonicalMod by"), "d={d}: {err}");
+        }
+        let err = compile(44, None, Some(101)).unwrap_err();
         assert!(err.to_string().contains("uniform masks"), "{err}");
     }
 

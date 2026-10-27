@@ -156,8 +156,12 @@ pub enum Op<F: ProtocolField> {
     LessThanPub { x: Vec<FieldElement<F>>, c: Vec<FieldElement<F>> },
     /// `x mod 2^m`, exactly, for any `x` read as an integer in `[0, p)`;
     /// `1 ≤ m < mask_bits` with `mask_bits` the edaBit width. Needs uniform
-    /// masks. ML-DSA's `w1` uses it with `m = 4`.
+    /// masks. The `w1` of ML-DSA-65 and 87 uses it with `m = 4`.
     CanonicalMod2m { x: Vec<FieldElement<F>>, m: usize },
+    /// `x mod d`, exactly, for any `x` read as an integer in `[0, p)` and a
+    /// public `d ≥ 2` that divides `p − 1`. Needs uniform masks. The `w1` of
+    /// ML-DSA-44 uses it with `d = 44`.
+    CanonicalMod { x: Vec<FieldElement<F>>, d: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -180,6 +184,8 @@ pub enum OpType {
     LessThanPub,
     /// `m` is part of the type, as for `Mod2m`.
     CanonicalMod2m { m: usize },
+    /// `d` is part of the type: the power steps depend on it.
+    CanonicalMod { d: usize },
 }
 
 /// What a field must have to run an op type.
@@ -189,7 +195,8 @@ pub enum FieldClass {
     Any,
     /// A prime field with uniform masks in `[0, p)` and their bits: a
     /// Mersenne prime, or a prime `p = 2^p_bits_0 − 2^p_bits_1 + 1` (the
-    /// uniform-mask prefix). `MaskReveal`, `LessThanPub`, `CanonicalMod2m`.
+    /// uniform-mask prefix). `MaskReveal`, `LessThanPub`, `CanonicalMod2m`,
+    /// `CanonicalMod`.
     UniformMasks,
     /// A Mersenne prime field `p = 2^p_bits − 1`: the ops that use its two
     /// facts (`p` is all ones, `p` is odd).
@@ -201,7 +208,9 @@ impl OpType {
     pub fn field_class(self) -> FieldClass {
         match self {
             OpType::Mul | OpType::Add | OpType::Reveal => FieldClass::Any,
-            OpType::MaskReveal | OpType::LessThanPub | OpType::CanonicalMod2m { .. } => FieldClass::UniformMasks,
+            OpType::MaskReveal | OpType::LessThanPub | OpType::CanonicalMod2m { .. } | OpType::CanonicalMod { .. } => {
+                FieldClass::UniformMasks
+            }
             _ => FieldClass::Mersenne,
         }
     }
@@ -247,6 +256,7 @@ impl<F: ProtocolField> Op<F> {
             Op::Mod2m { m, .. } => OpType::Mod2m { m: *m },
             Op::LessThanPub { .. } => OpType::LessThanPub,
             Op::CanonicalMod2m { m, .. } => OpType::CanonicalMod2m { m: *m },
+            Op::CanonicalMod { d, .. } => OpType::CanonicalMod { d: *d },
         }
     }
 
@@ -255,7 +265,7 @@ impl<F: ProtocolField> Op<F> {
         match self {
             Op::Mul { x, .. } | Op::Add { x, .. } | Op::Reveal { x } | Op::MaskReveal { x }
             | Op::Truncate { x, .. } | Op::FixedMul { x, .. } | Op::Mod2m { x, .. } | Op::LessThanPub { x, .. }
-            | Op::CanonicalMod2m { x, .. } => x.len(),
+            | Op::CanonicalMod2m { x, .. } | Op::CanonicalMod { x, .. } => x.len(),
             Op::Compare { a, .. } | Op::ComparePub { a, .. } | Op::Max { a, .. } | Op::Min { a, .. }
             | Op::MaxPub { a, .. } | Op::MinPub { a, .. } => a.len(),
         }
@@ -295,7 +305,7 @@ impl<F: ProtocolField> Op<F> {
             Op::Mod2m { m, .. } => mod2m::check_m(*m, p_bits.expect("checked above")),
             Op::LessThanPub { x, c } => pair(x.len(), c.len(), "x, c"),
             // `covers` makes the run use the declared `m`, and `Plan::compile` checked it.
-            Op::CanonicalMod2m { .. } => Ok(()),
+            Op::CanonicalMod2m { .. } | Op::CanonicalMod { .. } => Ok(()),
         }
     }
 
@@ -316,6 +326,7 @@ impl<F: ProtocolField> std::fmt::Debug for Op<F> {
             Op::Truncate { d, .. } | Op::FixedMul { d, .. } => write!(f, "{:?}({} elements, d={})", self.op_type(), self.len(), d),
             Op::Mod2m { m, .. } => write!(f, "Mod2m({} elements, m={})", self.len(), m),
             Op::CanonicalMod2m { m, .. } => write!(f, "CanonicalMod2m({} elements, m={})", self.len(), m),
+            Op::CanonicalMod { d, .. } => write!(f, "CanonicalMod({} elements, d={})", self.len(), d),
             _ => write!(f, "{:?}({} elements)", self.op_type(), self.len()),
         }
     }
