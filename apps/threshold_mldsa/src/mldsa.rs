@@ -283,21 +283,54 @@ pub fn sig_encode(c_tilde: &[u8], z: &[Poly], hint: &[[bool; RING_DEGREE]], set:
     Some(bytes)
 }
 
+/// SHAKE256 of the parts, `len` bytes (FIPS 204's `H`).
+pub fn shake256(parts: &[&[u8]], len: usize) -> Vec<u8> {
+    let mut shake = Shake256::default();
+    for part in parts {
+        shake.update(part);
+    }
+    let mut out = vec![0u8; len];
+    shake.finalize_xof().read(&mut out);
+    out
+}
+
+/// The public key, and the public values that signing uses. In Quorus,
+/// `t = A·s + e` is public (Protocol 5, key generation, line 4).
+pub struct PublicKey {
+    /// `t = A·s + e`.
+    pub t: Vec<Poly>,
+    /// The low part of `Power2Round(t)`, in `(−2^12, 2^12]`.
+    pub t0: Vec<Poly>,
+    /// `pkEncode(ρ, t1)`: 1,312 bytes for ML-DSA-44.
+    pub encoded: Vec<u8>,
+    /// `tr = H(pk)`: 64 bytes.
+    pub tr: Vec<u8>,
+}
+
+impl PublicKey {
+    /// `Power2Round` of the opened `t`, the encoding and its hash (Quorus
+    /// Protocol 5, key generation, lines 5 to 7).
+    pub fn new(rho: &[u8; 32], t: Vec<Poly>) -> Self {
+        let (t1, t0): (Vec<[u32; RING_DEGREE]>, Vec<Poly>) = t
+            .iter()
+            .map(|t| {
+                let parts: Vec<(u32, i64)> = t.iter().map(|x| power2round(x.representative())).collect();
+                (
+                    std::array::from_fn(|i| parts[i].0),
+                    std::array::from_fn(|i| Fq::from(parts[i].1.rem_euclid(i64::from(Q)) as u64)),
+                )
+            })
+            .unzip();
+        let encoded = pk_encode(rho, &t1);
+        let tr = shake256(&[&encoded], 64);
+        Self { t, t0, encoded, tr }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ml_dsa::{EncodedSignature, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey};
-
-    /// SHAKE256 of the parts, `len` bytes (FIPS 204's `H`).
-    fn shake256(parts: &[&[u8]], len: usize) -> Vec<u8> {
-        let mut shake = Shake256::default();
-        for part in parts {
-            shake.update(part);
-        }
-        let mut out = vec![0u8; len];
-        shake.finalize_xof().read(&mut out);
-        out
-    }
 
     /// A pseudo-random integer source for the reference signer.
     struct Coins(u64);
@@ -340,19 +373,8 @@ mod tests {
         let s: Vec<Poly> = (0..set.l).map(|_| coins.poly(-eta, eta)).collect();
         let e: Vec<Poly> = (0..set.k).map(|_| coins.poly(-eta, eta)).collect();
         let t: Vec<Poly> = matrix_vector_product(&a_hat, &s).iter().zip(&e).map(|(a, e)| add_polys(a, e)).collect();
-        let (t1, t0): (Vec<[u32; RING_DEGREE]>, Vec<Poly>) = t
-            .iter()
-            .map(|t| {
-                let parts: Vec<(u32, i64)> = t.iter().map(|x| power2round(x.representative())).collect();
-                (
-                    std::array::from_fn(|i| parts[i].0),
-                    std::array::from_fn(|i| Fq::from(parts[i].1.rem_euclid(i64::from(Q)) as u64)),
-                )
-            })
-            .unzip();
-        let pk = pk_encode(&rho, &t1);
-        let tr = shake256(&[&pk], 64);
-        let mu = shake256(&[&tr, &[0, 0], message], 64);
+        let key = PublicKey::new(&rho, t);
+        let mu = shake256(&[&key.tr, &[0, 0], message], 64);
         for _ in 0..1000 {
             let gamma1 = i64::from(set.gamma1);
             let y: Vec<Poly> = (0..set.l).map(|_| coins.poly(1 - gamma1, gamma1)).collect();
@@ -379,14 +401,14 @@ mod tests {
             }
             // h = MakeHint(−c·t0, A·z − c·t + c·t0), with e_w dropped as in
             // Quorus Algorithm 1.
-            let ct0: Vec<Poly> = t0.iter().map(|t0| ring_product(&c, t0)).collect();
+            let ct0: Vec<Poly> = key.t0.iter().map(|t0| ring_product(&c, t0)).collect();
             if infinity_norm(&ct0) >= i64::from(set.gamma2) {
                 continue;
             }
             let az = matrix_vector_product(&a_hat, &z);
             let hint: Vec<[bool; RING_DEGREE]> = (0..set.k)
                 .map(|row| {
-                    let ct = ring_product(&c, &t[row]);
+                    let ct = ring_product(&c, &key.t[row]);
                     std::array::from_fn(|i| {
                         let r = &az[row][i] - &ct[i] + &ct0[row][i];
                         make_hint((-&ct0[row][i]).representative(), r.representative(), set.gamma2)
@@ -394,7 +416,7 @@ mod tests {
                 })
                 .collect();
             if let Some(signature) = sig_encode(&c_tilde, &z, &hint, &set) {
-                return (pk, signature);
+                return (key.encoded, signature);
             }
         }
         panic!("no passing attempt in 1000");
