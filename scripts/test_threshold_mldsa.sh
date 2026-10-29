@@ -1,11 +1,13 @@
 # Run the threshold_mldsa application locally: n parties make an ML-DSA-44
-# key, prepare 16 signing attempts and sign a message. Each party logs the
+# key, prepare the signing attempts and sign a message. Each party logs the
 # hash of the public key on the line "ThresholdMlDsa: public key of 1312
 # bytes, tr = ..." (all parties must log the same hash), and the result on
 # the line "ThresholdMlDsa: signature of 2420 bytes ... RustCrypto ml-dsa
 # accepts it: true" (or "ThresholdMlDsa: no signature: ...").
 #
-#   ./scripts/test_threshold_mldsa.sh {num_parties} {compression_factor}
+#   ./scripts/test_threshold_mldsa.sh {num_parties} {compression_factor} [attempts]
+#
+# attempts is --attempts, the signing attempts to prepare (default 16).
 #
 # Logs: logs/party-<id>-mldsa_n_<n>_<comp>.log.
 #
@@ -23,12 +25,15 @@ TYPE=${TYPE:="release"}
 
 APP_BIN=threshold_mldsa
 
+ATTEMPTS_ARG="--attempts ${3:-16}"
+
 ./target/$TYPE/$APP_BIN \
     --config $TESTDIR/nodes-0.json \
     --ip ip_file \
     --protocol sync \
     --syncer $TESTDIR/syncer \
     --comp $2 \
+    $ATTEMPTS_ARG \
     --byzantine false > logs/syncer_mldsa_n_$1_$2.log &
 
 for((i=0;i<$1;i++)); do
@@ -38,5 +43,6 @@ for((i=0;i<$1;i++)); do
     --protocol mpc \
     --syncer $TESTDIR/syncer \
     --comp $2 \
+    $ATTEMPTS_ARG \
     --byzantine false > logs/party-$i-mldsa_n_$1_$2.log &
 done

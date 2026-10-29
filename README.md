@@ -151,14 +151,15 @@ velox/
 │   ├── bristol_circuit/      # Evaluates any .arith circuit (parser.rs)
 │   ├── btx_setup/            # Batched threshold encryption setup (commitments.rs: shares lifted into the pairing groups)
 │   ├── erc20/                # Private ERC20 transfers with secure comparisons
-│   └── reveal_probe/         # End-to-end check of the public reveal
+│   ├── reveal_probe/         # End-to-end check of the public reveal
+│   └── threshold_mldsa/      # Threshold ML-DSA-44 signing (Quorus): key generation, preprocessing, signing
 │
 ├── velox/                    # The engine as one dependency for applications: re-exports, CLI arguments, node launch, syncer
 ├── circuit/                  # The .arith circuit IR (docs/CIRCUIT_FORMAT.md)
 ├── config/                   # The config binary, which generates per-node configuration files
 ├── benchmark/                # AWS benchmarking infrastructure and analysis tools
 ├── testdata/                 # Node configurations (testdata/<n>), circuits, erc20 ledgers, party inputs
-├── scripts/                  # test.sh, test_btx.sh, and the bench_ops.py / bench_erc20.py benchmarks
+├── scripts/                  # test.sh, test_btx.sh, test_threshold_mldsa.sh, and the bench_*.py benchmarks
 ├── docs/                     # Circuit format, comparison design, and other design notes
 ├── logs/                     # Runtime logs from protocol execution
 └── images/                   # Project assets (logo, etc.)
@@ -176,11 +177,13 @@ run through `scripts/test.sh` (`APP_BIN=<name>`):
 | `btx_setup` | the key setup of batched threshold encryption: shares of `τ¹ … τ^{2B}`; with `--delta`, Policharla's indexed variant (shares of `sk·τ^d`, `sk⁻¹·τ^i`, `β`) | any (`bls381` default) |
 | `erc20` | private ERC20 payments: secret balances and amounts, every transfer checked for funds with secure comparisons (`apps/erc20/src/lib.rs`) | `m61base`, `m31base` |
 | `reveal_probe` | an end-to-end check of the public reveal | any |
+| `threshold_mldsa` | threshold ML-DSA-44 signatures (Quorus): the parties make a key, prepare `B` signing attempts and sign one message; each party checks the FIPS 204 signature with RustCrypto `ml-dsa` ([`docs/threshold_mldsa.md`](docs/threshold_mldsa.md)) | the ML-DSA field `F_q`, `q = 8380417` (fixed) |
 
 ### Running each application
 
 Every application runs through `scripts/test.sh {num_parties} {label} {comp} [rand_batches]`,
-except `btx_setup`, which has `scripts/test_btx.sh`. Run them from the repository
+except `btx_setup` and `threshold_mldsa`, which have `scripts/test_btx.sh` and
+`scripts/test_threshold_mldsa.sh`. Run them from the repository
 root, after building (step 4). Environment variables pick the application.
 `comp` must be at least 2; use 10.
 
@@ -218,6 +221,9 @@ APP_BIN=reveal_probe APP_ARG="--values 4" ./scripts/test.sh 10 probe 10
 # btx_setup (field bls381 by default): {num_parties} {batch_size B} {comp}
 ./scripts/test_btx.sh 10 16 10
 DELTA=4 ./scripts/test_btx.sh 10 16 10    # indexed variant, delta <= B
+
+# threshold_mldsa (field F_q, fixed): {num_parties} {comp} [signing attempts B, default 16]
+./scripts/test_threshold_mldsa.sh 10 10
 ```
 
 Each party reads its inputs from `testdata/inputs/`: `input_<id>.txt` for
@@ -230,7 +236,7 @@ back to zeros. `TESTDIR` (config directory), `TYPE` (build profile, default
 
 Each run finishes within seconds. The syncer writes phase latencies to
 `logs/syncer_n_<n>_<label>_<comp>.log` (`logs/syncer_btx_n_<n>_<B>_<comp>.log`
-for btx_setup); a run is done when that log reports `status {"output"}`. Each
+for btx_setup, `logs/syncer_mldsa_n_<n>_<comp>.log` for threshold_mldsa); a run is done when that log reports `status {"output"}`. Each
 party writes its own log to `logs/party-<i>-...log`, where the results are:
 
 | application | what to look for in a party's log |
@@ -240,12 +246,14 @@ party writes its own log to `logs/party-<i>-...log`, where the results are:
 | `erc20` | `Erc20: <m> final balances:` every account's balance after the transfers |
 | `reveal_probe` | `reveal_probe: <k> reveals verified` |
 | `btx_setup` | `BtxSetup:` lines with the party's shares (with `DELTA`, of `sk·τ^d`, `sk⁻¹·τ^i` and `β`) and its commitments `g1^(…)`, `g2^(…)` to them |
+| `threshold_mldsa` | `ThresholdMlDsa: public key of 1312 bytes, tr = …` (the same at every party), then `ThresholdMlDsa: signature of 2420 bytes … RustCrypto ml-dsa accepts it: true`, or `ThresholdMlDsa: no signature: …` when no attempt passes |
 
 `test.sh` kills the previous run's processes, but its kill list leaves out
-`btx_setup`, which only `test_btx.sh` kills. If ports are still held, free them
+`btx_setup` and `threshold_mldsa`, which only their own scripts kill. If ports are still held, free them
 as in step 9.
-`scripts/bench_ops.py` and `scripts/bench_erc20.py` benchmark circuits and
-erc20 on the 10-party configuration.
+`scripts/bench_ops.py`, `scripts/bench_erc20.py` and
+`scripts/bench_threshold_mldsa.py` benchmark circuits, erc20 and threshold
+ML-DSA on the 10-party configuration.
 
 Secure comparison, truncation and fixed-point multiplication (issue #5) are
 described in [`docs/comparison.md`](docs/comparison.md); the Planner's API in

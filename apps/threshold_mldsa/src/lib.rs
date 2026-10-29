@@ -111,8 +111,8 @@ pub struct ThresholdMlDsa {
     responses: Option<Responses>,
     /// The first attempt that passes, once the verdicts are open.
     passed: Option<usize>,
-    /// When `w1` is opened: the start of the online phase.
-    online_start: Option<Instant>,
+    /// When op-depth 6 (open `w1`) starts: the start of signing.
+    signing_start: Option<Instant>,
     /// The FIPS 204 signature, when the run gives one.
     pub signature: Option<Vec<u8>>,
 }
@@ -137,7 +137,7 @@ impl ThresholdMlDsa {
             verdict_masks: Vec::new(),
             responses: None,
             passed: None,
-            online_start: None,
+            signing_start: None,
             signature: None,
         }
     }
@@ -146,6 +146,11 @@ impl ThresholdMlDsa {
     /// attempt.
     fn small_coefficients(&self) -> usize {
         SECRET_COEFFICIENTS + self.attempts * W_COEFFICIENTS_PER_ATTEMPT
+    }
+
+    /// The time since op-depth 6 started, in milliseconds.
+    fn signing_ms(&self) -> u128 {
+        self.signing_start.map(|t| t.elapsed().as_millis()).unwrap_or_default()
     }
 
     fn candidates(&self) -> &Candidates {
@@ -249,7 +254,7 @@ impl PlannerApplication<F> for ThresholdMlDsa {
                 let pending = self.pending.take().expect("set in op-depth 3");
                 self.prepared = pending.complete(&result.shares()?);
                 log::info!("ThresholdMlDsa: {} signing attempts prepared", self.prepared.len());
-                self.online_start = Some(Instant::now());
+                self.signing_start = Some(Instant::now());
                 let x = self.prepared.iter().flat_map(|a| a.w1.iter().flatten().cloned()).collect();
                 OpDepthInput::op(6, Op::Reveal { x })
             }
@@ -274,7 +279,11 @@ impl PlannerApplication<F> for ThresholdMlDsa {
             9 => {
                 let opened = result.public()?;
                 self.passed = opened.chunks_exact(VERDICT_MASKS).position(|v| v.iter().all(|v| *v == Fq::zero()));
-                log::info!("ThresholdMlDsa: attempt {:?} is the first that passes the bound tests", self.passed);
+                log::info!(
+                    "ThresholdMlDsa: signing op-depths 6 to 9 took {} ms; attempt {:?} is the first that passes the bound tests",
+                    self.signing_ms(),
+                    self.passed
+                );
                 let responses = self.responses.as_ref().expect("set in op-depth 6");
                 let z = match self.passed {
                     Some(j) => responses.z[j].iter().flatten().cloned().collect(),
@@ -289,20 +298,20 @@ impl PlannerApplication<F> for ThresholdMlDsa {
     /// The opened `z` of the attempt that passed: the hint, the signature,
     /// and its check by RustCrypto `ml-dsa`.
     async fn on_output(&mut self, outputs: Vec<Fq>) -> Result<()> {
-        let latency = self.online_start.map(|t| t.elapsed().as_millis()).unwrap_or_default();
+        let latency = self.signing_ms();
         let Some(j) = self.passed else {
-            log::info!("ThresholdMlDsa: no signature: no attempt of {} passes (online {} ms)", self.attempts, latency);
+            log::info!("ThresholdMlDsa: no signature: no attempt of {} passes ({} ms after op-depth 6)", self.attempts, latency);
             return Ok(());
         };
         let key = self.public_key.as_ref().expect("set in op-depth 4");
         let c_tilde = &self.responses.as_ref().expect("set in op-depth 6").c_tilde[j];
         let Some(signature) = signature(key, &self.a_hat, c_tilde, &into_polys(&outputs), &ML_DSA_44) else {
-            log::info!("ThresholdMlDsa: no signature: attempt {} fails the c·t0 or hint check (online {} ms)", j, latency);
+            log::info!("ThresholdMlDsa: no signature: attempt {} fails the c·t0 or hint check ({} ms after op-depth 6)", j, latency);
             return Ok(());
         };
         let accepted = rustcrypto_accepts(&key.encoded, &self.message, &signature);
         log::info!(
-            "ThresholdMlDsa: signature of {} bytes from attempt {}, online {} ms; RustCrypto ml-dsa accepts it: {}",
+            "ThresholdMlDsa: signature of {} bytes from attempt {}, {} ms after op-depth 6 (with the multiplication check); RustCrypto ml-dsa accepts it: {}",
             signature.len(),
             j,
             latency,
