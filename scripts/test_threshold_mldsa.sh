@@ -1,13 +1,15 @@
 # Run the threshold_mldsa application locally: n parties make an ML-DSA-44
-# key, prepare the signing attempts and sign a message. Each party logs the
+# key, prepare the signing attempts and sign the messages. Each party logs the
 # hash of the public key on the line "ThresholdMlDsa: public key of 1312
 # bytes, tr = ..." (all parties must log the same hash), and the result on
-# the line "ThresholdMlDsa: signature of 2420 bytes ... RustCrypto ml-dsa
-# accepts it: true" (or "ThresholdMlDsa: no signature: ...").
+# the line "ThresholdMlDsa: <k> of <S> messages signed". Each signature has
+# its line "ThresholdMlDsa: message <i>: signature of 2420 bytes ...
+# RustCrypto ml-dsa accepts it: true" (or "message <i>: no signature: ...").
 #
-#   ./scripts/test_threshold_mldsa.sh {num_parties} {compression_factor} [attempts]
+#   ./scripts/test_threshold_mldsa.sh {num_parties} {compression_factor} [attempts] [signatures]
 #
-# attempts is --attempts, the signing attempts to prepare (default 16).
+# attempts is --attempts, the signing attempts for each message (default
+# 16). signatures is --signatures, the messages to sign (default 1).
 #
 # Logs: logs/party-<id>-mldsa_n_<n>_<comp>.log.
 #
@@ -25,7 +27,7 @@ TYPE=${TYPE:="release"}
 
 APP_BIN=threshold_mldsa
 
-ATTEMPTS_ARG="--attempts ${3:-16}"
+ATTEMPTS_ARG="--attempts ${3:-16} --signatures ${4:-1}"
 
 ./target/$TYPE/$APP_BIN \
     --config $TESTDIR/nodes-0.json \

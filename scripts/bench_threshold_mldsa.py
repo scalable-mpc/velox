@@ -77,12 +77,12 @@ def run_point(attempts, rep, timeout, grace):
     signing, accepted, no_signature = [], 0, 0
     for party in range(N):
         text = open(party_log(party)).read() if os.path.exists(party_log(party)) else ""
-        m = re.search(r"signing op-depths 6 to 9 took (\d+) ms; attempt (\S+) is the first", text)
+        m = re.search(r"signing op-depths 6 to 9 took (\d+) ms; first passing attempt of each message: \[(.*)\]", text)
         if m:
             signing.append(int(m[1]))
             row["passed_attempt"] = m[2]
         accepted += "RustCrypto ml-dsa accepts it: true" in text
-        no_signature += "ThresholdMlDsa: no signature" in text
+        no_signature += "no signature" in text
     row.update(signing_ms=statistics.median(signing) if signing else None,
                accepted_parties=accepted, no_signature_parties=no_signature)
     return row

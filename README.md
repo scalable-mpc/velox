@@ -177,7 +177,7 @@ run through `scripts/test.sh` (`APP_BIN=<name>`):
 | `btx_setup` | the key setup of batched threshold encryption: shares of `τ¹ … τ^{2B}`; with `--delta`, Policharla's indexed variant (shares of `sk·τ^d`, `sk⁻¹·τ^i`, `β`) | any (`bls381` default) |
 | `erc20` | private ERC20 payments: secret balances and amounts, every transfer checked for funds with secure comparisons (`apps/erc20/src/lib.rs`) | `m61base`, `m31base` |
 | `reveal_probe` | an end-to-end check of the public reveal | any |
-| `threshold_mldsa` | threshold ML-DSA-44 signatures (Quorus): the parties make a key, prepare `B` signing attempts and sign one message; each party checks the FIPS 204 signature with RustCrypto `ml-dsa` ([`docs/threshold_mldsa.md`](docs/threshold_mldsa.md)) | the ML-DSA field `F_q`, `q = 8380417` (fixed) |
+| `threshold_mldsa` | threshold ML-DSA-44 signatures (Quorus): the parties make a key and sign `S` messages with `B` signing attempts each; each party checks each FIPS 204 signature with RustCrypto `ml-dsa` ([`docs/threshold_mldsa.md`](docs/threshold_mldsa.md)) | the ML-DSA field `F_q`, `q = 8380417` (fixed) |
 
 ### Running each application
 
@@ -222,8 +222,9 @@ APP_BIN=reveal_probe APP_ARG="--values 4" ./scripts/test.sh 10 probe 10
 ./scripts/test_btx.sh 10 16 10
 DELTA=4 ./scripts/test_btx.sh 10 16 10    # indexed variant, delta <= B
 
-# threshold_mldsa (field F_q, fixed): {num_parties} {comp} [signing attempts B, default 16]
+# threshold_mldsa (field F_q, fixed): {num_parties} {comp} [attempts B per message, default 16] [messages S, default 1]
 ./scripts/test_threshold_mldsa.sh 10 10
+./scripts/test_threshold_mldsa.sh 10 10 16 2    # two signatures in one run
 ```
 
 Each party reads its inputs from `testdata/inputs/`: `input_<id>.txt` for
@@ -246,7 +247,7 @@ party writes its own log to `logs/party-<i>-...log`, where the results are:
 | `erc20` | `Erc20: <m> final balances:` every account's balance after the transfers |
 | `reveal_probe` | `reveal_probe: <k> reveals verified` |
 | `btx_setup` | `BtxSetup:` lines with the party's shares (with `DELTA`, of `sk·τ^d`, `sk⁻¹·τ^i` and `β`) and its commitments `g1^(…)`, `g2^(…)` to them |
-| `threshold_mldsa` | `ThresholdMlDsa: public key of 1312 bytes, tr = …` (the same at every party), then `ThresholdMlDsa: signature of 2420 bytes … RustCrypto ml-dsa accepts it: true`, or `ThresholdMlDsa: no signature: …` when no attempt passes |
+| `threshold_mldsa` | `ThresholdMlDsa: public key of 1312 bytes, tr = …` (the same at every party), then `ThresholdMlDsa: message <i>: signature of 2420 bytes … RustCrypto ml-dsa accepts it: true` for each message (or `message <i>: no signature: …` when none of its attempts passes), and `ThresholdMlDsa: <k> of <S> messages signed` |
 
 `test.sh` kills the previous run's processes, but its kill list leaves out
 `btx_setup` and `threshold_mldsa`, which only their own scripts kill. If ports are still held, free them

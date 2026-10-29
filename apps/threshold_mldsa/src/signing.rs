@@ -40,10 +40,11 @@ pub struct Responses {
 }
 
 impl Responses {
-    /// `w1`: the opened `w1` of all attempts, in the order of `attempts`.
-    pub fn new(mu: &[u8], w1: &[Fq], attempts: &[Attempt], s: &[Poly], e: &[Poly]) -> Self {
+    /// `mus`: the message representative `μ` of each attempt. `w1`: the
+    /// opened `w1` of all attempts. Both in the order of `attempts`.
+    pub fn new(mus: &[Vec<u8>], w1: &[Fq], attempts: &[Attempt], s: &[Poly], e: &[Poly]) -> Self {
         let mut responses = Self { c_tilde: Vec::new(), z: Vec::new(), w0_bar: Vec::new() };
-        for (attempt, w1) in attempts.iter().zip(w1.chunks_exact(W_COEFFICIENTS_PER_ATTEMPT)) {
+        for ((attempt, mu), w1) in attempts.iter().zip(mus).zip(w1.chunks_exact(W_COEFFICIENTS_PER_ATTEMPT)) {
             let w1: Vec<[u32; RING_DEGREE]> =
                 w1.chunks_exact(RING_DEGREE).map(|p| std::array::from_fn(|i| p[i].representative())).collect();
             let (c_tilde, c) = challenge(mu, &w1, &ML_DSA_44);

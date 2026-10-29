@@ -12,12 +12,15 @@ now.
 
 ## What one run does
 
-Each run makes a new key, prepares `B` signing attempts (`--attempts`,
-default 16) and signs one message (`--message`). The key exists only for the
+Each run makes a new key and signs `S` messages (`--signatures`, default
+1) with `B` signing attempts for each message (`--attempts`, default 16).
+The messages are `--message` when `S = 1`, and `"<message> 0"`,
+`"<message> 1"`, ... when `S > 1`. All `S·B` attempts run in parallel, so the
+number of op-depths does not change with `S`. The key exists only for the
 run. The engine checks all multiplications at the end of the run, before it
 opens the output wires.
 
-| op-depth | op | width at `B = 16` | what it does |
+| op-depth | op | width at `S = 1`, `B = 16` | what it does |
 |---|---|---|---|
 | 1 | `Mul` | 30533 | `b0·b1` of each small-coefficient candidate |
 | 2 | `Mul` | 30533 | the reject bit `b2·(b0 + b1 − b0·b1)` |
@@ -28,7 +31,7 @@ opens the output wires.
 | 7 | `LessThanPub` | 32768 | the bound tests of `z` and `w̄0` |
 | 8 | `Mul` | 48 | the failure count of each attempt times 3 random sharings |
 | 9 | `Reveal` | 48 | the verdicts |
-| output | — | 1024 | `z` of the first attempt that passes |
+| output | — | 1024 | `z` of the first attempt that passes (1024 for each message) |
 
 Op-depths 1 to 4 are key generation (Quorus Protocol 5). Op-depths 1 to 3 and 5
 are the preprocessing (Protocol 8). Op-depths 6 to 9 and the output are

@@ -26,7 +26,8 @@
 //!
 //! # Preprocessing
 //!
-//! The same run prepares `B` signing attempts (Quorus Protocol 8, see
+//! The same run prepares `B` signing attempts for each of the `S` messages,
+//! `S·B` in all (Quorus Protocol 8, see
 //! [`preprocessing`]). Their errors `e_w` are kept candidates of the same
 //! op-depths 1 to 3, after `s` and `e`, and `[w] = A·[y] + [e_w]` is computed
 //! with `[t]` in op-depth 3.
@@ -35,20 +36,22 @@
 //!
 //! # Signing
 //!
-//! The run signs one message (Quorus Protocol 5, sign; see [`signing`]):
+//! The run signs `S` messages in parallel (Quorus Protocol 5, sign; see
+//! [`signing`]). The attempts of message `m` are `m·B` to `m·B + B − 1`.
 //!
-//! 6. Open `w1` of all attempts. Each party computes `μ`, then the
-//!    challenge, `[z]` and `[w̄0]` of each attempt.
+//! 6. Open `w1` of all attempts. Each party computes `μ` of each message,
+//!    then the challenge, `[z]` and `[w̄0]` of each attempt.
 //! 7. The bound tests of all coefficients: the Planner's `LessThanPub`.
 //! 8. and 9. The verdicts: open `f·u` for the failure count `f` of each
 //!    attempt and 3 random sharings `u`.
 //!
-//! The output wires are `[z]` of the first attempt that passes, or sharings
-//! of 0 when no attempt passes. The engine opens them only after it checks
-//! all multiplications, so no `z` is open before that check. Each party then
-//! computes the hint and the signature, and checks the signature with
-//! RustCrypto `ml-dsa`. When `‖c·t0‖∞ ≥ γ2` or the hint is too large, the
-//! run gives no signature (decision D3).
+//! For each message, the output wires are `[z]` of its first attempt that
+//! passes, or sharings of 0 when none of its attempts passes. The engine
+//! opens them only after it checks all multiplications, so no `z` is open
+//! before that check. Each party then computes the hint and the signature of
+//! each message, and checks the signature with RustCrypto `ml-dsa`. When
+//! `‖c·t0‖∞ ≥ γ2` or the hint is too large, that message gets no signature
+//! (decision D3).
 
 pub mod mldsa;
 pub mod preprocessing;
@@ -80,10 +83,10 @@ const SEED_BITS: usize = 256;
 const SECRET_COEFFICIENTS: usize = (ML_DSA_44.l + ML_DSA_44.k) * RING_DEGREE;
 
 pub struct ThresholdMlDsa {
-    /// `B`: the signing attempts that the run prepares.
-    attempts: usize,
-    /// The message that the run signs.
-    message: Vec<u8>,
+    /// `B`: the signing attempts that the run prepares for each message.
+    attempts_per_message: usize,
+    /// The messages that the run signs.
+    messages: Vec<Vec<u8>>,
     /// The candidates for `s`, `e` and the `e_w` of each attempt, from
     /// preprocessing on.
     candidates: Option<Candidates>,
@@ -109,21 +112,22 @@ pub struct ThresholdMlDsa {
     verdict_masks: Vec<Fq>,
     /// The responses of the attempts, once `w1` is open.
     responses: Option<Responses>,
-    /// The first attempt that passes, once the verdicts are open.
-    passed: Option<usize>,
+    /// For each message, the first of its attempts that passes, once the
+    /// verdicts are open. An index into all attempts.
+    passed: Vec<Option<usize>>,
     /// When op-depth 6 (open `w1`) starts: the start of signing.
     signing_start: Option<Instant>,
-    /// The FIPS 204 signature, when the run gives one.
-    pub signature: Option<Vec<u8>>,
+    /// For each message, the FIPS 204 signature, when the run gives one.
+    pub signatures: Vec<Option<Vec<u8>>>,
 }
 
 impl ThresholdMlDsa {
-    /// A run that makes a key, prepares `attempts` signing attempts, and
-    /// signs `message`.
-    pub fn new(attempts: usize, message: Vec<u8>) -> Self {
+    /// A run that makes a key, prepares `attempts_per_message` signing
+    /// attempts for each message, and signs the `messages`.
+    pub fn new(attempts_per_message: usize, messages: Vec<Vec<u8>>) -> Self {
         Self {
-            attempts,
-            message,
+            attempts_per_message,
+            messages,
             candidates: None,
             seed_bits: Vec::new(),
             y_bits: Vec::new(),
@@ -136,16 +140,21 @@ impl ThresholdMlDsa {
             prepared: Vec::new(),
             verdict_masks: Vec::new(),
             responses: None,
-            passed: None,
+            passed: Vec::new(),
             signing_start: None,
-            signature: None,
+            signatures: Vec::new(),
         }
+    }
+
+    /// The attempts of all messages.
+    fn attempts(&self) -> usize {
+        self.attempts_per_message * self.messages.len()
     }
 
     /// The small coefficients of the run: `s`, `e`, and `e_w` of each
     /// attempt.
     fn small_coefficients(&self) -> usize {
-        SECRET_COEFFICIENTS + self.attempts * W_COEFFICIENTS_PER_ATTEMPT
+        SECRET_COEFFICIENTS + self.attempts() * W_COEFFICIENTS_PER_ATTEMPT
     }
 
     /// The time since op-depth 6 started, in milliseconds.
@@ -190,17 +199,17 @@ impl PlannerApplication<F> for ThresholdMlDsa {
                 OpParams::new(OpType::Mul, candidates),
                 OpParams::new(OpType::Reveal, candidates + SEED_BITS),
                 OpParams::new(OpType::Reveal, ML_DSA_44.k * RING_DEGREE),
-                OpParams::new(OpType::CanonicalMod { d: W1_MODULUS }, self.attempts * W_COEFFICIENTS_PER_ATTEMPT),
-                OpParams::new(OpType::Reveal, self.attempts * W_COEFFICIENTS_PER_ATTEMPT),
-                OpParams::new(OpType::LessThanPub, self.attempts * TESTS_PER_ATTEMPT),
-                OpParams::new(OpType::Mul, self.attempts * VERDICT_MASKS),
-                OpParams::new(OpType::Reveal, self.attempts * VERDICT_MASKS),
+                OpParams::new(OpType::CanonicalMod { d: W1_MODULUS }, self.attempts() * W_COEFFICIENTS_PER_ATTEMPT),
+                OpParams::new(OpType::Reveal, self.attempts() * W_COEFFICIENTS_PER_ATTEMPT),
+                OpParams::new(OpType::LessThanPub, self.attempts() * TESTS_PER_ATTEMPT),
+                OpParams::new(OpType::Mul, self.attempts() * VERDICT_MASKS),
+                OpParams::new(OpType::Reveal, self.attempts() * VERDICT_MASKS),
             ],
-            ML_DSA_44.l * RING_DEGREE,
+            self.messages.len() * ML_DSA_44.l * RING_DEGREE,
         )
         .with_random_wires(
-            BITS_PER_CANDIDATE * candidates + self.attempts * Y_BITS_PER_ATTEMPT + SEED_BITS,
-            self.attempts * VERDICT_MASKS,
+            BITS_PER_CANDIDATE * candidates + self.attempts() * Y_BITS_PER_ATTEMPT + SEED_BITS,
+            self.attempts() * VERDICT_MASKS,
         )
     }
 
@@ -219,11 +228,16 @@ impl PlannerApplication<F> for ThresholdMlDsa {
         self.seed_bits = bits.split_off(bits.len() - SEED_BITS);
         let half = Fq::from(2u64).inv().expect("2 is invertible");
         let mut bits: Vec<Fq> = bits.iter().map(|b| (Fq::one() + b) * &half).collect();
-        self.y_bits = bits.split_off(bits.len() - self.attempts * Y_BITS_PER_ATTEMPT);
+        self.y_bits = bits.split_off(bits.len() - self.attempts() * Y_BITS_PER_ATTEMPT);
         let candidates = Candidates::new(&bits);
         let (x, y) = candidates.low_product_operands();
         self.candidates = Some(candidates);
-        log::info!("ThresholdMlDsa: key generation and {} attempts from {} candidates", self.attempts, x.len());
+        log::info!(
+            "ThresholdMlDsa: key generation and {} attempts for {} messages from {} candidates",
+            self.attempts(),
+            self.messages.len(),
+            x.len()
+        );
         OpDepthInput::op(1, Op::Mul { x, y })
     }
 
@@ -259,8 +273,13 @@ impl PlannerApplication<F> for ThresholdMlDsa {
                 OpDepthInput::op(6, Op::Reveal { x })
             }
             6 => {
-                let mu = message_representative(&self.public_key.as_ref().expect("set in op-depth 4").tr, &self.message);
-                let responses = Responses::new(&mu, &result.public()?, &self.prepared, &self.s, &self.e);
+                let tr = &self.public_key.as_ref().expect("set in op-depth 4").tr;
+                let mus: Vec<Vec<u8>> = self
+                    .messages
+                    .iter()
+                    .flat_map(|m| std::iter::repeat_n(message_representative(tr, m), self.attempts_per_message))
+                    .collect();
+                let responses = Responses::new(&mus, &result.public()?, &self.prepared, &self.s, &self.e);
                 let (x, c) = responses.bound_tests();
                 self.responses = Some(responses);
                 OpDepthInput::op(7, Op::LessThanPub { x, c })
@@ -274,53 +293,76 @@ impl PlannerApplication<F> for ThresholdMlDsa {
                 OpDepthInput::op(8, Op::Mul { x, y })
             }
             8 => OpDepthInput::op(9, Op::Reveal { x: result.shares()? }),
-            // Op-depth 9 is complete: the output wires are `[z]` of the first
-            // attempt whose `f·u` are all 0, or sharings of 0.
+            // Op-depth 9 is complete: for each message, the output wires are
+            // `[z]` of its first attempt whose `f·u` are all 0, or sharings
+            // of 0.
             9 => {
                 let opened = result.public()?;
-                self.passed = opened.chunks_exact(VERDICT_MASKS).position(|v| v.iter().all(|v| *v == Fq::zero()));
+                let per_message = self.attempts_per_message;
+                self.passed = opened
+                    .chunks_exact(VERDICT_MASKS * per_message)
+                    .enumerate()
+                    .map(|(m, verdicts)| {
+                        let first = verdicts.chunks_exact(VERDICT_MASKS).position(|v| v.iter().all(|v| *v == Fq::zero()));
+                        first.map(|j| m * per_message + j)
+                    })
+                    .collect();
                 log::info!(
-                    "ThresholdMlDsa: signing op-depths 6 to 9 took {} ms; attempt {:?} is the first that passes the bound tests",
+                    "ThresholdMlDsa: signing op-depths 6 to 9 took {} ms; first passing attempt of each message: {:?}",
                     self.signing_ms(),
                     self.passed
                 );
                 let responses = self.responses.as_ref().expect("set in op-depth 6");
-                let z = match self.passed {
-                    Some(j) => responses.z[j].iter().flatten().cloned().collect(),
-                    None => vec![Fq::zero(); ML_DSA_44.l * RING_DEGREE],
-                };
+                let z = self
+                    .passed
+                    .iter()
+                    .flat_map(|passed| match passed {
+                        Some(j) => responses.z[*j].iter().flatten().cloned().collect(),
+                        None => vec![Fq::zero(); ML_DSA_44.l * RING_DEGREE],
+                    })
+                    .collect();
                 Ok(OpDepthInput::Done(z))
             }
             depth => bail!("ThresholdMlDsa has no op-depth {}", depth),
         }
     }
 
-    /// The opened `z` of the attempt that passed: the hint, the signature,
-    /// and its check by RustCrypto `ml-dsa`.
+    /// For each message, the opened `z` of the attempt that passed: the
+    /// hint, the signature, and its check by RustCrypto `ml-dsa`.
     async fn on_output(&mut self, outputs: Vec<Fq>) -> Result<()> {
         let latency = self.signing_ms();
-        let Some(j) = self.passed else {
-            log::info!("ThresholdMlDsa: no signature: no attempt of {} passes ({} ms after op-depth 6)", self.attempts, latency);
-            return Ok(());
-        };
         let key = self.public_key.as_ref().expect("set in op-depth 4");
-        let c_tilde = &self.responses.as_ref().expect("set in op-depth 6").c_tilde[j];
-        let Some(signature) = signature(key, &self.a_hat, c_tilde, &into_polys(&outputs), &ML_DSA_44) else {
-            log::info!("ThresholdMlDsa: no signature: attempt {} fails the c·t0 or hint check ({} ms after op-depth 6)", j, latency);
-            return Ok(());
-        };
-        let accepted = rustcrypto_accepts(&key.encoded, &self.message, &signature);
-        log::info!(
-            "ThresholdMlDsa: signature of {} bytes from attempt {}, {} ms after op-depth 6 (with the multiplication check); RustCrypto ml-dsa accepts it: {}",
-            signature.len(),
-            j,
-            latency,
-            accepted
-        );
-        if !accepted {
-            bail!("RustCrypto ml-dsa rejects the signature of attempt {}", j);
+        let responses = self.responses.as_ref().expect("set in op-depth 6");
+        for (m, (passed, z)) in self.passed.iter().zip(outputs.chunks_exact(ML_DSA_44.l * RING_DEGREE)).enumerate() {
+            let Some(j) = *passed else {
+                log::info!("ThresholdMlDsa: message {}: no signature: none of its {} attempts passes", m, self.attempts_per_message);
+                self.signatures.push(None);
+                continue;
+            };
+            let Some(signature) = signature(key, &self.a_hat, &responses.c_tilde[j], &into_polys(z), &ML_DSA_44) else {
+                log::info!("ThresholdMlDsa: message {}: no signature: attempt {} fails the c·t0 or hint check", m, j);
+                self.signatures.push(None);
+                continue;
+            };
+            let accepted = rustcrypto_accepts(&key.encoded, &self.messages[m], &signature);
+            log::info!(
+                "ThresholdMlDsa: message {}: signature of {} bytes from attempt {}; RustCrypto ml-dsa accepts it: {}",
+                m,
+                signature.len(),
+                j,
+                accepted
+            );
+            if !accepted {
+                bail!("RustCrypto ml-dsa rejects the signature of message {} (attempt {})", m, j);
+            }
+            self.signatures.push(Some(signature));
         }
-        self.signature = Some(signature);
+        log::info!(
+            "ThresholdMlDsa: {} of {} messages signed, {} ms after op-depth 6 (with the multiplication check)",
+            self.signatures.iter().flatten().count(),
+            self.messages.len(),
+            latency
+        );
         Ok(())
     }
 }
@@ -335,8 +377,9 @@ mod tests {
 
     /// The application on the real Planner, over a plaintext engine: each
     /// share is its value. The random wires come from xorshift64.
-    async fn run(seed: u64, attempts: usize) -> Planner<F, ThresholdMlDsa> {
-        let mut planner = Planner::new(ThresholdMlDsa::new(attempts, MESSAGE.to_vec())).unwrap();
+    async fn run(seed: u64, attempts_per_message: usize, messages: &[&[u8]]) -> Planner<F, ThresholdMlDsa> {
+        let messages = messages.iter().map(|m| m.to_vec()).collect();
+        let mut planner = Planner::new(ThresholdMlDsa::new(attempts_per_message, messages)).unwrap();
         let mut state = seed;
         let mut next_random = move || {
             state ^= state << 13;
@@ -372,7 +415,7 @@ mod tests {
     /// has 1,312 bytes with `tr = H(pk)`.
     #[tokio::test]
     async fn key_generation_makes_a_consistent_key() {
-        let planner = run(0x5eed, 1).await;
+        let planner = run(0x5eed, 1, &[MESSAGE]).await;
         let app = planner.app();
         let key = app.public_key.as_ref().expect("a public key");
         assert_eq!((app.s.len(), app.e.len()), (ML_DSA_44.l, ML_DSA_44.k));
@@ -390,7 +433,7 @@ mod tests {
         assert_eq!(&key.encoded[..32], &app.rho);
         assert_eq!(key.encoded.len(), 1312);
         assert_eq!(key.tr, shake256(&[&key.encoded], 64));
-        let other = run(0xbeef, 1).await;
+        let other = run(0xbeef, 1, &[MESSAGE]).await;
         assert_ne!(other.app().rho, app.rho, "the seed comes from the random bits");
     }
 
@@ -398,7 +441,7 @@ mod tests {
     /// `w = w0 + 2γ2·w1`, and `w − A·y` (the error `e_w`) in `[−2, 2]`.
     #[tokio::test]
     async fn preprocessing_prepares_the_attempts() {
-        let planner = run(0x7e57, 2).await;
+        let planner = run(0x7e57, 2, &[MESSAGE]).await;
         let app = planner.app();
         assert_eq!(app.prepared.len(), 2);
         let a_hat = expand_a(&app.rho, &ML_DSA_44);
@@ -417,24 +460,30 @@ mod tests {
         assert_ne!(app.prepared[0].y[0], app.prepared[1].y[0], "each attempt has its own y");
     }
 
-    /// With 16 attempts, an attempt passes, and RustCrypto `ml-dsa` accepts
-    /// the signature (`on_output` checks it, and so does this test).
+    /// With 16 attempts for each of 2 messages, an attempt of each passes,
+    /// and RustCrypto `ml-dsa` accepts each signature for its own message
+    /// only (`on_output` checks them, and so does this test).
     #[tokio::test]
-    async fn the_run_signs_the_message() {
-        let planner = run(0x5eed, 16).await;
+    async fn the_run_signs_each_message() {
+        let messages: [&[u8]; 2] = [b"message 0", b"message 1"];
+        let planner = run(0x5eed, 16, &messages).await;
         let app = planner.app();
-        let signature = app.signature.as_ref().expect("a signature");
         let key = app.public_key.as_ref().unwrap();
-        assert_eq!(signature.len(), 2420);
-        assert!(rustcrypto_accepts(&key.encoded, MESSAGE, signature));
-        assert!(!rustcrypto_accepts(&key.encoded, b"another message", signature));
+        assert_eq!(app.signatures.len(), 2);
+        assert!(app.passed.iter().zip([0..16, 16..32]).all(|(j, range)| range.contains(&j.expect("a pass"))));
+        for (m, signature) in app.signatures.iter().enumerate() {
+            let signature = signature.as_ref().expect("a signature");
+            assert_eq!(signature.len(), 2420);
+            assert!(rustcrypto_accepts(&key.encoded, messages[m], signature));
+            assert!(!rustcrypto_accepts(&key.encoded, messages[1 - m], signature));
+        }
     }
 
     /// A run whose one attempt fails gives no signature.
     #[tokio::test]
     async fn no_signature_when_no_attempt_passes() {
-        let planner = run(0x7e57, 1).await;
-        assert_eq!(planner.app().passed, None);
-        assert!(planner.app().signature.is_none());
+        let planner = run(0x7e57, 1, &[MESSAGE]).await;
+        assert_eq!(planner.app().passed, vec![None]);
+        assert_eq!(planner.app().signatures, vec![None]);
     }
 }
