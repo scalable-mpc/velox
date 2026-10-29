@@ -1,7 +1,8 @@
 //! Threshold ML-DSA-44 on the Velox engine, over the ML-DSA field `F_q`.
 //!
-//! Each run makes a new key with the parties, logs the public key, and
-//! prepares `--attempts` signing attempts (default 16).
+//! Each run makes a new key with the parties, logs the public key,
+//! prepares `--attempts` signing attempts (default 16), and signs
+//! `--message`. Each party checks the signature with RustCrypto `ml-dsa`.
 
 use threshold_mldsa::ThresholdMlDsa;
 use velox::{bail, EngineOptions, Planner, Result};
@@ -13,6 +14,7 @@ const DEFAULT_ATTEMPTS: usize = 16;
 fn main() -> Result<()> {
     let matches = velox::engine_args("threshold_mldsa")
         .arg(velox::arg("attempts", "a", "signing attempts to prepare (default 16)", false))
+        .arg(velox::arg("message", "m", "the message to sign (default \"threshold ML-DSA\")", false))
         .get_matches();
 
     velox::run_node(|| {
@@ -28,7 +30,8 @@ fn main() -> Result<()> {
                 if attempts == 0 {
                     bail!("--attempts must be at least 1");
                 }
-                velox::spawn(config, Planner::new(ThresholdMlDsa::new(attempts))?, &EngineOptions::from_matches(&matches)?)
+                let message = matches.value_of("message").unwrap_or("threshold ML-DSA").as_bytes().to_vec();
+                velox::spawn(config, Planner::new(ThresholdMlDsa::new(attempts, message))?, &EngineOptions::from_matches(&matches)?)
             }
             other => bail!("unknown --protocol {:?}; expected mpc or sync", other),
         }

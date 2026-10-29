@@ -1,7 +1,9 @@
 # Run the threshold_mldsa application locally: n parties make an ML-DSA-44
-# key. Each party logs the hash of the public key on the line
-# "ThresholdMlDsa: public key of 1312 bytes, tr = ..."; all parties must log
-# the same hash.
+# key, prepare 16 signing attempts and sign a message. Each party logs the
+# hash of the public key on the line "ThresholdMlDsa: public key of 1312
+# bytes, tr = ..." (all parties must log the same hash), and the result on
+# the line "ThresholdMlDsa: signature of 2420 bytes ... RustCrypto ml-dsa
+# accepts it: true" (or "ThresholdMlDsa: no signature: ...").
 #
 #   ./scripts/test_threshold_mldsa.sh {num_parties} {compression_factor}
 #

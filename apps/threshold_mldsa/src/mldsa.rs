@@ -332,10 +332,74 @@ impl PublicKey {
     }
 }
 
+/// `a·b` in `R_q`. Linear in `b`, so a party applies it to its shares of
+/// `b` when `a` is public.
+pub fn ring_product(a: &Poly, b: &Poly) -> Poly {
+    matrix_vector_product(&[vec![to_ntt_domain(a)]], std::slice::from_ref(b)).remove(0)
+}
+
+/// `‖p‖∞`, with each coefficient read in `(−(q−1)/2, (q−1)/2]`.
+pub fn infinity_norm(p: &[Poly]) -> i64 {
+    p.iter().flatten().map(|x| centered(x).abs()).max().unwrap_or(0)
+}
+
+/// `μ = H(tr ‖ 0 ‖ 0 ‖ M)`: the message representative of FIPS 204
+/// ML-DSA.Sign with an empty context string.
+pub fn message_representative(tr: &[u8], message: &[u8]) -> Vec<u8> {
+    shake256(&[tr, &[0, 0], message], 64)
+}
+
+/// `c̃ = H(μ ‖ w1Encode(w1))`, `λ/4` bytes, and the challenge
+/// `c = SampleInBall(c̃)`.
+pub fn challenge(mu: &[u8], w1: &[[u32; RING_DEGREE]], set: &ParameterSet) -> (Vec<u8>, Poly) {
+    let c_tilde = shake256(&[mu, &w1_encode(w1, set.gamma2)], set.lambda / 4);
+    let c = sample_in_ball(&c_tilde, set.tau);
+    (c_tilde, c)
+}
+
+/// The signature from the opened `z` of an attempt that passed the bound
+/// tests (Quorus Protocol 5, sign, lines 6 to 8):
+/// `h = MakeHint(−c·t0, A·z − c·t + c·t0)`. Quorus drops `e_w` here, as in
+/// its Algorithm 1. `None` when `‖c·t0‖∞ ≥ γ2` or the hint has more than
+/// `ω` ones: then this attempt gives no signature.
+pub fn signature(key: &PublicKey, a_hat: &[Vec<Poly>], c_tilde: &[u8], z: &[Poly], set: &ParameterSet) -> Option<Vec<u8>> {
+    let c = sample_in_ball(c_tilde, set.tau);
+    let ct0: Vec<Poly> = key.t0.iter().map(|t0| ring_product(&c, t0)).collect();
+    if infinity_norm(&ct0) >= i64::from(set.gamma2) {
+        return None;
+    }
+    let az = matrix_vector_product(a_hat, z);
+    let hint: Vec<[bool; RING_DEGREE]> = (0..set.k)
+        .map(|row| {
+            let ct = ring_product(&c, &key.t[row]);
+            std::array::from_fn(|i| {
+                let r = &az[row][i] - &ct[i] + &ct0[row][i];
+                make_hint((-&ct0[row][i]).representative(), r.representative(), set.gamma2)
+            })
+        })
+        .collect();
+    sig_encode(c_tilde, z, &hint, set)
+}
+
+/// Whether RustCrypto `ml-dsa`, an independent FIPS 204 implementation,
+/// accepts `signature` of `message` (empty context) under the encoded
+/// ML-DSA-44 public key.
+pub fn rustcrypto_accepts(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
+    use ml_dsa::{EncodedSignature, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey};
+    let (Ok(key), Ok(signature)) =
+        (EncodedVerifyingKey::<MlDsa44>::try_from(public_key), EncodedSignature::<MlDsa44>::try_from(signature))
+    else {
+        return false;
+    };
+    let Some(signature) = Signature::<MlDsa44>::decode(&signature) else {
+        return false;
+    };
+    VerifyingKey::<MlDsa44>::decode(&key).verify_with_context(message, &[], &signature)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ml_dsa::{EncodedSignature, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey};
 
     /// A pseudo-random integer source for the reference signer.
     struct Coins(u64);
@@ -355,16 +419,8 @@ mod tests {
         }
     }
 
-    fn ring_product(a: &Poly, b: &Poly) -> Poly {
-        matrix_vector_product(&[vec![to_ntt_domain(a)]], std::slice::from_ref(b)).remove(0)
-    }
-
     fn add_polys(a: &Poly, b: &Poly) -> Poly {
         std::array::from_fn(|i| &a[i] + &b[i])
-    }
-
-    fn infinity_norm(p: &[Poly]) -> i64 {
-        p.iter().flatten().map(|x| centered(x).abs()).max().unwrap_or(0)
     }
 
     /// Quorus Algorithm 1 (ML-DSA with the extra error `e_w`), in the clear,
@@ -379,7 +435,7 @@ mod tests {
         let e: Vec<Poly> = (0..set.k).map(|_| coins.poly(-eta, eta)).collect();
         let t: Vec<Poly> = matrix_vector_product(&a_hat, &s).iter().zip(&e).map(|(a, e)| add_polys(a, e)).collect();
         let key = PublicKey::new(&rho, t);
-        let mu = shake256(&[&key.tr, &[0, 0], message], 64);
+        let mu = message_representative(&key.tr, message);
         for _ in 0..1000 {
             let gamma1 = i64::from(set.gamma1);
             let y: Vec<Poly> = (0..set.l).map(|_| coins.poly(1 - gamma1, gamma1)).collect();
@@ -387,8 +443,7 @@ mod tests {
             let w: Vec<Poly> = matrix_vector_product(&a_hat, &y).iter().zip(&e_w).map(|(a, e)| add_polys(a, e)).collect();
             let w1: Vec<[u32; RING_DEGREE]> =
                 w.iter().map(|w| std::array::from_fn(|i| high_bits(w[i].representative(), set.gamma2))).collect();
-            let c_tilde = shake256(&[&mu, &w1_encode(&w1, set.gamma2)], set.lambda / 4);
-            let c = sample_in_ball(&c_tilde, set.tau);
+            let (c_tilde, c) = challenge(&mu, &w1, &set);
             let z: Vec<Poly> = y.iter().zip(&s).map(|(y, s)| add_polys(y, &ring_product(&c, s))).collect();
             let w0_bar: Vec<Poly> = w
                 .iter()
@@ -404,23 +459,7 @@ mod tests {
             if infinity_norm(&z) >= gamma1 - beta || infinity_norm(&w0_bar) >= i64::from(set.gamma2) - beta {
                 continue;
             }
-            // h = MakeHint(−c·t0, A·z − c·t + c·t0), with e_w dropped as in
-            // Quorus Algorithm 1.
-            let ct0: Vec<Poly> = key.t0.iter().map(|t0| ring_product(&c, t0)).collect();
-            if infinity_norm(&ct0) >= i64::from(set.gamma2) {
-                continue;
-            }
-            let az = matrix_vector_product(&a_hat, &z);
-            let hint: Vec<[bool; RING_DEGREE]> = (0..set.k)
-                .map(|row| {
-                    let ct = ring_product(&c, &key.t[row]);
-                    std::array::from_fn(|i| {
-                        let r = &az[row][i] - &ct[i] + &ct0[row][i];
-                        make_hint((-&ct0[row][i]).representative(), r.representative(), set.gamma2)
-                    })
-                })
-                .collect();
-            if let Some(signature) = sig_encode(&c_tilde, &z, &hint, &set) {
+            if let Some(signature) = signature(&key, &a_hat, &c_tilde, &z, &set) {
                 return (key.encoded, signature);
             }
         }
@@ -436,12 +475,8 @@ mod tests {
         let message = b"threshold ML-DSA";
         let (pk, signature) = reference_sign(message, &mut coins);
         assert_eq!((pk.len(), signature.len()), (1312, 2420));
-        let pk = EncodedVerifyingKey::<MlDsa44>::try_from(&pk[..]).expect("1,312 bytes");
-        let signature = EncodedSignature::<MlDsa44>::try_from(&signature[..]).expect("2,420 bytes");
-        let signature = Signature::<MlDsa44>::decode(&signature).expect("a well-formed signature");
-        let key = VerifyingKey::<MlDsa44>::decode(&pk);
-        assert!(key.verify_with_context(message, &[], &signature));
-        assert!(!key.verify_with_context(b"another message", &[], &signature));
+        assert!(rustcrypto_accepts(&pk, message, &signature));
+        assert!(!rustcrypto_accepts(&pk, b"another message", &signature));
     }
 
     /// The challenge has exactly `τ` nonzero coefficients, each ±1, and the
