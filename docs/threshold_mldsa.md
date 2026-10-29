@@ -120,8 +120,10 @@ no attempt passed the bound tests.
   the bits of the edaBits (23 bits for each candidate).
 - The number of engine depths does not change with `B`: the attempts run in
   parallel.
-- In these 9 runs, 3 of the 18 attempts up to the first passing attempt
-  passed. The sample is small. FIPS 204 gives an expected 4.25 attempts for
+- In these 9 runs, 4 of the 19 attempts up to the first passing attempt
+  passed (B = 1: 3 attempts, no pass; B = 4: 9 attempts, 1 pass; B = 16:
+  7 attempts, 3 passes). The sample is small. FIPS 204 gives an expected
+  4.25 attempts for
   ML-DSA-44 without the extra error `e_w` of Quorus.
 
 Run the benchmark again with:
