@@ -3,25 +3,34 @@
 
 For every (parties n, signatures S) point of the grid this
 
-  1. makes the node configuration testdata/<n>/ with the config binary when
+  1. predicts the peak memory of all parties together from the points
+     already measured (see `predicted_mb`). When the prediction is at or
+     above the memory budget, it does not run the point and records the
+     status "skipped". The machine must never run out of memory;
+  2. makes the node configuration testdata/<n>/ with the config binary when
      it is missing;
-  2. runs scripts/test_threshold_mldsa.sh (key generation, the preprocessing
+  3. runs scripts/test_threshold_mldsa.sh (key generation, the preprocessing
      of S·B attempts, and the signatures of S messages; each party runs
      under /usr/bin/time) and waits for the syncer to report the output
      phase. A memory guard adds up the resident memory of all parties each
-     second. When the total passes the limit, it stops the run and records
-     the status "out of memory";
-  3. reads the phase latencies off the syncer log, the plan off party 0's log
+     second. When the total passes the budget, it stops the run and records
+     the status "over budget". The guard is only a safety stop: the
+     prediction must keep the runs below the budget;
+  4. reads the phase latencies off the syncer log, the plan off party 0's log
      (op-depths, engine depths, edaBits, random bits), and off every party's
      log the time of the signing op-depths 6 to 9, the first passing attempt
      of each message, the number of signed messages and the RustCrypto
      results; and off every party's /usr/bin/time output its peak memory;
 
 and appends one row per run to a CSV. Repetitions are separate rows; the
-report step takes medians.
+report step takes medians. The points run in order of growing memory: n
+first, then S. Rows already in the CSV count: a new run does only the
+repetitions that are missing, so a stopped grid continues where it stopped.
+Skipped rows do not count: a new run decides them again, for example with a
+larger budget.
 
     scripts/bench_threshold_mldsa.py run    [--reps 3] [--parties 4,7,10,13,16] [--signatures 1,2,4]
-                                            [--attempts 16] [--memory-limit-gb 13] [--out logs/bench_threshold_mldsa.csv]
+                                            [--attempts 16] [--memory-limit-gb 10] [--out logs/bench_threshold_mldsa.csv]
     scripts/bench_threshold_mldsa.py report [--out logs/bench_threshold_mldsa.csv]
 
 Needs release builds of threshold_mldsa and config.
@@ -42,7 +51,7 @@ from bench_ops import ROOT, COMP, phase_latencies_in  # noqa: E402
 FIELDS = ["parties", "signatures", "attempts", "rep", "status", "op_depths", "engine_depths", "edabits",
           "random_bits", "preprocessing_ms", "circuit_ms", "verification_ms", "total_ms", "signing_ms",
           "signed", "parties_done", "rejected_parties", "passed_attempts",
-          "peak_party_mb", "median_party_mb", "peak_total_mb"]
+          "peak_party_mb", "median_party_mb", "peak_total_mb", "predicted_total_mb"]
 
 MB = 1 << 20
 
@@ -108,7 +117,7 @@ def run_point(n, signatures, attempts, rep, timeout, grace, limit_mb):
         time.sleep(1)
         peak_total = max(peak_total, total_rss_mb())
         if peak_total > limit_mb:
-            status = "out of memory"
+            status = "over budget"
             break
         phases = phase_latencies_in(syncer_log(n))
         if "output" in phases:
@@ -153,32 +162,84 @@ def run_point(n, signatures, attempts, rep, timeout, grace, limit_mb):
     return row
 
 
+def predicted_mb(rows, n, signatures):
+    """The predicted peak memory of all parties of the point (n, S), in MB,
+    or None when no point is measured yet.
+
+    A measured point gives the median of its runs. A run that the guard
+    stopped counts as infinite memory, so that point and all points that
+    are predicted from it are skipped. For a new point, each of these is an
+    estimate from above, and the prediction is the smallest of them:
+
+    - from the largest smaller n with the same S: the memory times n/n'.
+      The memory of one party fell from n = 4 to n = 10 in the runs of
+      issue 19, so the total grows at most linearly in n;
+    - from the largest smaller S with the same n: the memory times the
+      growth from S' to S at a smaller n, when one is measured, or else
+      times S/S'.
+    """
+    measured = {}
+    for r in rows:
+        if r["status"] in ("ok", "over budget") and r["peak_total_mb"]:
+            mb = float("inf") if r["status"] == "over budget" else float(r["peak_total_mb"])
+            measured.setdefault((int(r["parties"]), int(r["signatures"])), []).append(mb)
+    measured = {point: statistics.median(mbs) for point, mbs in measured.items()}
+    if (n, signatures) in measured:
+        return measured[(n, signatures)]
+    estimates = []
+    smaller_n = [m for m, s in measured if s == signatures and m < n]
+    if smaller_n:
+        m = max(smaller_n)
+        estimates.append(measured[(m, signatures)] * n / m)
+    smaller_s = [s for m, s in measured if m == n and s < signatures]
+    if smaller_s:
+        s = max(smaller_s)
+        growth = signatures / s
+        both = [m for m, t in measured if t == signatures and m < n and (m, s) in measured]
+        if both:
+            m = max(both)
+            growth = measured[(m, signatures)] / measured[(m, s)]
+        estimates.append(measured[(n, s)] * growth)
+    return min(estimates) if estimates else None
+
+
 def run(args):
     out = os.path.join(ROOT, args.out)
-    new = not os.path.exists(out)
-    with open(out, "a", newline="") as f:
+    rows = list(csv.DictReader(open(out))) if os.path.exists(out) else []
+    rows = [r for r in rows if r["status"] != "skipped"]
+    limit_mb = args.memory_limit_gb * 1024
+    with open(out, "w", newline="") as f:
+        # Write the kept rows again, so that the header has the columns of FIELDS.
         w = csv.DictWriter(f, fieldnames=FIELDS)
-        if new:
-            w.writeheader()
+        w.writeheader()
+        w.writerows(rows)
         for n in [int(p) for p in args.parties.split(",")]:
             for signatures in [int(s) for s in args.signatures.split(",")]:
-                for rep in range(args.reps):
-                    row = run_point(n, signatures, args.attempts, rep, args.timeout, args.grace,
-                                    args.memory_limit_gb * 1024)
+                done = sum(int(r["parties"]) == n and int(r["signatures"]) == signatures
+                           and int(r["attempts"]) == args.attempts for r in rows)
+                for rep in range(done, args.reps):
+                    predicted = predicted_mb(rows, n, signatures)
+                    if predicted is not None and predicted >= limit_mb:
+                        row = {"parties": n, "signatures": signatures, "attempts": args.attempts, "rep": rep,
+                               "status": "skipped"}
+                    else:
+                        row = run_point(n, signatures, args.attempts, rep, args.timeout, args.grace, limit_mb)
+                    row["predicted_total_mb"] = round(predicted) if predicted not in (None, float("inf")) else None
                     print(row, flush=True)
                     w.writerow(row)
                     f.flush()
+                    rows.append({k: "" if row.get(k) is None else str(row[k]) for k in FIELDS})
 
 
 def median(group, column):
-    values = [float(r[column]) for r in group if r[column]]
+    values = [float(r[column]) for r in group if r.get(column)]
     return f"{statistics.median(values):.0f}" if values else "–"
 
 
 def report(args):
     rows = list(csv.DictReader(open(os.path.join(ROOT, args.out))))
     columns = ["preprocessing_ms", "circuit_ms", "signing_ms", "verification_ms", "total_ms",
-               "peak_party_mb", "peak_total_mb"]
+               "peak_party_mb", "peak_total_mb", "predicted_total_mb"]
     print("| n | S | runs | status | random bits | edaBits | " + " | ".join(columns) + " | signed |")
     print("|---" * (len(columns) + 7) + "|")
     for n, s in sorted({(int(r["parties"]), int(r["signatures"])) for r in rows}):
@@ -200,7 +261,7 @@ def main():
     r.add_argument("--parties", default="4,7,10,13,16")
     r.add_argument("--signatures", default="1,2,4")
     r.add_argument("--attempts", type=int, default=16)
-    r.add_argument("--memory-limit-gb", type=float, default=13)
+    r.add_argument("--memory-limit-gb", type=float, default=10)
     r.add_argument("--timeout", type=int, default=1800)
     r.add_argument("--grace", type=int, default=5)
     r.add_argument("--out", default="logs/bench_threshold_mldsa.csv")
