@@ -24,6 +24,11 @@ fn zero_poly() -> Poly {
     std::array::from_fn(|_| Fq::zero())
 }
 
+/// Cuts a flat list of coefficients into ring elements of `RING_DEGREE` each.
+pub fn into_polys(coefficients: &[Fq]) -> Vec<Poly> {
+    coefficients.chunks_exact(RING_DEGREE).map(|c| c.to_vec().try_into().expect("RING_DEGREE coefficients")).collect()
+}
+
 /// The NTT of a copy of `p`.
 fn to_ntt_domain(p: &Poly) -> Poly {
     let mut p_hat = p.clone();
