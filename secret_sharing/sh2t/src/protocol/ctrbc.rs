@@ -1,4 +1,4 @@
-use fields::{interpolate_shares, ProtocolField, FieldSer};
+use fields::{interpolate_shares, ser_be_flat, ProtocolField, FieldSer};
 
 use crate::Context;
 
@@ -24,7 +24,7 @@ impl<F: ProtocolField> Context<F>{
         if !self.use_fft && self.myid < 2*self.num_faults{
             // Interpolate your shares in this case
             let secret_key = self.sec_key_map.get(&sender_rep).clone().unwrap().clone();
-            let shares = interpolate_shares::<F>(secret_key.clone(), comm_dzk_vals.1, false, 1).into_iter().map(|el| el.ser_be()).collect();
+            let shares = ser_be_flat(&interpolate_shares::<F>(secret_key.clone(), comm_dzk_vals.1, false, 1));
             let nonce_share = interpolate_shares::<F>(secret_key.clone(),1, true, 1u8)[0].ser_be();
             sh2t_state.shares.insert(sender_rep, (shares,nonce_share));
         }

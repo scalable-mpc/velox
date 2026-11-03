@@ -1,6 +1,6 @@
 use crypto::aes_hash::MerkleTree;
 use lambdaworks_math::{polynomial::Polynomial};
-use fields::ProtocolField;
+use fields::{deserialize_shares_async, ProtocolField};
 
 use crate::{Context, protocol::ACSSABState};
 use lambdaworks_math::field::element::FieldElement;
@@ -38,7 +38,7 @@ impl<F: ProtocolField> Context<F>{
                 log::info!("Sending shares back to syncer for sender {} for instance id {}",sender, instance_id);
                 if self.avss_inst_id == instance_id{
                     acss_state.acss_status.insert(sender);
-                    let shares = acss_state.shares.get(&sender).unwrap().clone();
+                    let shares = acss_state.shares.remove(&sender).unwrap();
                     let (comm,b_comm, dzk_poly) = acss_state.commitments.get(&sender).unwrap().clone();
 
                     // Compute root commitment
@@ -54,11 +54,15 @@ impl<F: ProtocolField> Context<F>{
                     let dzk_poly = Polynomial::new(dzk_poly_coeffs.as_slice());
                     acss_state.dzk_poly.insert(sender, dzk_poly);
 
-                    let _status = self.out_avss.send((true,Some((sender,shares)),None)).await;
+                    // The engine takes AVSS shares element by element (`AvssShare`).
+                    let (flat_shares, nonce_share, blinding_nonce_share) = shares;
+                    let avss_share = (flat_shares.chunks(F::SER_BYTES).map(|el| el.to_vec()).collect(), nonce_share, blinding_nonce_share);
+                    let _status = self.out_avss.send((true,Some((sender,avss_share)),None)).await;
                 }
                 else{
-                    let shares = acss_state.shares.get(&sender).unwrap().clone();
-                    let _status = self.out_acss.send((instance_id,sender,Some(shares.0))).await;
+                    let shares = acss_state.shares.remove(&sender).unwrap();
+                    let shares_ff = deserialize_shares_async::<F>(shares.0).await;
+                    let _status = self.out_acss.send((instance_id,sender,Some(shares_ff))).await;
                     acss_state.acss_status.insert(sender);
                     // Dealer's sharing has terminated for this (non-AVSS) instance:
                     // release all per-dealer buffers.

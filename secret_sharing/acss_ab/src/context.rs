@@ -54,8 +54,8 @@ pub struct Context<F: ProtocolField> {
     pub num_threads: usize,
     
     // Input queue for receiving acss requests with bool field indicating ACSS or AVSS.
-    pub inp_acss: Receiver<(usize, Vec<LargeFieldSer>)>,
-    pub out_acss: Sender<(usize, Replica,Option<Vec<LargeFieldSer>>)>,
+    pub inp_acss: Receiver<(usize, Vec<FieldElement<F>>)>,
+    pub out_acss: Sender<(usize, Replica,Option<Vec<FieldElement<F>>>)>,
 
     pub inp_avss: Receiver<(bool, Option<Vec<LargeFieldSer>>, Option<(Replica, Replica, AvssShare)>)>,
     pub out_avss: Sender<(bool, Option<(Replica,AvssShare)>, Option<(Replica,Replica,AvssShare)>)>,
@@ -84,8 +84,8 @@ pub struct Context<F: ProtocolField> {
 impl<F: ProtocolField> Context<F>{
     pub fn spawn(
         config: Node,
-        input_acss: Receiver<(usize,Vec<LargeFieldSer>)>, 
-        output_acss: Sender<(usize,Replica,Option<Vec<LargeFieldSer>>)>,
+        input_acss: Receiver<(usize,Vec<FieldElement<F>>)>, 
+        output_acss: Sender<(usize,Replica,Option<Vec<FieldElement<F>>>)>,
         input_avss: Receiver<(bool, Option<Vec<LargeFieldSer>>, Option<(Replica, Replica, AvssShare)>)>,
         output_avss: Sender<(bool, Option<(Replica,AvssShare)>, Option<(Replica,Replica,AvssShare)>)>, 
         use_fft: bool,
@@ -257,9 +257,8 @@ impl<F: ProtocolField> Context<F>{
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap()
                                 .as_millis());
-                    let secrets_field: Vec<FieldElement<F>> = secrets.into_iter().map(|secret| F::from_bytes_be(&secret).unwrap()).collect();
                     self.acss_id = id;
-                    self.init_acss_ab(secrets_field, id).await;
+                    self.init_acss_ab(secrets, id).await;
                 },
                 avss_msg = self.inp_avss.recv() =>{
                     let (sharing, secrets, recon_request) = avss_msg.ok_or_else(||

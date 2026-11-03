@@ -1,7 +1,7 @@
 //use types::{RBCSyncMsg, SyncMsg, SyncState};
 
 use crate::Context;
-use fields::ProtocolField;
+use fields::{deserialize_shares_async, ProtocolField};
 
 impl<F: ProtocolField> Context<F>{
     pub async fn handle_ra_termination(&mut self, instance_id: usize, sender: usize, value: usize){
@@ -38,8 +38,9 @@ impl<F: ProtocolField> Context<F>{
             if sh2t_state.verification_status.get(&sender).unwrap().clone(){
                 // Send shares back to parent process
                 log::info!("Sending shares back to syncer for sender {} and instance id: {}",sender, instance_id);
-                let shares = sh2t_state.shares.get(&sender).unwrap().clone();
-                let _status = self.out_acss.send((instance_id, sender,Some(shares.0))).await;
+                let shares = sh2t_state.shares.remove(&sender).unwrap();
+                let shares_ff = deserialize_shares_async::<F>(shares.0).await;
+                let _status = self.out_acss.send((instance_id, sender,Some(shares_ff))).await;
                 sh2t_state.status.insert(sender);
                 // Dealer's sharing has terminated: release all per-dealer buffers.
                 sh2t_state.clear_dealer_state(&sender);

@@ -1,6 +1,6 @@
 use crate::Context;
 use crypto::{hash::{do_hash, Hash}};
-use fields::{LargeFieldSer, generate_evaluation_points_fft, generate_evaluation_points, generate_evaluation_points_opt, sample_polynomials_from_prf, rand_field_element, ProtocolField, FieldSer};
+use fields::{ser_be_flat, generate_evaluation_points_fft, generate_evaluation_points, generate_evaluation_points_opt, sample_polynomials_from_prf, rand_field_element, ProtocolField, FieldSer};
 use types::Replica;
 use lambdaworks_math::field::element::FieldElement;
 
@@ -82,37 +82,27 @@ impl<F: ProtocolField> Context<F>{
             nonce_evaluations = nonce_evaluations_ret[0].clone();
         }
         // Transform the shares to element wise shares
-        let mut party_wise_shares: Vec<Vec<LargeFieldSer>> = Vec::new();
-        let mut party_appended_shares: Vec<Vec<u8>> = Vec::new();
+        // The shares of each party as one flat buffer, and the n commitments:
+        // the hash of the party's flat shares followed by its nonce share.
+        let mut party_wise_shares: Vec<Vec<u8>> = Vec::new();
+        let mut commitments: Vec<Hash> = Vec::new();
         for i in 0..self.num_nodes{
-            let mut party_shares = Vec::new();
-            let mut appended_share = Vec::new();
-            for j in 0..evaluations.len(){
-                party_shares.push(evaluations[j][i].clone().ser_be());
-                appended_share.extend(evaluations[j][i].clone().ser_be());
-            }
-            party_wise_shares.push(party_shares);
-
-            // Append nonce shares to shares for generating commitment
-            appended_share.extend(nonce_evaluations[i].clone().ser_be());
-            party_appended_shares.push(appended_share);
+            let mut flat_shares = ser_be_flat(evaluations.iter().map(|party_evaluations| &party_evaluations[i]));
+            let shares_len = flat_shares.len();
+            flat_shares.extend(nonce_evaluations[i].ser_be());
+            commitments.push(do_hash(&flat_shares));
+            flat_shares.truncate(shares_len);
+            party_wise_shares.push(flat_shares);
         }
-
-        // Generate Commitments here
-        // There should be $n$ commitments overall
-        let commitments: Vec<Hash> = party_appended_shares.into_iter().map(|share| {
-            do_hash(&share)
-        }).collect();
 
         let broadcast_vec = (commitments, tot_sharings);
         let inst_broadcast_vec = (instance_id, broadcast_vec);
         let ser_vec = bincode::serialize(&inst_broadcast_vec).unwrap();
 
         let mut shares: Vec<(Replica,Option<Vec<u8>>)> = Vec::new();
-        for rep in 0..self.num_nodes{
+        for (rep, shares_party) in party_wise_shares.into_iter().enumerate(){
             // prepare shares
             if (self.use_fft) || (!self.use_fft && rep >= 2*self.num_faults){
-                let shares_party = party_wise_shares[rep].clone();
                 let nonce_share = nonce_evaluations[rep].clone().ser_be();
                 
                 let shares_full = (shares_party, nonce_share);
@@ -136,7 +126,7 @@ impl<F: ProtocolField> Context<F>{
             let sh2t_state = crate::Sh2tState::new();
             self.sh2t_state_map.insert(instance_id, sh2t_state);
         }
-        let sh2t_state = self.sh2t_state_map.get_mut(&instance_id).unwrap();
+        let sh2t_state = self.sh2t_state_map.get(&instance_id).unwrap();
 
         if sh2t_state.status.contains(&sender){
             // Dealer already terminated and its state was cleared; ignore.
@@ -152,21 +142,18 @@ impl<F: ProtocolField> Context<F>{
             return;
         }
 
-        let shares_full = sh2t_state.shares.get(&sender).unwrap().clone();
-        let shares = shares_full.0;
-        let nonce_share = shares_full.1;
-
-        let commitments_full = sh2t_state.commitments.get(&sender).unwrap().clone();
-        let share_commitments = commitments_full;
+        let (shares, nonce_share) = sh2t_state.shares.get(&sender).unwrap();
+        let share_commitments = sh2t_state.commitments.get(&sender).unwrap();
         
         // First, verify share commitments
-        let mut appended_share = Vec::new();
-        for share in shares.clone().into_iter(){
-            appended_share.extend(share);
-        }
-        appended_share.extend(nonce_share);
+        let mut appended_share = Vec::with_capacity(shares.len() + nonce_share.len());
+        appended_share.extend_from_slice(shares);
+        appended_share.extend_from_slice(nonce_share);
         let comm_hash = do_hash(appended_share.as_slice());
-        if comm_hash != share_commitments[self.myid]{
+        drop(appended_share);
+        let commitment_matches = comm_hash == share_commitments[self.myid];
+        let sh2t_state = self.sh2t_state_map.get_mut(&instance_id).unwrap();
+        if !commitment_matches{
             // Invalid share commitments
             log::error!("Invalid share commitments from {}", sender);
             sh2t_state.verification_status.insert(sender, false);

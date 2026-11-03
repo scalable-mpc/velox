@@ -212,6 +212,13 @@ mod tests {
         let e = F::rand();
         assert_eq!(F::to_bytes_be(&e).len(), F::SER_BYTES, "{name}: width");
         assert_eq!(F::from_bytes_be(&F::to_bytes_be(&e)).unwrap(), e, "{name}: byte round-trip");
+        // ACSS and Sh2t commit to these bytes: they must be the per-element
+        // encodings in order, and they must read back in SER_BYTES chunks.
+        let elems = vec![F::rand(), F::rand(), F::rand()];
+        let flat = crate::ser_be_flat(&elems);
+        assert_eq!(flat, elems.iter().flat_map(|x| F::to_bytes_be(x)).collect::<Vec<u8>>(), "{name}: flat bytes");
+        let back: Vec<_> = flat.chunks(F::SER_BYTES).map(|x| F::from_bytes_be(x).unwrap()).collect();
+        assert_eq!(back, elems, "{name}: flat round-trip");
 
         for line in ["", "a", "hello world", "mountain grape desert sky", "~~~~~~~"] {
             let packed = F::encode_ascii(line).unwrap_or_else(|| panic!("{name}: {line:?} should fit"));

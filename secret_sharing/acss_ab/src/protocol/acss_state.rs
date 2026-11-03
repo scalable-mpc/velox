@@ -2,14 +2,15 @@ use std::collections::{HashMap, HashSet};
 
 use crypto::hash::Hash;
 use lambdaworks_math::polynomial::Polynomial;
-use fields::{AvssShare, LargeFieldSer, ProtocolField};
+use fields::{LargeFieldSer, ProtocolField};
 use types::Replica;
 use lambdaworks_math::field::element::FieldElement;
 
 #[derive(Clone, Debug)]
 pub struct ACSSABState<F: ProtocolField>{
-    // Shares, Nonce, Blinding nonce share in each tuple
-    pub shares: HashMap<Replica, AvssShare>,
+    // Shares (one flat buffer, see `fields::ser_be_flat`), nonce share and
+    // blinding nonce share of each dealer
+    pub shares: HashMap<Replica, (Vec<u8>, LargeFieldSer, LargeFieldSer)>,
     // Commitments to shares, commitments to blinding polynomial, and DZK polynomial
     pub commitments: HashMap<Replica, (Vec<Hash>, Vec<Hash>, Vec<LargeFieldSer>)>,
     // Reliable Agreement

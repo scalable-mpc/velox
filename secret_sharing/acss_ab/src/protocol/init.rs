@@ -3,7 +3,7 @@ use std::{ops::{Mul, Add, Sub}};
 use crate::Context;
 use crypto::{hash::{do_hash, Hash}, aes_hash::MerkleTree};
 use lambdaworks_math::polynomial::Polynomial;
-use fields::{LargeFieldSer, generate_evaluation_points_fft, generate_evaluation_points, generate_evaluation_points_opt, sample_polynomials_from_prf, rand_field_element, lift_polynomials, lift_shares, ProtocolField, FieldSer};
+use fields::{LargeFieldSer, ser_be_flat, generate_evaluation_points_fft, generate_evaluation_points, generate_evaluation_points_opt, sample_polynomials_from_prf, rand_field_element, lift_polynomials, lift_shares, ProtocolField, FieldSer};
 
 use types::Replica;
 
@@ -139,28 +139,18 @@ impl<F: ProtocolField> Context<F>{
         }
         // let poly_status = check_if_all_points_lie_on_degree_x_polynomial(_indices, evaluations.clone(), self.num_faults+1);
         // assert!(poly_status.0);
-        // Transform the shares to element wise shares
-        let mut party_wise_shares: Vec<Vec<LargeFieldSer>> = Vec::new();
-        let mut party_appended_shares: Vec<Vec<u8>> = Vec::new();
+        // The shares of each party as one flat buffer, and the n commitments:
+        // the hash of the party's flat shares followed by its nonce share.
+        let mut party_wise_shares: Vec<Vec<u8>> = Vec::new();
+        let mut commitments: Vec<Hash> = Vec::new();
         for i in 0..self.num_nodes{
-            let mut party_shares = Vec::new();
-            let mut appended_share = Vec::new();
-            for j in 0..evaluations.len(){
-                party_shares.push(evaluations[j][i].clone().ser_be());
-                appended_share.extend(evaluations[j][i].clone().ser_be());
-            }
-            party_wise_shares.push(party_shares);
-
-            // Append nonce shares to shares for generating commitment
-            appended_share.extend(nonce_evaluations[i].clone().ser_be());
-            party_appended_shares.push(appended_share);
+            let mut flat_shares = ser_be_flat(evaluations.iter().map(|party_evaluations| &party_evaluations[i]));
+            let shares_len = flat_shares.len();
+            flat_shares.extend(nonce_evaluations[i].ser_be());
+            commitments.push(do_hash(&flat_shares));
+            flat_shares.truncate(shares_len);
+            party_wise_shares.push(flat_shares);
         }
-
-        // Generate Commitments here
-        // There should be $n$ commitments overall
-        let commitments: Vec<Hash> = party_appended_shares.into_iter().map(|share| {
-            do_hash(&share)
-        }).collect();
 
         let merkle_tree = MerkleTree::new(commitments.clone(), &self.hash_context);
         let share_root_comm = merkle_tree.root();
@@ -202,11 +192,10 @@ impl<F: ProtocolField> Context<F>{
         let ser_vec = bincode::serialize(&serialized_broadcase_vec).unwrap();
 
         let mut shares: Vec<(Replica,Option<Vec<u8>>)> = Vec::new();
-        for rep in 0..self.num_nodes{
+        for (rep, shares_party) in party_wise_shares.into_iter().enumerate(){
             // prepare shares
             // even need to encrypt shares
             if (self.use_fft) || (!self.use_fft && rep >= self.num_faults){
-                let shares_party = party_wise_shares[rep].clone();
                 let nonce_share = nonce_evaluations[rep].clone().ser_be();
                 let blinding_nonce_share = nonce_blinding_poly_evaluations[rep].clone().ser_be();
                 
@@ -233,7 +222,7 @@ impl<F: ProtocolField> Context<F>{
             self.acss_ab_state.insert(instance_id, acss_state);
         }
 
-        let acss_ab_state = self.acss_ab_state.get_mut(&instance_id).unwrap();
+        let acss_ab_state = self.acss_ab_state.get(&instance_id).unwrap();
         if acss_ab_state.acss_status.contains(&sender){
             // Dealer already terminated and its state was cleared; ignore.
             return;
@@ -248,42 +237,34 @@ impl<F: ProtocolField> Context<F>{
             return;
         }
 
-        let shares_full = acss_ab_state.shares.get(&sender).unwrap().clone();
-        let shares = shares_full.0;
-        let nonce_share = shares_full.1;
-        let blinding_nonce_share = shares_full.2;
-
-        let commitments_full = acss_ab_state.commitments.get(&sender).unwrap().clone();
-        let share_commitments = commitments_full.0;
-        let blinding_commitments = commitments_full.1;
-        let dzk_coeffs = commitments_full.2;
-        let blinding_comm_sender = blinding_commitments[self.myid].clone();
+        let (shares, nonce_share, blinding_nonce_share) = acss_ab_state.shares.get(&sender).unwrap();
+        let (share_commitments, blinding_commitments, dzk_coeffs) = acss_ab_state.commitments.get(&sender).unwrap();
+        let blinding_comm_sender = blinding_commitments[self.myid];
 
         // First, verify share commitments
-        let mut appended_share = Vec::new();
-        for share in shares.clone().into_iter(){
-            appended_share.extend(share);
-        }
-        appended_share.extend(nonce_share);
+        let mut appended_share = Vec::with_capacity(shares.len() + nonce_share.len());
+        appended_share.extend_from_slice(shares);
+        appended_share.extend_from_slice(nonce_share);
         let comm_hash = do_hash(appended_share.as_slice());
+        drop(appended_share);
         if comm_hash != share_commitments[self.myid]{
             // Invalid share commitments
             log::error!("Invalid share commitments from {}", sender);
-            acss_ab_state.verification_status.insert(sender, false);
+            self.acss_ab_state.get_mut(&instance_id).unwrap().verification_status.insert(sender, false);
             return;
         }
 
         // Second, verify DZK proof. The proof lives in F::Ext — see the dealer
         // side for why — so the challenge, the polynomial and the packed shares
         // are all read there.
-        let shares_ff: Vec<FieldElement<F>> = shares.into_iter().map(|el| F::from_bytes_be(el.as_slice()).unwrap()).collect();
-        let dzk_poly_coeffs: Vec<FieldElement<F::Ext>> = dzk_coeffs.into_iter()
+        let shares_ff: Vec<FieldElement<F>> = shares.chunks(F::SER_BYTES).map(|el| F::from_bytes_be(el).unwrap()).collect();
+        let dzk_poly_coeffs: Vec<FieldElement<F::Ext>> = dzk_coeffs.iter()
             .map(|el| <F::Ext as ProtocolField>::from_bytes_be(el.as_slice()).unwrap()).collect();
         let dzk_poly = Polynomial::new(dzk_poly_coeffs.as_slice());
         // Change this to be root of unity
 
-        let share_root = MerkleTree::new(share_commitments, &self.hash_context).root();
-        let blinding_root = MerkleTree::new(blinding_commitments, &self.hash_context).root();
+        let share_root = MerkleTree::new(share_commitments.clone(), &self.hash_context).root();
+        let blinding_root = MerkleTree::new(blinding_commitments.clone(), &self.hash_context).root();
         let root_comm = self.hash_context.hash_two(share_root, blinding_root);
         let root_comm_fe = <F::Ext as ProtocolField>::from_bytes_be(&root_comm).unwrap();
 
@@ -294,7 +275,7 @@ impl<F: ProtocolField> Context<F>{
             &dzk_poly, 
             &shares_ff, 
             blinding_comm_sender, 
-            blinding_nonce_share
+            blinding_nonce_share.clone()
         );
         let acss_ab_state = self.acss_ab_state.get_mut(&instance_id).unwrap();
         if !verf_status{

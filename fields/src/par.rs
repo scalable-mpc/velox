@@ -37,3 +37,21 @@ where
     rx.await
         .expect("rayon job panicked or its worker was dropped before producing a result")
 }
+
+/// Deserialise a flat share buffer (see [`ser_be_flat`](crate::ser_be_flat))
+/// on rayon without parking the caller.
+///
+/// ACSS and Sh2t run this when a dealer's sharing terminates, before they hand
+/// the shares to the MPC engine: `n` dealers times the number of batches. Each
+/// buffer is cheap per element but large, and the caller is the module's
+/// message loop, which must keep draining its inbox meanwhile.
+pub async fn deserialize_shares_async<F: crate::ProtocolField>(
+    flat_shares: Vec<u8>,
+) -> Vec<lambdaworks_math::field::element::FieldElement<F>> {
+    use rayon::prelude::{ParallelIterator, ParallelSlice};
+    rayon_async(move || {
+        flat_shares.par_chunks(F::SER_BYTES)
+            .map(|x| F::from_bytes_be(x).unwrap())
+            .collect()
+    }).await
+}

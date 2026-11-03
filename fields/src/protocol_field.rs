@@ -257,3 +257,16 @@ impl<F: ProtocolField> FieldSer for FieldElement<F> {
         F::to_bytes_le(self)
     }
 }
+
+/// Serialize `elems` in order into one buffer of `F::SER_BYTES`-wide
+/// big-endian elements. ACSS and Sh2t send a party's shares in this form, and
+/// the share commitment hashes these bytes followed by the nonce share. A
+/// `Vec<LargeFieldSer>` holds the same bytes, but with one heap block per
+/// element and an 8-byte length per element on the wire.
+pub fn ser_be_flat<'a, F: ProtocolField>(elems: impl IntoIterator<Item = &'a FieldElement<F>>) -> Vec<u8> {
+    let mut flat = Vec::new();
+    for elem in elems {
+        flat.extend_from_slice(&F::to_bytes_be(elem));
+    }
+    flat
+}

@@ -6,7 +6,7 @@ impl<F: ProtocolField> Context<F>{
     pub async fn handle_avid_termination(&mut self, _instance_id: usize, sender: usize, content: Option<Vec<u8>>){
         log::info!("Received AVID termination message from sender {}",sender);
         if content.is_some(){
-            let (instance_id,shares) : (usize,(Vec<LargeFieldSer>,LargeFieldSer,LargeFieldSer)) = bincode::deserialize(content.unwrap().as_slice()).unwrap();
+            let (instance_id,shares) : (usize,(Vec<u8>,LargeFieldSer,LargeFieldSer)) = bincode::deserialize(content.unwrap().as_slice()).unwrap();
             
             if !self.acss_ab_state.contains_key(&instance_id) {
                 let acss_state = ACSSABState::<F>::new();

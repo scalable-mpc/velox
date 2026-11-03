@@ -1,7 +1,7 @@
 use planner::api::engine::Application;
 use std::{collections::{HashMap, HashSet}, ops::{Add, Mul}};
 
-use fields::{LargeFieldSer, rand_field_element, rayon_async, ProtocolField, FieldSer};
+use fields::{rand_field_element, rayon_async, ProtocolField, FieldSer};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use types::{ProtSyncMsg, Replica, SyncMsg, SyncState};
 use crate::{context::Context, protocol::rand_sharings::ApplicationPreprocessing};
@@ -154,11 +154,11 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         for (index, batch_size) in acss_batch_sizes.iter(){
             log::info!("Preparing secret sharing batch {} with {} values", index, batch_size);
         }
-        let deg_t_batches: Vec<Vec<LargeFieldSer>> = rayon_async(move || {
+        let deg_t_batches: Vec<Vec<FieldElement<F>>> = rayon_async(move || {
             acss_batch_sizes.into_iter()
                 .map(|(_index, batch_size)|{
                     (0..batch_size).into_par_iter()
-                        .map(|_| rand_field_element::<F>().ser_be())
+                        .map(|_| rand_field_element::<F>())
                         .collect()
                 })
                 .collect()
@@ -177,13 +177,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
         log::info!("Preparing 2t sharing in preprocessing phase with {} values", self.zero_batch_size);
         let zero_batch_size = self.zero_batch_size;
-        let zeros: Vec<Vec<LargeFieldSer>> = rayon_async(move || {
-            vec![
-                (0..zero_batch_size).into_par_iter()
-                    .map(|_| FieldElement::<F>::zero().ser_be())
-                    .collect()
-            ]
-        }).await;
+        let zeros: Vec<Vec<FieldElement<F>>> = vec![vec![FieldElement::<F>::zero(); zero_batch_size]];
 
         // Likewise, hold all prepared Sh2t (zero) batches and deal only the first one;
         // the rest are paced as senders complete the in-flight batch.
@@ -235,7 +229,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         }
     }
 
-    pub async fn handle_acss_term_msg(&mut self, instance: usize, sender: usize, shares: Option<Vec<LargeFieldSer>>){
+    pub async fn handle_acss_term_msg(&mut self, instance: usize, sender: usize, shares: Option<Vec<FieldElement<F>>>){
         log::info!("Received ACSS shares from sender {} for batch {}", sender, instance);
         if shares.is_none(){
             log::error!("Abort ACSS protocol of dealer {} and terminate MPC", sender);
@@ -247,14 +241,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             return;
         }
 
-        let shares_deser: Vec<FieldElement<F>> = deserialize_shares_async(shares.unwrap()).await;
-
         if !self.rand_sharings_state.shares.contains_key(&sender){
             self.rand_sharings_state.shares.insert(sender, HashMap::default());
         }
 
         let shares_batches_map = self.rand_sharings_state.shares.get_mut(&sender).unwrap();
-        shares_batches_map.insert(instance, shares_deser);
+        shares_batches_map.insert(instance, shares.unwrap());
 
         // Pace dealing: once `n-t` distinct senders have returned shares for the
         // in-flight batch (`cursor - 1`), deal the next batch. This keeps at most one
@@ -271,7 +263,7 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         self.verify_sender_termination(sender).await;
     }
 
-    pub async fn handle_sh2t_term_msg(&mut self, instance: usize, sender: usize, shares: Option<Vec<LargeFieldSer>>){
+    pub async fn handle_sh2t_term_msg(&mut self, instance: usize, sender: usize, shares: Option<Vec<FieldElement<F>>>){
         log::info!("Received Sh2t shares from sender {} for batch {}", sender, instance);
         if shares.is_none(){
             log::error!("Abort 2t-sharing protocol of dealer {} and terminate MPC", sender);
@@ -282,14 +274,12 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             log::info!("Finished processing random sharings, ignoring ACSS and SH2t for all subsequent batches and senders: sender {}", sender);
             return;
         }
-        let shares_deser: Vec<FieldElement<F>> = deserialize_shares_async(shares.unwrap()).await;
-
         if !self.rand_sharings_state.sh2t_shares.contains_key(&sender){
             self.rand_sharings_state.sh2t_shares.insert(sender, HashMap::default());
         }
 
         let shares_batches_map = self.rand_sharings_state.sh2t_shares.get_mut(&sender).unwrap();
-        shares_batches_map.insert(instance, shares_deser);
+        shares_batches_map.insert(instance, shares.unwrap());
 
         // Pace dealing of the Sh2t module identically to ACSS above.
         if self.rand_sharings_state.sh2t_dispatch_cursor > 0{
@@ -580,20 +570,4 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             .await;
         self.add_cancel_handler(cancel_handler);
     }
-}
-/// Deserialise a share batch on rayon without parking the caller.
-///
-/// This runs on every ACSS and Sh2t termination message, so it is the highest
-/// frequency rayon site in the engine: `n` senders times the number of batches.
-/// Each batch is cheap per element but large, and it is reached from a
-/// `handle_*` on the message path, which is exactly where parking the
-/// `Context` task turns "a message arrived" into "the inbox stops draining".
-async fn deserialize_shares_async<F: ProtocolField>(
-    shares: Vec<LargeFieldSer>,
-) -> Vec<FieldElement<F>> {
-    rayon_async(move || {
-        shares.into_par_iter()
-            .map(|x| F::from_bytes_be(&x).unwrap())
-            .collect()
-    }).await
 }

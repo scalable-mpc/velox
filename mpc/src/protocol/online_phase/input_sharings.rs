@@ -1,7 +1,7 @@
 use planner::api::engine::Application;
 use std::collections::HashMap;
 
-use fields::{LargeFieldSer, ProtocolField, FieldSer};
+use fields::ProtocolField;
 use types::Replica;
 
 use crate::Context;
@@ -23,23 +23,21 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
             return;
         }
 
-        let inputs_ser: Vec<LargeFieldSer> = input_secrets.iter().map(|secret| secret.ser_be()).collect();
-
-        log::info!("Initiating input sharing in preprocessing phase for {} inputs", inputs_ser.len());
-        let status = self.acss_ab_send.send((self.input_acss_id_offset, inputs_ser)).await;
+        log::info!("Initiating input sharing in preprocessing phase for {} inputs", input_secrets.len());
+        let status = self.acss_ab_send.send((self.input_acss_id_offset, input_secrets)).await;
         if status.is_err(){
             log::error!("Failed to send input value to ACSS protocol because of error: {:?}", status.err().unwrap());
         }
     }
 
-    pub async fn handle_input_acss_termination(&mut self, instance_id: usize, sender: Replica, shares: Option<Vec<LargeFieldSer>>){
+    pub async fn handle_input_acss_termination(&mut self, instance_id: usize, sender: Replica, shares: Option<Vec<FieldElement<F>>>){
         log::info!("Received input ACSS termination message from sender {} for instance ID {}", sender, instance_id);
         if shares.is_none(){
             log::error!("Abort ACSS protocol of dealer {} and terminate MPC", sender);
             return;
         }
 
-        let shares = shares.unwrap();
+        let shares_deser = shares.unwrap();
         let input_sharing_inst = instance_id - self.input_acss_id_offset;
 
         if !self.mix_circuit_state.input_acss_shares.contains_key(&sender){
@@ -48,9 +46,6 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
         }
 
         let input_sharing_state = self.mix_circuit_state.input_acss_shares.get_mut(&sender).unwrap();
-        let shares_deser: Vec<FieldElement<F>> = shares.into_iter()
-            .map(|el| F::from_bytes_be(&el).unwrap())
-            .collect();
 
         input_sharing_state.insert(input_sharing_inst, shares_deser.clone());
         
