@@ -46,9 +46,10 @@ impl Context {
             log::info!("Received n-f ECHO messages for RBC Instance ID {}, sending READY message",instance_id);
             // ECHO phase is completed. Save our share and the root for later purposes and quick access. 
             avid_context.agreed_root = Some(avid_index.proof.root());
-            if avid_context.fragments.is_some(){
+            // The ECHO phase completes once, so the fragments are sent once:
+            // move them out instead of copying them.
+            if let Some(fragments) = avid_context.fragments.take(){
                 // Send fragments in READY message
-                let fragments = avid_context.fragments.clone().unwrap();
                 let mut echo_parties: HashSet<usize> = HashSet::default();
                 for avid_shard in fragments.shards.into_iter(){
                     let recipient = avid_shard.recipient;
