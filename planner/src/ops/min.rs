@@ -1,6 +1,7 @@
-//! `Min { a, b }` / `MinPub { a, c }` — `min(a, b)`. `|a|, |b| < 2^{ℓ−2}`.
+//! `Min { a, b }` / `MinPub { a, c }` — `min(a, b)`.
+//! `|a|, |b| < 2^{p_bits−2}`.
 //!
-//! Rounds: 3 + tree levels (9 at ℓ = 61). Steps: the [`DReLU`] pipeline
+//! Rounds: 3 + tree levels (9 at p_bits = 61). Steps: the [`DReLU`] pipeline
 //! on `a − b`, then one multiply, the select: `min = a − DReLU · (a − b)`.
 //! Preprocessing: one edaBit per element.
 
@@ -11,8 +12,8 @@ use crate::{api::application::OpResult, primitives::edabit::EdaBit};
 
 use super::{drelu::DReLU, EngineOperationType, EngineOperands, Operation, OpStep, E};
 
-pub fn steps(ell: usize) -> Vec<OpStep> {
-    let mut steps = super::drelu::steps(ell);
+pub fn steps(p_bits: usize) -> Vec<OpStep> {
+    let mut steps = super::drelu::steps(p_bits);
     steps.push(OpStep::new(EngineOperationType::Multiply, 1));
     steps
 }

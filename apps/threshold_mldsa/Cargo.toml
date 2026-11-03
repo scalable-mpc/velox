@@ -1,0 +1,22 @@
+[package]
+name = "threshold_mldsa"
+version = "0.1.0"
+edition = "2021"
+
+# Threshold ML-DSA signing (issue 19, Quorus by Bienstock et al., USENIX
+# Security 2026) on the Planner over the ML-DSA field F_q, q = 8380417.
+# See src/lib.rs.
+
+[dependencies]
+velox = { package = "velox", path = "../../velox" }
+sha3 = "0.9"
+
+anyhow = "1"
+async-trait = "0"
+log = "*"
+# RustCrypto ML-DSA: an independent verifier. Each run checks its
+# signature with it, and so do the tests.
+ml-dsa = { version = "0.1.1", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["macros", "rt"] }

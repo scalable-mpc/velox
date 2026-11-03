@@ -4,9 +4,9 @@
 //! # A caveat that is the engine's, not this field's
 //!
 //! [`ProtocolField::Ext`] covers the ACSS DZK proof only. That is
-//! acceptable for benchmarking the comparison layer at `ℓ = 31` (half the
-//! carry tree of `ℓ = 61`) and not for a deployment; lifting verification is
-//! tracked separately.
+//! acceptable for benchmarking the comparison layer at `p_bits = 31` (half
+//! the carry tree of `p_bits = 61`) and not for a deployment; lifting
+//! verification is tracked separately.
 
 use lambdaworks_math::{
     errors::ByteConversionError,
@@ -78,9 +78,11 @@ impl ProtocolField for Mersenne31Field {
     /// 31 bits is nowhere near a soundness bound; challenges lift into Fp8.
     type Ext = Degree8ExtensionField;
 
+    const PRIME_MODULUS: Option<u128> = Some(<Self as crate::MersennePrimeField>::MODULUS);
+
     const MERSENNE_BITS: Option<usize> = Some(<Self as crate::MersennePrimeField>::BITS);
 
-    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u128> {
+    fn canonical_u128(elem: &FieldElement<Self>) -> Option<u128> {
         Some(<Self as crate::MersennePrimeField>::to_canonical_u128(elem))
     }
 

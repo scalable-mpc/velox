@@ -375,9 +375,41 @@ fn bench_raw_gemm_gpu(_c: &mut Criterion) {
     // stays static and the rest of the benches still run on CPU-only hosts.
 }
 
+// ---------------------------------------------------------------------------
+// Bench: the ML-DSA field's lazy-reduction kernel against the scalar path,
+// at the reference shape and at the dealer's shape (n = 16 points, t + 1 = 6
+// coefficients, many polynomials)
+// ---------------------------------------------------------------------------
+
+fn bench_ml_dsa_gemm(c: &mut Criterion) {
+    use fields::{matrix_matrix_multiply_cpu, MlDsaField, ProtocolField};
+    use lambdaworks_math::field::element::FieldElement;
+
+    let rand_fq = |rows: usize, cols: usize| -> Vec<Vec<FieldElement<MlDsaField>>> {
+        (0..rows).map(|_| (0..cols).map(|_| MlDsaField::rand()).collect()).collect()
+    };
+    let mut group = c.benchmark_group("FieldGEMM/CPU/MlDsa");
+    for (rows, cols, batch) in [(64usize, 128usize, 1024usize), (16, 6, 100_000)] {
+        let (matrix, vectors) = (rand_fq(rows, cols), rand_fq(batch, cols));
+        assert_eq!(
+            matrix_matrix_multiply(&matrix, &vectors, false),
+            matrix_matrix_multiply_cpu(&matrix, &vectors, false)
+        );
+        let shape = format!("{rows}x{cols}_b{batch}");
+        group.bench_with_input(BenchmarkId::new("scalar", &shape), &(&matrix, &vectors), |b, (m, v)| {
+            b.iter(|| matrix_matrix_multiply_cpu(black_box(m), black_box(v), false))
+        });
+        group.bench_with_input(BenchmarkId::new("lazy", &shape), &(&matrix, &vectors), |b, (m, v)| {
+            b.iter(|| matrix_matrix_multiply(black_box(m), black_box(v), false))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_raw_gemm,
+    bench_ml_dsa_gemm,
     bench_batched_poly_eval,
     bench_batched_recon,
     bench_batched_party_eval,

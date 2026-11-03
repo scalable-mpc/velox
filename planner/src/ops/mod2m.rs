@@ -1,14 +1,15 @@
 //! `Mod2m { x, m }` — `x mod 2^m`, exactly, for an unsigned
-//! `0 ≤ x < 2^{ℓ−1−κ}` and `1 ≤ m ≤ ℓ − 1 − κ` (Catrina–de Hoogh's Mod2m,
-//! with the carry tree as its bitwise less-than).
+//! `0 ≤ x < 2^{p_bits−1−κ}` and `1 ≤ m ≤ p_bits − 1 − κ` (Catrina–de Hoogh's
+//! Mod2m, with the carry tree as its bitwise less-than).
 //!
 //! Rounds: `1 + ⌈log₂ m⌉` (7 at `m = 63`). Steps, `L` being the tree's
 //! levels:
 //!
-//! - step `0`, reveal: open `c = x + r`, with `r = Σ_{i<ℓ−1} 2^i [r_i]` the
-//!   edaBit without its top bit. `x + r < 2^{ℓ−1−κ} + 2^{ℓ−1} < p`, so `c`
-//!   is the integer sum, and it hides `x` up to a statistical distance of
-//!   `x / 2^{ℓ−1} < 2^{−κ}`.
+//! - step `0`, reveal: open `c = x + r`, with `r = Σ_{i<p_bits−1} 2^i [r_i]`
+//!   the edaBit without its top bit.
+//!   `x + r < 2^{p_bits−1−κ} + 2^{p_bits−1} < p`, so `c` is the integer sum,
+//!   and it hides `x` up to a statistical distance of
+//!   `x / 2^{p_bits−1} < 2^{−κ}`.
 //! - steps `1..=L`, multiply: the carry tree over the public bits of
 //!   `c' = c mod 2^m` and `¬[r_i]`, `i < m`, gives `[u] = [c' < r_lo]` with
 //!   `r_lo = r mod 2^m`.
@@ -34,15 +35,15 @@ use super::{no_such_step, EngineOperationType, EngineOperands, Operation, OpStep
 /// κ: the opened `c` hides `x` up to a statistical distance of `2^{−κ}`.
 pub const STATISTICAL_MASK_BITS: usize = 40;
 
-/// `m` must leave the mask its `κ` bits above `x`: `1 ≤ m ≤ ℓ − 1 − κ`.
+/// `m` must leave the mask its `κ` bits above `x`: `1 ≤ m ≤ p_bits − 1 − κ`.
 /// Checked both when the plan is compiled and when the op is run.
-pub fn check_m(m: usize, ell: usize) -> Result<()> {
-    let max = ell.saturating_sub(1 + STATISTICAL_MASK_BITS);
+pub fn check_m(m: usize, p_bits: usize) -> Result<()> {
+    let max = p_bits.saturating_sub(1 + STATISTICAL_MASK_BITS);
     if m == 0 || m > max {
         if max == 0 {
-            bail!("Mod2m needs an ℓ above {}, and this field has ℓ = {}", 1 + STATISTICAL_MASK_BITS, ell);
+            bail!("Mod2m needs a p_bits above {}, and this field has p_bits = {}", 1 + STATISTICAL_MASK_BITS, p_bits);
         }
-        bail!("Mod2m by {} bits is outside 1..={} for an {}-bit field", m, max, ell);
+        bail!("Mod2m by {} bits is outside 1..={} for an {}-bit field", m, max, p_bits);
     }
     Ok(())
 }
@@ -93,7 +94,7 @@ impl<F: ProtocolField> Operation<F> for Mod2m<F> {
     fn operands(&self, step: usize) -> EngineOperands<F> {
         match step {
             0 => {
-                let top = mersenne::pow2::<F>(mersenne::ell::<F>() - 1);
+                let top = mersenne::pow2::<F>(mersenne::p_bits::<F>() - 1);
                 EngineOperands::Reveal(
                     self.x.iter().zip(self.eda.iter()).map(|(x, r)| x + &r.value - r.msb() * &top).collect(),
                 )

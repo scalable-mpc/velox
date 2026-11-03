@@ -4,7 +4,7 @@
 //! plain integer arithmetic for the three base fields, so a field cannot quietly stop
 //! satisfying them.
 
-use fields::{mersenne_31::Mersenne31Field, Mersenne127Field, MersennePrimeField, Mersenne61Field};
+use fields::{mersenne_31::Mersenne31Field, Mersenne127Field, MersennePrimeField, Mersenne61Field, ProtocolField};
 use lambdaworks_math::field::element::FieldElement;
 
 /// xorshift64, two draws per value: deterministic, no dependency,
@@ -22,7 +22,7 @@ fn samples(count: usize, seed: u64) -> impl Iterator<Item = u128> {
 
 /// Every check, for one field. Generic so the three fields run the identical
 /// suite; the `From<u64>` bound is what lets a reference value be lifted.
-fn check_field<F: MersennePrimeField>()
+fn check_field<F: MersennePrimeField + ProtocolField>()
 where
     FieldElement<F>: From<u64>,
     F::RepresentativeType: Into<u128>,
@@ -37,6 +37,8 @@ where
     assert_eq!(p, (1u128 << F::BITS) - 1);
     assert_eq!(F::field_bit_size(), F::BITS, "field_bit_size disagrees with BITS");
     assert_eq!(p, Into::<u128>::into(F::modulus_minus_one()) + 1, "MODULUS disagrees with the field's p");
+    assert_eq!(<F as ProtocolField>::PRIME_MODULUS, Some(p), "PRIME_MODULUS disagrees with MODULUS");
+    assert_eq!(<F as ProtocolField>::MERSENNE_BITS, Some(F::BITS), "MERSENNE_BITS disagrees with BITS");
 
     // -- Canonical edges, including the non-canonical zero: `from(p)` reduces
     //    eagerly, so `(p − 1) + 1` is how the internal word actually reaches p.
@@ -63,6 +65,7 @@ where
     // -- Round trip of full-width values through the field arithmetic.
     for x in samples(1_000, 0xf011) {
         assert_eq!(canon(&fe(x)), x % p, "x={x}");
+        assert_eq!(<F as ProtocolField>::canonical_u128(&fe(x)), Some(x % p), "capability, x={x}");
     }
 
     // -- Bits reassemble the canonical value; bits past BITS are zero.
@@ -76,8 +79,8 @@ where
     assert_eq!(F::bit(&fe(p - 1), F::BITS - 1), 1, "p-1 has its top bit set");
 
     // -- Fact 1: bits(p − b) = ¬bits(b) for b ≠ 0 (the BitLTL complement
-    //    trick). For b = 0, p − b = p ≡ 0, which is exactly the 2^-ℓ case the
-    //    protocols accept, so it is excluded here.
+    //    trick). For b = 0, p − b = p ≡ 0, which is exactly the 2^-p_bits case
+    //    the protocols accept, so it is excluded here.
     for b in samples(1_000, 0xc0de).map(|b| b % p).filter(|&b| b != 0) {
         let neg = fe(p - b);
         for i in 0..F::BITS {
@@ -87,7 +90,7 @@ where
     }
 
     // -- Fact 2: msb(a) = lsb(2a) (the DReLU sign trick; needs p odd). The MSB
-    //    is bit ℓ−1, set exactly when a > (p−1)/2, i.e. a is "negative".
+    //    is bit p_bits−1, set exactly when a > (p−1)/2, i.e. a is "negative".
     for a in samples(1_000, 0xd0ab).map(|a| a % p) {
         let doubled = fe(a) + fe(a);
         assert_eq!(F::bit(&fe(a), F::BITS - 1), F::bit(&doubled, 0), "a={a}");

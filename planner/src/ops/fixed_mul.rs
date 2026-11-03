@@ -1,9 +1,9 @@
 //! `FixedMul { x, y, d }` — `Trunc_d(x · y)` in one round: a fixed-point
 //! multiplication with `d` fractional bits (Liu et al. Protocol 3.2,
-//! ΠFixed-Mult); error `{0, ±1, ±2}`. `|x · y| < 2^{ℓ−2}`.
+//! ΠFixed-Mult); error `{0, ±1, ±2}`. `|x · y| < 2^{p_bits−2}`.
 //!
 //! Rounds: 1. Steps: one masked multiply — the engine opens
-//! `x·y + r + 2^{ℓ−2}` and registers the product for verification.
+//! `x·y + r + 2^{p_bits−2}` and registers the product for verification.
 //! Preprocessing: one edaBit per element.
 
 use anyhow::Result;

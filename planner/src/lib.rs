@@ -11,7 +11,7 @@
 //! |---|---|
 //! | `Add` only | 0 |
 //! | `Mul`, `Reveal`, `MaskReveal`, `Truncate`, `FixedMul` only | 1 |
-//! | `Compare`, `ComparePub` | 2 + carry-tree levels (8 at ℓ = 61, 7 at 31) |
+//! | `Compare`, `ComparePub` | 2 + carry-tree levels (8 at p_bits = 61, 7 at 31) |
 //! | `Max`, `Min`, `MaxPub`, `MinPub` | one more |
 //!
 //! # Layers, top to bottom
@@ -27,10 +27,13 @@
 //! - [`primitives`] — edaBits and the carry tree.
 //!
 //! The Planner is generic over every protocol field. `Mul`, `Add` and
-//! `Reveal` run over any of them; the comparison family, `Truncate`,
-//! `FixedMul` and `MaskReveal` need a Mersenne prime field `p = 2^ℓ − 1`,
-//! which the Planner reads at runtime through `ProtocolField::MERSENNE_BITS`
-//! and refuses, by name, when the field is anything else.
+//! `Reveal` run over any of them; `MaskReveal` needs uniform masks, which a
+//! Mersenne prime field has and a prime `2^p_bits_0 − 2^p_bits_1 + 1` gets
+//! from the uniform-mask prefix (`ops::uniform_mask`); the comparison family,
+//! `Truncate`, `FixedMul` and `Mod2m` need a Mersenne prime field
+//! `p = 2^p_bits − 1`. The Planner reads `ProtocolField::MERSENNE_BITS` and
+//! `PRIME_MODULUS` at runtime and refuses an op, by name, when the field
+//! cannot run it.
 
 pub mod api;
 pub mod plan;
@@ -38,7 +41,7 @@ pub mod ops;
 pub mod planner;
 pub mod primitives;
 
-pub use api::application::{OpParams, Op, OpDepthInput, OpResult, OpType, PlannerApplication, PlannerCounts};
+pub use api::application::{FieldClass, OpParams, Op, OpDepthInput, OpResult, OpType, PlannerApplication, PlannerCounts};
 pub use api::engine::{Application, DefaultApplication, DepthInput, PreprocessingCounts, RandomWireShares, RandomWires};
 pub use plan::Plan;
 pub use planner::Planner;

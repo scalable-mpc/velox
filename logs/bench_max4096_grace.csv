@@ -1,0 +1,7 @@
+op,k,field,rep,op_depths,rounds,edabits,planner_bits,tuples,preprocessing_ms,online_ms,verification_ms,output_ms,total_ms,parties_with_output,max_abs_error,mismatches,ba_coin_exhaustion,launch_retries
+MAX,4096,m61base,0,1,9,4096,249856,606216,23089,2304,810,676,26879,10,0,0,0,0
+MAX,4096,m61base,1,1,9,4096,249856,606216,21038,2104,735,,,0,0,0,12,0
+MAX,4096,m61base,2,1,9,4096,249856,606216,20739,2127,702,590,24158,10,0,0,0,0
+MAX,4096,m31base,0,1,8,4096,126976,303112,8903,974,316,461,10654,10,0,0,0,0
+MAX,4096,m31base,1,1,8,4096,126976,303112,8756,981,324,497,10558,10,0,0,0,0
+MAX,4096,m31base,2,1,8,4096,126976,303112,8806,986,326,452,10570,10,0,0,0,0

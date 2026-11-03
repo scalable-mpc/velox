@@ -1,4 +1,4 @@
-//! Fields whose modulus is a Mersenne prime `p = 2^ℓ − 1`.
+//! Fields whose modulus is a Mersenne prime `p = 2^p_bits − 1`.
 //!
 //! The comparison and truncation protocols (Liu–Xie–Yu, USENIX Sec'24; issue
 //! #5) work only over such a field, and they rest on two facts about it:
@@ -23,7 +23,7 @@
 //! Planner, whose `Mul`/`Reveal` run over any field but whose comparisons do
 //! not — reads the same facts at runtime through
 //! [`ProtocolField::MERSENNE_BITS`](crate::ProtocolField::MERSENNE_BITS) and
-//! [`ProtocolField::mersenne_canonical`](crate::ProtocolField::mersenne_canonical),
+//! [`ProtocolField::canonical_u128`](crate::ProtocolField::canonical_u128),
 //! which the Mersenne base fields answer by delegating here and every other
 //! field answers with `None`. The extension fields are deliberately excluded
 //! from both: their elements are not integers mod a Mersenne prime, so
@@ -38,8 +38,8 @@ use lambdaworks_math::field::{element::FieldElement, traits::IsPrimeField};
 
 /// A prime field with modulus `p = 2^BITS − 1`.
 pub trait MersennePrimeField: IsPrimeField {
-    /// `ℓ` in `p = 2^ℓ − 1`: the number of solved bits behind one random
-    /// mask, and the width of the bitwise comparison's carry tree.
+    /// `p_bits` in `p = 2^p_bits − 1`: the number of solved bits behind one
+    /// random mask, and the width of the bitwise comparison's carry tree.
     const BITS: usize;
 
     /// The modulus, derived from [`BITS`](Self::BITS) so an implementor cannot

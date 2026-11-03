@@ -51,13 +51,13 @@ comparisons, and fixed-point arithmetic truncates after every multiplication.
 The standard answer is to blind the secret with a random value whose bits are
 also held in shared form, open the blinded value, and do the bit-level work
 on the public result against the shared bits of the mask. [LXY24] does this
-cheaply over a *Mersenne* prime field `p = 2^ℓ − 1`; this implementation
+cheaply over a *Mersenne* prime field `p = 2^p_bits − 1`; this implementation
 follows it, with one substitution: [LXY24]'s bitwise less-than opens values it
 should not (§4), and it is replaced by [CdH10]'s carry-out tree, specialised.
 
 ## 2. Two facts about a Mersenne prime
 
-Everything below rests on two properties of `p = 2^ℓ − 1` (ℓ = 61 for
+Everything below rests on two properties of `p = 2^p_bits − 1` (p_bits = 61 for
 `m61base`, 31 for `m31base`), exposed through
 [`fields::MersennePrimeField`](../fields/src/mersenne_prime.rs):
 
@@ -69,7 +69,7 @@ Everything below rests on two properties of `p = 2^ℓ − 1` (ℓ = 61 for
   and a least-significant-bit test.
 
 Both are used on *public* values only — the opened `y = 2v + r` and
-`c = v + 2^{ℓ−2} + r` — which is why the trait exposes the canonical integer
+`c = v + 2^{p_bits−2} + r` — which is why the trait exposes the canonical integer
 and its bits and nothing about sharings.
 
 The extension fields over a Mersenne prime (`m61`, `m31`) are *not* such
@@ -80,14 +80,14 @@ these operations by name elsewhere (§8).
 
 ## 3. DReLU, and everything built on it
 
-`DReLU(v) = [v ≥ 0]` for a sharing `v` with `|v| < 2^{ℓ−1}` ([LXY24] Protocol
+`DReLU(v) = [v ≥ 0]` for a sharing `v` with `|v| < 2^{p_bits−1}` ([LXY24] Protocol
 5.1, with the bitwise less-than of §4). With `r` an edaBit (§6):
 
 1. **Reveal** `y = 2v + r`. Since `msb(v) = lsb(2v)` and `2v = y − r`,
    `lsb(2v) = y_0 ⊕ r_0 ⊕ [y < r]` — the last term is the borrow of the
    subtraction `y − r` over the integers, i.e. whether it wrapped around `p`.
 2. **The carry tree** over the public bits of `y` and the shared bits of `r`
-   gives `[c] = [y < r]` in `⌈log₂ ℓ⌉` multiplication rounds (§4).
+   gives `[c] = [y < r]` in `⌈log₂ p_bits⌉` multiplication rounds (§4).
 3. **One multiplication** `[b]·[c]` with `[b] = y_0 ⊕ [r_0]` (affine in
    `[r_0]`, since `y_0` is public), then
    `DReLU = 1 − ([b] + [c] − 2[b][c])`.
@@ -103,7 +103,7 @@ Everything else is DReLU on a difference plus at most one multiplication:
 | `[a ≥ 0]` (DRELU gate) | `1 − [a < 0]` | — |
 
 `a − b` must keep its sign in the top bit, hence the domain
-`|a|, |b| < 2^{ℓ−2}`. The public-operand variants (`ComparePub`, `MaxPub`,
+`|a|, |b| < 2^{p_bits−2}`. The public-operand variants (`ComparePub`, `MaxPub`,
 `MinPub`) are the same arithmetic with `b` a public field element.
 
 ## 4. The bitwise less-than: a carry tree that opens nothing
@@ -115,13 +115,13 @@ round through a prefix-OR, `ΠPreOR`, built on `ΠMultPub`: products of shared
 bits are masked and **opened**. Those opened products are functions of the
 secret bits of `r`, which is the mask protecting `v`, so opening them leaks
 exactly what the comparison exists to hide. A one-round prefix-OR is not
-available without opening something; this implementation pays `⌈log₂ ℓ⌉`
+available without opening something; this implementation pays `⌈log₂ p_bits⌉`
 rounds instead and opens nothing but `y`.
 
 ### [CdH10]'s carry out
 
 `[y < r] = 1 − CarryOut(y, ¬r, c_in = 1)`: the carry out of the top bit of
-`2^ℓ + y − r`. With generate/propagate pairs per bit,
+`2^p_bits + y − r`. With generate/propagate pairs per bit,
 `p_i = y_i ⊕ ¬r_i`, `g_i = y_i ∧ ¬r_i`, the carry is a fold of the associative
 operator
 
@@ -130,7 +130,7 @@ operator
 ```
 
 over the bits, low to high. Folded as a balanced binary tree it takes
-`⌈log₂ ℓ⌉` levels, each one multiplication round, and every value stays
+`⌈log₂ p_bits⌉` levels, each one multiplication round, and every value stays
 shared.
 
 ### Two specialisations, because `y` is public
@@ -147,7 +147,7 @@ Code: [`CarryTree`](../planner/src/primitives/carry_tree.rs).
 
 The multiplications per level, at the Planner's two field sizes:
 
-| ℓ | levels | multiplications per level | total |
+| p_bits | levels | multiplications per level | total |
 |---|---|---|---|
 | 61 | 6 | 30, 29, 15, 7, 3, 1 | 85 |
 | 31 | 5 | 15, 15, 7, 3, 1 | 41 |
@@ -159,19 +159,19 @@ every other node from level 2 up — two. An odd slot is carried up unchanged.
 The module docs of `carry_tree.rs` draw the tree at `k = 8`. The tree is exhaustively tested against integer `<` for every
 width up to 8 bits and randomised at 31 and 61.
 
-So `[a < b]` costs **8 rounds and 86 multiplications per element** at ℓ = 61
-(reveal + 6 levels + the xor multiplication), **7 and 42** at ℓ = 31.
+So `[a < b]` costs **8 rounds and 86 multiplications per element** at p_bits = 61
+(reveal + 6 levels + the xor multiplication), **7 and 42** at p_bits = 31.
 
 ## 5. Truncation and fixed-point multiplication
 
 ### ΠTrunc ([LXY24] Protocol 3.1)
 
-For a sharing `v` with `|v| < 2^{ℓ−2}` and an edaBit `r`, open
-`c = v + 2^{ℓ−2} + r` — the offset moves `v` into `[0, (p−1)/2]`, where
+For a sharing `v` with `|v| < 2^{p_bits−2}` and an edaBit `r`, open
+`c = v + 2^{p_bits−2} + r` — the offset moves `v` into `[0, (p−1)/2]`, where
 [LXY24] Theorem 3.2 holds for any `r` — and compute, locally,
 
 ```
-[Trunc_d(v)] = Trunc_d(c) − [Trunc_d(r)] + (1 − [r_msb]) · c_msb · (2^{ℓ−d} − 1) − 2^{ℓ−d−2}
+[Trunc_d(v)] = Trunc_d(c) − [Trunc_d(r)] + (1 − [r_msb]) · c_msb · (2^{p_bits−d} − 1) − 2^{p_bits−d−2}
 ```
 
 `Trunc_d(c)` of the public `c` is a shift with the top `d` bits filled with
@@ -179,7 +179,7 @@ its MSB; `[Trunc_d(r)]` and `[r_msb]` are linear in the edaBit's bits; the
 middle term corrects the one wrap-around case, detected from the public MSB
 of `c`; the last undoes the offset (Corollary 3.3). The result is
 `Trunc_d(v)` up to an additive error in `{0, ±1, ±2}`, and `d` must lie in
-`1 ..= ℓ − 3`. **One round, no multiplication.** Code:
+`1 ..= p_bits − 3`. **One round, no multiplication.** Code:
 [`fixed_point::unmask`](../planner/src/ops/fixed_point.rs).
 
 ### ΠFixed-Mult in one round ([LXY24] Protocol 3.2)
@@ -187,7 +187,7 @@ of `c`; the last undoes the offset (Corollary 3.3). The result is
 `Trunc_d(x · y)` would naively be a multiplication round and then a
 truncation round. [LXY24] merges them: the multiplication already ends by
 opening a masked degree-`2t` product, so let the mask be the truncation's
-`r + 2^{ℓ−2}` and open `c = x·y + r + 2^{ℓ−2}` directly — then the local
+`r + 2^{p_bits−2}` and open `c = x·y + r + 2^{p_bits−2}` directly — then the local
 unmasking above. **One round, one multiplication.**
 
 This is the one thing an application layer cannot do for itself: opening a
@@ -197,17 +197,17 @@ primitive for it, `MaskedMultiply` (§7).
 
 ## 6. edaBits
 
-A random `r` together with sharings of its `ℓ` bits — [LXY24]'s
+A random `r` together with sharings of its `p_bits` bits — [LXY24]'s
 `ΠSolvedBits` output `([r], [r]_B)`, an edaBit in Escudero et al.'s terms.
 They are assembled locally from the engine's random bits: the engine delivers
 a random bit as a sharing of `±1` (it computes `s / sqrt(s²)` for a random
 `s`), a 0/1 bit is `[b] = (1 + [s]) / 2`, and `[r] = Σ 2^i [b_i]`. Nothing
 communicates.
 
-`r` ranges over `[0, 2^ℓ)`; the value `2^ℓ − 1 ≡ 0 (mod p)` occurs with
-probability `2^{−ℓ}` and is accepted, as [LXY24] does.
+`r` ranges over `[0, 2^p_bits)`; the value `2^p_bits − 1 ≡ 0 (mod p)` occurs with
+probability `2^{−p_bits}` and is accepted, as [LXY24] does.
 
-Every Mersenne-only op consumes one edaBit per element — `ℓ` random bits. The
+Every Mersenne-only op consumes one edaBit per element — `p_bits` random bits. The
 Planner reserves them per op-depth in fixed slices laid out from the
 declaration (§8), for the same reason the engine reserves multiplication
 masks per depth: op-depth `d` must draw the same material at every party
@@ -324,7 +324,7 @@ gates are grouped by type into op groups, one op-depth each
   (degree-0) sharing: an engine where `Multiply` is the product, `Reveal` the
   identity and `MaskedMultiply` is `x·y + mask` drives the whole Planner.
   `planner/tests/plaintext.rs` checks every op against its integer reference
-  at ℓ = 61 and 31 — the comparison family exhaustively on small values and
+  at p_bits = 61 and 31 — the comparison family exhaustively on small values and
   randomised over the domain, truncation within ±2 — and a non-Mersenne field
   running `Mul`/`Add`/`Reveal` with the rest refused. Every application's tests
   drive it through the real `Planner` the same way.
@@ -342,7 +342,7 @@ Ten parties (`t = 3`) on one machine — an Intel i7-8565U laptop, 4 cores /
 8 threads, 15 GB — over loopback TCP, compression factor 10. Each point is a
 circuit of `k` gates of one type at one level (`scripts/bench_ops.py`
 generates it), two input parties, every gate an output wire; inputs are
-uniform in `[−2^13, 2^13)`, inside every op's domain at both ℓ, with
+uniform in `[−2^13, 2^13)`, inside every op's domain at both p_bits, with
 `TRUNC`/`FMUL` dropping `d = 8` bits. Phases are the syncer's latencies at the
 `n − t`-th party to finish, each measured from the end of the previous one.
 **144 runs, 3 per point; every output of every party that reported was
@@ -350,7 +350,7 @@ checked against the integer reference and matched** — exactly for
 `MUL`/`LT`/`RELU`/`MAX`, within the ±2 of [LXY24] for `TRUNC`/`FMUL` (largest
 error seen: 2).
 
-**m61base** (ℓ = 61), median of 3 runs, milliseconds:
+**m61base** (p_bits = 61), median of 3 runs, milliseconds:
 
 | op | rounds | k | tuples verified | preprocessing | online | verification | output |
 |---|---|---|---|---|---|---|---|
@@ -379,7 +379,7 @@ error seen: 2).
 | `FMUL` | 1 | 1024 | 63,496 | 4,154 | 32 | 160 | 222 |
 | `FMUL` | 1 | 4096 | 253,960 | 13,999 | 69 | 378 | 700 |
 
-**m31base** (ℓ = 31), median of 3 runs, milliseconds:
+**m31base** (p_bits = 31), median of 3 runs, milliseconds:
 
 | op | rounds | k | tuples verified | preprocessing | online | verification | output |
 |---|---|---|---|---|---|---|---|
@@ -409,16 +409,16 @@ error seen: 2).
 | `FMUL` | 1 | 4096 | 131,080 | 6,261 | 41 | 198 | 493 |
 
 `tuples verified` includes the random-bit squarings: every random bit is one
-multiplication, so an edaBit adds ℓ tuples. `TRUNC` at `k = 4096`, ℓ = 61, is
+multiplication, so an edaBit adds p_bits tuples. `TRUNC` at `k = 4096`, p_bits = 61, is
 `4096 · 61 + 8 = 249,864` tuples and no circuit multiplication at all; `LT`
 adds its `86` per element to that.
 
 What the numbers say:
 
 - **Preprocessing dominates, and it is the random bits.** At `k = 4096`,
-  ℓ = 61, `LT` spends 21.5 s in preprocessing against 2.2 s online; `TRUNC`,
+  p_bits = 61, `LT` spends 21.5 s in preprocessing against 2.2 s online; `TRUNC`,
   which multiplies nothing in the online phase, still spends 13.9 s. Each
-  edaBit costs ℓ random bits, each a sharing, a squaring multiplication and a
+  edaBit costs p_bits random bits, each a sharing, a squaring multiplication and a
   public reconstruction, and each of those multiplications then goes through
   verification. `MUL` at the same width preprocesses in 0.9 s. Anything that
   makes random bits cheaper — or reuses them — is where the next factor is.
@@ -427,14 +427,14 @@ What the numbers say:
   (≈ 6 ms per local round), growing to 0.6 s at `k = 1024` and 2.2 s at
   `k = 4096` — 0.53 ms per comparison, 86 multiplications each. `TRUNC` and
   `FMUL` stay under 0.1 s online at every width: one round, no tree.
-- **ℓ = 31 roughly halves everything that scales with ℓ:** half the random
+- **p_bits = 31 roughly halves everything that scales with p_bits:** half the random
   bits and a 41-multiplication tree instead of 85. `LT` at `k = 4096`
   preprocesses in 9.3 s and runs online in 0.9 s, one round fewer. (Over
   `m31base` the verification is `2^{−31}`-sound — §11.)
 - **Verification and output are small and sublinear.** Tuple compression
   folds 600k tuples in ~0.7 s; the reveal check adds no round of its own.
 - **The operations cost what the plan says.** Rounds per point are 1 (`MUL`,
-  `TRUNC`, `FMUL`), 8 / 7 (`LT`), 9 / 8 (`RELU`, `MAX`) at ℓ = 61 / 31, read
+  `TRUNC`, `FMUL`), 8 / 7 (`LT`), 9 / 8 (`RELU`, `MAX`) at p_bits = 61 / 31, read
   off the Planner's own log line in every run.
 
 Two things the harness saw beyond the numbers.
@@ -462,7 +462,7 @@ rejected transfer moves nothing, and nobody learns it was rejected.
 Transfers are grouped into epochs that share those three op-depths — a new
 epoch starts when a sender has already sent or received in the current one,
 which keeps the result exactly that of running the transfers one by one — so
-an epoch costs **10 rounds at ℓ = 61 and 9 at ℓ = 31**, whatever its width.
+an epoch costs **10 rounds at p_bits = 61 and 9 at p_bits = 31**, whatever its width.
 
 `scripts/bench_erc20.py` generates a ledger of `T` transfers per epoch over
 `2T` accounts (senders and receivers disjoint), balances in `[0, 2^20)`, and
@@ -486,9 +486,9 @@ party's balances matched in every run.** Median milliseconds:
 
 - **A transfer costs two comparisons**, so it is priced like `LT` at twice the
   width: 4096 transfers verify 1.2 M tuples, the same as 8192 `LT` gates would.
-  As there, the preprocessing — ℓ random bits per comparison — is the bulk:
-  40.7 s of 47.4 s at ℓ = 61.
-- **Online, 4096 transfers take 4.3 s at ℓ = 61 and 1.8 s at ℓ = 31**, about
+  As there, the preprocessing — p_bits random bits per comparison — is the bulk:
+  40.7 s of 47.4 s at p_bits = 61.
+- **Online, 4096 transfers take 4.3 s at p_bits = 61 and 1.8 s at p_bits = 31**, about
   950 and 2,300 transfers per second once preprocessing is done.
 - **Epochs are cheap on one machine.** The same 4096 transfers as four epochs
   of 1024 — 40 rounds instead of 10 — take 4.7 s online instead of 4.3 s:
@@ -520,7 +520,7 @@ party's balances matched in every run.** Median milliseconds:
   branch.
 - **A level mixing op types is serialised.** The Planner takes one type per
   op-depth, so a circuit level with a `MUL` and an `LT` costs 1 + 8 rounds.
-- **The comparison domain is `|v| < 2^{ℓ−2}`**, i.e. `2^59` / `2^29`, and
+- **The comparison domain is `|v| < 2^{p_bits−2}`**, i.e. `2^59` / `2^29`, and
   truncation's error is `±2`, both inherited from [LXY24].
 - **No WAN numbers yet.** The measurements are 10 parties on one machine;
   latency is dominated by computation and local networking, not by the round
@@ -528,19 +528,19 @@ party's balances matched in every run.** Median milliseconds:
 
 ## 12. Appendix A — cost formulas
 
-Per element, `L = ⌈log₂ ℓ⌉` tree levels, `M(ℓ)` the tree's multiplications
-(85 at ℓ = 61, 41 at ℓ = 31):
+Per element, `L = ⌈log₂ p_bits⌉` tree levels, `M(p_bits)` the tree's multiplications
+(85 at p_bits = 61, 41 at p_bits = 31):
 
-| op | rounds | multiplications | edaBits (ℓ random bits each) | opened |
+| op | rounds | multiplications | edaBits (p_bits random bits each) | opened |
 |---|---|---|---|---|
 | `Mul` | 1 | 1 | 0 | masked product |
 | `Add` | 0 | 0 | 0 | — |
 | `Reveal` | 1 | 0 | 0 | the value |
 | `MaskReveal` | 1 | 0 | 1 | `x + r` |
-| `Truncate` | 1 | 0 | 1 | `x + 2^{ℓ−2} + r` |
-| `FixedMul` | 1 | 1 (masked) | 1 | `x·y + 2^{ℓ−2} + r` |
-| `Compare`, `ComparePub` | `L + 2` | `M(ℓ) + 1` | 1 | `2(a−b) + r` |
-| `Max`, `Min`, `…Pub` | `L + 3` | `M(ℓ) + 2` | 1 | `2(a−b) + r` |
+| `Truncate` | 1 | 0 | 1 | `x + 2^{p_bits−2} + r` |
+| `FixedMul` | 1 | 1 (masked) | 1 | `x·y + 2^{p_bits−2} + r` |
+| `Compare`, `ComparePub` | `L + 2` | `M(p_bits) + 1` | 1 | `2(a−b) + r` |
+| `Max`, `Min`, `…Pub` | `L + 3` | `M(p_bits) + 2` | 1 | `2(a−b) + r` |
 
 Engine preprocessing per multiplication: one random mask (none for a masked
 one) and `(t+1)/(2t+1)` degree-`2t` zero sharings; per reveal, none; every
@@ -550,11 +550,11 @@ multiplication, masked or not, adds one tuple to verification.
 
 | | |
 |---|---|
-| `p = 2^ℓ − 1` | the Mersenne prime; ℓ = 61 (`m61base`) or 31 (`m31base`) |
+| `p = 2^p_bits − 1` | the Mersenne prime; p_bits = 61 (`m61base`) or 31 (`m31base`) |
 | `[x]` | a degree-`t` Shamir sharing of `x` |
 | `n`, `t` | parties and corruption threshold, `n ≥ 3t + 1` |
 | signed reading | `x ≤ (p−1)/2` is `x`, larger is `x − p` |
 | `Trunc_d(v)` | `v` shifted right by `d` keeping the sign: `⌊v / 2^d⌋` towards zero |
-| edaBit | a random `[r]` with `[r_0] … [r_{ℓ−1}]` |
+| edaBit | a random `[r]` with `[r_0] … [r_{p_bits−1}]` |
 | op-depth | one Planner operation, one or more engine rounds |
 | engine depth / round | one batch the engine runs: a multiply, a reveal or a masked multiply |

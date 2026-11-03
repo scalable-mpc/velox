@@ -50,7 +50,7 @@ OPS = {
     "FMUL": (f"FMUL {D}", 2),
 }
 APPROX = {"TRUNC", "FMUL"}
-# |inputs| < 2^13 keeps every op in domain at ℓ = 31 (|v|, |x·y| < 2^29).
+# |inputs| < 2^13 keeps every op in domain at p_bits = 31 (|v|, |x·y| < 2^29).
 BOUND = 1 << 13
 
 
@@ -135,9 +135,15 @@ def syncer_path(label):
 
 def phase_latencies(label):
     """Cumulative latency (ms) at the (n−t)-th party, per phase."""
+    return phase_latencies_in(syncer_path(label))
+
+
+def phase_latencies_in(path):
+    """Cumulative latency (ms) at the (n−t)-th party, per phase, from the
+    syncer log at `path`."""
     out = {}
     try:
-        text = open(syncer_path(label)).read()
+        text = open(path).read()
     except FileNotFoundError:
         return out
     for m in re.finditer(r'latency \[([0-9, ]+)\], status \{"(\w+)"\}', text):

@@ -4,7 +4,8 @@
 //! polynomial): an engine where `Multiply` is the product, `Reveal` the
 //! identity and `MaskedMultiply` is `x·y + mask` exercises every line of the
 //! Planner except the network. Each op is checked against its integer
-//! reference, at ℓ = 61, 31 and 127.
+//! reference, at p_bits = 61, 31 and 127, and over the ML-DSA field
+//! (`q = 2^23 − 2^13 + 1`) for the ops that need only uniform masks.
 
 use std::collections::VecDeque;
 
@@ -208,7 +209,7 @@ fn comparison_family<F: ProtocolField + MersennePrimeField>(pairs: Vec<(i128, i1
         pairs.iter().map(|(a, b)| *a.min(b)).collect(),
     ];
     for (i, op_type) in types.iter().enumerate() {
-        assert_eq!(signed_all(&results[i]), want[i], "{op_type:?} at ℓ={}", F::BITS);
+        assert_eq!(signed_all(&results[i]), want[i], "{op_type:?} at p_bits={}", F::BITS);
     }
 }
 
@@ -235,14 +236,14 @@ fn comparison_family_randomised_over_the_domain() {
 }
 
 fn truncation<F: ProtocolField + MersennePrimeField>(seed: u64) {
-    let ell = F::BITS;
-    let bound = 1i128 << (ell - 2);
+    let p_bits = F::BITS;
+    let bound = 1i128 << (p_bits - 2);
     let mut rng = Rng(seed);
-    for d in [1usize, 8, 16, ell - 3] {
+    for d in [1usize, 8, 16, p_bits - 3] {
         let mut xs: Vec<i128> = (0..64).map(|_| rng.signed(bound)).collect();
         xs.extend([0, 1, -1, bound - 1, -bound, (1 << d) - 1, -((1 << d) - 1), 1 << d, -(1 << d)]);
         // Factors whose product stays in the domain.
-        let half = 1i128 << ((ell - 2) / 2);
+        let half = 1i128 << ((p_bits - 2) / 2);
         let pairs: Vec<(i128, i128)> = (0..64).map(|_| (rng.signed(half), rng.signed(half))).collect();
         let (x2, p2) = (xs.clone(), pairs.clone());
         let ops = vec![OpParams::new(OpType::Truncate, xs.len()), OpParams::new(OpType::FixedMul, pairs.len())];
@@ -264,11 +265,11 @@ fn truncation<F: ProtocolField + MersennePrimeField>(seed: u64) {
         let results = &planner.app().results;
         for (x, got) in xs.iter().zip(signed_all(&results[0])) {
             let want = trunc_ref(*x, d);
-            assert!((got - want).abs() <= 2, "Trunc_{d}({x}) = {got}, want {want} ± 2 at ℓ={ell}");
+            assert!((got - want).abs() <= 2, "Trunc_{d}({x}) = {got}, want {want} ± 2 at p_bits={p_bits}");
         }
         for ((x, y), got) in pairs.iter().zip(signed_all(&results[1])) {
             let want = trunc_ref(x * y, d);
-            assert!((got - want).abs() <= 2, "FixedMul_{d}({x}, {y}) = {got}, want {want} ± 2 at ℓ={ell}");
+            assert!((got - want).abs() <= 2, "FixedMul_{d}({x}, {y}) = {got}, want {want} ± 2 at p_bits={p_bits}");
         }
     }
 }
@@ -344,6 +345,204 @@ fn a_non_mersenne_field_runs_mul_add_and_reveal() {
         let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(op_type, 1)], 0));
         let err = Planner::new(script).err().expect("refused").to_string();
         assert!(err.contains("Mersenne"), "{op_type:?}: {err}");
+    }
+}
+
+/// Over the ML-DSA field, `q = 2^23 − 2^13 + 1`, `MaskReveal` draws masks
+/// from the uniform-mask prefix: six engine depths before op-depth 1, over
+/// the candidates. Every mask is below `q`, its bits are 0/1 and compose it,
+/// and `c − r` recovers `x`. 3,000 masks make about 3 rejections likely.
+#[test]
+fn ml_dsa_field_masks_come_from_the_uniform_mask_prefix() {
+    type F = fields::MlDsaField;
+    const Q: u128 = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+    const N: usize = 3000;
+    let xs: Vec<E<F>> = (0..N as u64).map(|i| E::<F>::from(i * 2797 % Q as u64)).collect();
+    let x_op = xs.clone();
+    let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(OpType::MaskReveal, N)], 0))
+        .then(move |_| OpDepthInput::Op { depth: 1, op: Op::MaskReveal { x: x_op.clone() } });
+    let mut planner = Planner::new(script).unwrap();
+    let candidates = planner.plan().mask_test().unwrap().1;
+    assert_eq!(candidates, N + 40 + 24);
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, 23));
+    let c = candidates;
+    assert_eq!(
+        batches,
+        vec![
+            Batch::Multiply(1, c),
+            Batch::Multiply(2, 2 * c),
+            Batch::Multiply(3, c),
+            Batch::Multiply(4, c),
+            Batch::Multiply(5, c),
+            Batch::Reveal(6, c),
+            Batch::Reveal(7, N),
+        ]
+    );
+    let OpResult::Masked { public, mask } = &planner.app().results[0] else { panic!("MaskReveal returns Masked") };
+    // The candidates, rebuilt from the plaintext engine's bits (the
+    // Planner's come first): the kept masks are the first N below q.
+    let mut rng = Rng(23 | 1);
+    let candidate_values: Vec<u128> =
+        (0..c).map(|_| (0..23).map(|i| ((rng.next() & 1) as u128) << i).sum()).collect();
+    let good: Vec<u128> = candidate_values.iter().copied().filter(|r| *r < Q).take(N).collect();
+    assert!(candidate_values.iter().any(|r| *r >= Q), "this seed exercises a rejection");
+    assert_eq!(mask.iter().map(|r| F::canonical_u128(&r.value).unwrap()).collect::<Vec<_>>(), good);
+    for ((opened, r), x) in public.iter().zip(mask).zip(&xs) {
+        assert_eq!(&(opened - &r.value), x, "c − r recovers x");
+        assert_eq!(r.bits.len(), 23);
+        let bits: Vec<u128> = r.bits.iter().map(|b| F::canonical_u128(b).unwrap()).collect();
+        assert!(bits.iter().all(|b| *b <= 1), "bits are 0/1");
+        let composed: u128 = bits.iter().enumerate().map(|(i, b)| b << i).sum();
+        assert!(composed < Q, "the mask is below q");
+        assert_eq!(F::canonical_u128(&r.value), Some(composed));
+    }
+}
+
+/// `LessThanPub` over the ML-DSA field, through the full Planner: the
+/// uniform-mask prefix, one reveal, then the two 23-bit carry trees side by
+/// side at five engine depths. Each result is exactly `[x < c]`, also at the
+/// edges of `[0, q)` and around an ML-DSA rejection bound.
+#[test]
+fn ml_dsa_field_less_than_pub_is_exact() {
+    type F = fields::MlDsaField;
+    const Q: u128 = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+    let edges = [0, 1, Q / 2, Q - 2, Q - 1];
+    let mut pairs: Vec<(u128, u128)> = edges.iter().flat_map(|&x| edges.map(|c| (x, c))).collect();
+    // ML-DSA-65: 2(γ1 − β) − 1 with γ1 = 2^19, β = 196.
+    let bound = 2 * ((1 << 19) - 196) - 1;
+    pairs.extend((0..20).map(|i| (bound - 10 + i, bound)));
+    let mut rng = Rng(0x51ed);
+    pairs.extend((0..500).map(|_| ((rng.next() as u128) % Q, (rng.next() as u128) % Q)));
+    let n = pairs.len();
+    let x: Vec<E<F>> = pairs.iter().map(|&(x, _)| from_u128::<F>(x)).collect();
+    let c: Vec<E<F>> = pairs.iter().map(|&(_, c)| from_u128::<F>(c)).collect();
+    let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(OpType::LessThanPub, n)], 0))
+        .then(move |_| OpDepthInput::Op { depth: 1, op: Op::LessThanPub { x: x.clone(), c: c.clone() } });
+    let mut planner = Planner::new(script).unwrap();
+    let candidates = planner.plan().mask_test().unwrap().1;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, 41));
+
+    let mut expected = vec![
+        Batch::Multiply(1, candidates),
+        Batch::Multiply(2, 2 * candidates),
+        Batch::Multiply(3, candidates),
+        Batch::Multiply(4, candidates),
+        Batch::Multiply(5, candidates),
+        Batch::Reveal(6, candidates),
+        Batch::Reveal(7, n),
+    ];
+    let widths = CarryTree::new(23).level_widths();
+    assert_eq!(widths.len(), 5);
+    expected.extend(widths.iter().enumerate().map(|(level, w)| Batch::Multiply(8 + level, 2 * w * n)));
+    assert_eq!(batches, expected);
+
+    let OpResult::Shares(out) = &planner.app().results[0] else { panic!("LessThanPub returns shares") };
+    for ((x, c), got) in pairs.iter().zip(out) {
+        assert_eq!(F::canonical_u128(got), Some(u128::from(x < c)), "x = {x}, c = {c}");
+    }
+}
+
+/// `CanonicalMod2m` with the ML-DSA `m = 4` over the ML-DSA field, through
+/// the full Planner: the uniform-mask prefix (this seed rejects 2 of the
+/// 645 candidates), one reveal, five levels of the 23-bit and 4-bit trees side
+/// by side, and the selection. Each result is exactly `x mod 16`, also for
+/// `x = −16·w + (q − 1)/2` as ML-DSA computes it.
+#[test]
+fn ml_dsa_field_canonical_mod2m_is_exact() {
+    type F = fields::MlDsaField;
+    const Q: u128 = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+    const N: usize = 600;
+    const SEED: u64 = 4;
+    let mut values: Vec<u128> = vec![0, 1, 15, 16, 17, Q / 2, Q - 17, Q - 16, Q - 2, Q - 1];
+    let mut rng = Rng(0xc0de);
+    values.extend((0..N - values.len()).map(|i| {
+        let w = (rng.next() as u128) % Q;
+        if i % 2 == 0 { w } else { ((Q - 16) * w + (Q - 1) / 2) % Q }
+    }));
+    let x: Vec<E<F>> = values.iter().map(|&v| from_u128::<F>(v)).collect();
+    let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(OpType::CanonicalMod2m { m: 4 }, N)], 0))
+        .then(move |_| OpDepthInput::Op { depth: 1, op: Op::CanonicalMod2m { x: x.clone(), m: 4 } });
+    let mut planner = Planner::new(script).unwrap();
+    let candidates = planner.plan().mask_test().unwrap().1;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, SEED));
+
+    // The run's candidates, rebuilt from the plaintext engine's bits: 2 of
+    // them are at or above q.
+    let mut bits = Rng(SEED | 1);
+    let has_rejected_candidate = (0..candidates).any(|_| (0..23).map(|i| ((bits.next() & 1) as u128) << i).sum::<u128>() >= Q);
+    assert!(has_rejected_candidate, "this seed exercises a rejection");
+
+    let mut expected = vec![
+        Batch::Multiply(1, candidates),
+        Batch::Multiply(2, 2 * candidates),
+        Batch::Multiply(3, candidates),
+        Batch::Multiply(4, candidates),
+        Batch::Multiply(5, candidates),
+        Batch::Reveal(6, candidates),
+        Batch::Reveal(7, N),
+    ];
+    let (wrap, low) = (CarryTree::new(23).level_widths(), CarryTree::new(4).level_widths());
+    expected.extend((0..wrap.len()).map(|level| Batch::Multiply(8 + level, (wrap[level] + 2 * low.get(level).copied().unwrap_or(0)) * N)));
+    expected.push(Batch::Multiply(8 + wrap.len(), N));
+    assert_eq!(batches, expected);
+
+    let OpResult::Shares(out) = &planner.app().results[0] else { panic!("CanonicalMod2m returns shares") };
+    for (v, got) in values.iter().zip(out) {
+        assert_eq!(F::canonical_u128(got), Some(v % 16), "x = {v}");
+    }
+}
+
+/// `CanonicalMod` with the ML-DSA-44 `d = 44` over the ML-DSA field, through
+/// the full Planner: the uniform-mask prefix (this seed rejects 2 of the
+/// 645 candidates), one reveal, five levels of the wrap tree and the
+/// `y = g^r` product tree side by side, six power steps, and the selection.
+/// Each result is exactly `x mod 44`, also for `x = −44·w + (q − 1)/2` as
+/// ML-DSA-44 computes it.
+#[test]
+fn ml_dsa_field_canonical_mod_is_exact() {
+    type F = fields::MlDsaField;
+    const Q: u128 = fields::ml_dsa::ML_DSA_PRIME_FIELD_ORDER as u128;
+    const N: usize = 600;
+    const SEED: u64 = 4;
+    let mut values: Vec<u128> = vec![0, 1, 43, 44, 45, Q / 2, Q - 45, Q - 44, Q - 2, Q - 1];
+    let mut rng = Rng(0xbead);
+    values.extend((0..N - values.len()).map(|i| {
+        let w = (rng.next() as u128) % Q;
+        if i % 2 == 0 { w } else { ((Q - 44) * w + (Q - 1) / 2) % Q }
+    }));
+    let x: Vec<E<F>> = values.iter().map(|&v| from_u128::<F>(v)).collect();
+    let script = Script::<F>::new(PlannerCounts::new(vec![OpParams::new(OpType::CanonicalMod { d: 44 }, N)], 0))
+        .then(move |_| OpDepthInput::Op { depth: 1, op: Op::CanonicalMod { x: x.clone(), d: 44 } });
+    let mut planner = Planner::new(script).unwrap();
+    let candidates = planner.plan().mask_test().unwrap().1;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let batches = rt.block_on(run(&mut planner, SEED));
+
+    let mut expected = vec![
+        Batch::Multiply(1, candidates),
+        Batch::Multiply(2, 2 * candidates),
+        Batch::Multiply(3, candidates),
+        Batch::Multiply(4, candidates),
+        Batch::Multiply(5, candidates),
+        Batch::Reveal(6, candidates),
+        Batch::Reveal(7, N),
+    ];
+    // The wrap tree and the product tree of 23 factors (11, 6, 3, 1, 1).
+    let wrap = CarryTree::new(23).level_widths();
+    let product = [11, 6, 3, 1, 1];
+    assert_eq!(wrap.len(), 5);
+    expected.extend((0..5).map(|level| Batch::Multiply(8 + level, (wrap[level] + product[level]) * N)));
+    // The powers y^2..y^43, then the selection.
+    expected.extend([1, 2, 4, 8, 16, 11].iter().enumerate().map(|(j, w)| Batch::Multiply(13 + j, w * N)));
+    expected.push(Batch::Multiply(19, N));
+    assert_eq!(batches, expected);
+
+    let OpResult::Shares(out) = &planner.app().results[0] else { panic!("CanonicalMod returns shares") };
+    for (v, got) in values.iter().zip(out) {
+        assert_eq!(F::canonical_u128(got), Some(v % 44), "x = {v}");
     }
 }
 
@@ -465,7 +664,7 @@ fn mod2m<F: ProtocolField + MersennePrimeField>(cases: Vec<(usize, Vec<u128>)>, 
     for ((m, xs), result) in cases.iter().zip(&planner.app().results) {
         let OpResult::Shares(got) = result else { panic!("Mod2m returns shares") };
         for (x, e) in xs.iter().zip(got) {
-            assert_eq!(F::to_canonical_u128(e), x % (1u128 << m), "{x} mod 2^{m} at ℓ={}", F::BITS);
+            assert_eq!(F::to_canonical_u128(e), x % (1u128 << m), "{x} mod 2^{m} at p_bits={}", F::BITS);
         }
     }
 }

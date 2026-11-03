@@ -15,8 +15,12 @@
 //!
 //! 1. a header giving the semantics, the rounds, the steps, and the
 //!    preprocessing per element;
-//! 2. `steps(ell)`: the op's steps — the one thing the plan (which sizes
-//!    the engine's preprocessing from them) and the op share;
+//! 2. `steps(..)`: the op's steps — the one thing the plan (which sizes
+//!    the engine's preprocessing from them) and the op share. Its argument
+//!    is what the step count depends on: the edaBit width for the
+//!    comparison family and `LessThanPub`,
+//!    `m` for `Mod2m`, the prime's `MaskShape` for the uniform-mask prefix,
+//!    and none for the one-step ops;
 //! 3. the state struct — inputs, preprocessing drawn, intermediates, output,
 //!    in step order;
 //! 4. `impl Operation`: `operands` and `on_step_complete` as a `match` on the
@@ -26,6 +30,11 @@
 //! [`drelu`] (reveal → carry tree → xor, the front of every comparison) and
 //! [`fixed_point`] (the ΠTrunc local steps, the back of both truncating
 //! ops).
+//!
+//! One operation is not an application op: [`uniform_mask`], the prefix
+//! that the Planner runs itself before op-depth 1 over a prime
+//! `2^p_bits_0 − 2^p_bits_1 + 1`. It keeps the template, but no `Op` variant
+//! builds it.
 //!
 //! Public operands are `FieldElement`s like sharings; under Shamir the
 //! arithmetic on them is identical, which is why every `Pub` variant is the
@@ -41,10 +50,13 @@ use crate::{
 };
 
 pub mod add;
+pub mod canonical_mod;
+pub mod canonical_mod2m;
 pub mod compare;
 pub mod drelu;
 pub mod fixed_mul;
 pub mod fixed_point;
+pub mod less_than_pub;
 pub mod mask_reveal;
 pub mod max;
 pub mod min;
@@ -52,6 +64,7 @@ pub mod mod2m;
 pub mod mul;
 pub mod reveal;
 pub mod truncate;
+pub mod uniform_mask;
 
 /// Shorthand every op file uses.
 pub(crate) type E<F> = FieldElement<F>;
@@ -79,11 +92,11 @@ impl OpStep {
     }
 }
 
-/// The steps of an op type. `ell` is `Some(ℓ)` over a Mersenne prime
-/// field; the comparison family's steps depend on it, and `Plan::compile`
-/// has already refused those types when it is `None`.
-pub fn steps_of(op_type: OpType, ell: Option<usize>) -> Vec<OpStep> {
-    let ell = || ell.expect("a Mersenne-only op type planned over a non-Mersenne field");
+/// The steps of an op type. `mask_bits` is `Plan::mask_bits`, the width of
+/// one edaBit, and the comparison family's carry tree runs over these bits.
+/// `Plan::compile` has already refused the types that the field cannot run.
+pub fn steps_of(op_type: OpType, mask_bits: Option<usize>) -> Vec<OpStep> {
+    let bits = || mask_bits.expect("an op type with edaBits planned over a field without uniform masks");
     match op_type {
         OpType::Mul => mul::steps(),
         OpType::Add => add::steps(),
@@ -92,9 +105,12 @@ pub fn steps_of(op_type: OpType, ell: Option<usize>) -> Vec<OpStep> {
         OpType::Truncate => truncate::steps(),
         OpType::FixedMul => fixed_mul::steps(),
         OpType::Mod2m { m } => mod2m::steps(m),
-        OpType::Compare | OpType::ComparePub => compare::steps(ell()),
-        OpType::Max | OpType::MaxPub => max::steps(ell()),
-        OpType::Min | OpType::MinPub => min::steps(ell()),
+        OpType::Compare | OpType::ComparePub => compare::steps(bits()),
+        OpType::Max | OpType::MaxPub => max::steps(bits()),
+        OpType::Min | OpType::MinPub => min::steps(bits()),
+        OpType::LessThanPub => less_than_pub::steps(bits()),
+        OpType::CanonicalMod2m { m } => canonical_mod2m::steps(bits(), m),
+        OpType::CanonicalMod { d } => canonical_mod::steps(bits(), d),
     }
 }
 
@@ -147,10 +163,12 @@ pub trait Operation<F: ProtocolField>: Send {
 }
 
 /// Build the operation for `op`, drawing its edaBits from `edabits` in
-/// element order.
+/// element order. `mask_bits` is `Plan::mask_bits`, the edaBit width that
+/// `LessThanPub` gives to its carry trees.
 pub fn build<F: ProtocolField>(
     op: Op<F>,
     edabits: &mut impl Iterator<Item = EdaBit<F>>,
+    mask_bits: Option<usize>,
 ) -> Result<Box<dyn Operation<F>>> {
     let n = op.len();
     let mut draw = |count: usize| -> Result<Vec<EdaBit<F>>> {
@@ -171,6 +189,18 @@ pub fn build<F: ProtocolField>(
         Op::Compare { a, b } | Op::ComparePub { a, c: b } => Box::new(compare::Compare::new(a, b, draw(n)?)),
         Op::Max { a, b } | Op::MaxPub { a, c: b } => Box::new(max::Max::new(a, b, draw(n)?)),
         Op::Min { a, b } | Op::MinPub { a, c: b } => Box::new(min::Min::new(a, b, draw(n)?)),
+        Op::LessThanPub { x, c } => {
+            let bits = mask_bits.expect("validated: the field has uniform masks");
+            Box::new(less_than_pub::LessThanPub::new(x, c, bits, draw(n)?))
+        }
+        Op::CanonicalMod2m { x, m } => {
+            let bits = mask_bits.expect("validated: the field has uniform masks");
+            Box::new(canonical_mod2m::CanonicalMod2m::new(x, m, bits, draw(n)?))
+        }
+        Op::CanonicalMod { x, d } => {
+            let bits = mask_bits.expect("validated: the field has uniform masks");
+            Box::new(canonical_mod::CanonicalMod::new(x, d, bits, draw(n)?))
+        }
     })
 }
 

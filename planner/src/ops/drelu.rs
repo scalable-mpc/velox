@@ -1,8 +1,8 @@
 //! The comparison pipeline every comparing op shares: `DReLU(v) = [v ≥ 0]`
-//! for a sharing `v` with `|v| < 2^{ℓ−1}` (Liu et al. Protocol 5.1, with the
-//! bitwise less-than replaced by the carry tree).
+//! for a sharing `v` with `|v| < 2^{p_bits−1}` (Liu et al. Protocol 5.1, with
+//! the bitwise less-than replaced by the carry tree).
 //!
-//! Steps, `L` being the tree's levels (6 at ℓ = 61):
+//! Steps, `L` being the tree's levels (6 at p_bits = 61):
 //!
 //! - step `0`, reveal: open `y = 2v + r`, `r` an edaBit. Over a Mersenne
 //!   prime `msb(v) = lsb(2v)`, and `lsb(2v) = y_0 ⊕ r_0 ⊕ [y < r]`.
@@ -26,8 +26,8 @@ use crate::primitives::{
 
 use super::{EngineOperationType, EngineOperands, OpStep, E};
 
-pub fn steps(ell: usize) -> Vec<OpStep> {
-    let tree = CarryTree::new(ell);
+pub fn steps(p_bits: usize) -> Vec<OpStep> {
+    let tree = CarryTree::new(p_bits);
     let mut steps = vec![OpStep::new(EngineOperationType::Reveal, 1)];
     steps.extend(tree.level_widths().into_iter().map(|w| OpStep::new(EngineOperationType::Multiply, w)));
     steps.push(OpStep::new(EngineOperationType::Multiply, 1));
@@ -50,7 +50,7 @@ pub struct DReLU<F: ProtocolField> {
 
 impl<F: ProtocolField> DReLU<F> {
     pub fn new(v: Vec<E<F>>, eda: Vec<EdaBit<F>>) -> Self {
-        Self { tree: CarryTree::new(mersenne::ell::<F>()), v, eda, slots: Vec::new(), b: Vec::new(), c: Vec::new(), out: Vec::new() }
+        Self { tree: CarryTree::new(mersenne::p_bits::<F>()), v, eda, slots: Vec::new(), b: Vec::new(), c: Vec::new(), out: Vec::new() }
     }
 
     /// Steps in the pipeline: the reveal, the levels, the xor.
@@ -81,7 +81,7 @@ impl<F: ProtocolField> DReLU<F> {
             // The reveal: `y` is public — its bits seed the tree, its LSB the xor.
             0 => {
                 for (y, eda) in results.iter().zip(self.eda.iter()) {
-                    let y_bits: Vec<u64> = (0..mersenne::ell::<F>()).map(|i| mersenne::bit::<F>(y, i)).collect();
+                    let y_bits: Vec<u64> = (0..mersenne::p_bits::<F>()).map(|i| mersenne::bit::<F>(y, i)).collect();
                     self.b.push(if y_bits[0] == 1 { &one - &eda.bits[0] } else { eda.bits[0].clone() });
                     let not_r: Vec<E<F>> = eda.bits.iter().map(|r| &one - r).collect();
                     let slots = self.tree.leaves(&y_bits, &not_r);

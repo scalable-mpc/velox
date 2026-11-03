@@ -195,9 +195,11 @@ impl ProtocolField for Mersenne61Field {
     /// the degree-4 extension.
     type Ext = Mersenne61Degree4ExtensionField;
 
+    const PRIME_MODULUS: Option<u128> = Some(<Self as MersennePrimeField>::MODULUS);
+
     const MERSENNE_BITS: Option<usize> = Some(<Self as MersennePrimeField>::BITS);
 
-    fn mersenne_canonical(elem: &FieldElement<Self>) -> Option<u128> {
+    fn canonical_u128(elem: &FieldElement<Self>) -> Option<u128> {
         Some(<Self as MersennePrimeField>::to_canonical_u128(elem))
     }
 

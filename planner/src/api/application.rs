@@ -80,7 +80,9 @@ impl<F: ProtocolField> std::fmt::Debug for OpDepthInput<F> {
 pub enum OpResult<F: ProtocolField> {
     Shares(Vec<FieldElement<F>>),
     Public(Vec<FieldElement<F>>),
-    /// `MaskReveal`: the public `x + r` and `r`'s edaBit, elementwise.
+    /// `MaskReveal`: the public `x + r` and `r`'s edaBit, elementwise. (The
+    /// Planner's uniform-mask prefix uses it too: the opened test value and
+    /// the candidate.)
     Masked { public: Vec<FieldElement<F>>, mask: Vec<EdaBit<F>> },
 }
 
@@ -114,9 +116,10 @@ impl<F: ProtocolField> std::fmt::Debug for OpResult<F> {
 /// (`c`) are field elements every party holds in the clear.
 ///
 /// Domains: `Compare`, `Max`, `Min` and their `Pub` variants need
-/// `|a|, |b| < 2^{ℓ−2}` read as signed integers, so that `a − b` keeps its
-/// sign in the top bit; `Truncate` and `FixedMul` need `|x|, |x·y| <
-/// 2^{ℓ−2}` and produce `Trunc_d(·)` up to `±2` (Liu et al. §3).
+/// `|a|, |b| < 2^{p_bits−2}` read as signed integers, so that `a − b` keeps
+/// its sign in the top bit; `Truncate` and `FixedMul` need
+/// `|x|, |x·y| < 2^{p_bits−2}` and produce `Trunc_d(·)` up to `±2` (Liu et
+/// al. §3).
 pub enum Op<F: ProtocolField> {
     /// `x · y`, one round.
     Mul { x: Vec<FieldElement<F>>, y: Vec<FieldElement<F>> },
@@ -144,9 +147,21 @@ pub enum Op<F: ProtocolField> {
     /// `Trunc_d(x · y)` in one round: a fixed-point multiplication with `d`
     /// fractional bits.
     FixedMul { x: Vec<FieldElement<F>>, y: Vec<FieldElement<F>>, d: usize },
-    /// `x mod 2^m`, exactly, for an unsigned `0 ≤ x < 2^{ℓ−1−κ}` (κ = 40);
-    /// `1 ≤ m ≤ ℓ − 1 − κ`.
+    /// `x mod 2^m`, exactly, for an unsigned `0 ≤ x < 2^{p_bits−1−κ}`
+    /// (κ = 40); `1 ≤ m ≤ p_bits − 1 − κ`.
     Mod2m { x: Vec<FieldElement<F>>, m: usize },
+    /// `[x < c]` for public `c`, as a sharing of 0 or 1, with `x` and `c`
+    /// read as integers in `[0, p)`. Exact, with no bound on `x`. Needs
+    /// uniform masks: it runs over the ML-DSA field and the Mersenne fields.
+    LessThanPub { x: Vec<FieldElement<F>>, c: Vec<FieldElement<F>> },
+    /// `x mod 2^m`, exactly, for any `x` read as an integer in `[0, p)`;
+    /// `1 ≤ m < mask_bits` with `mask_bits` the edaBit width. Needs uniform
+    /// masks. The `w1` of ML-DSA-65 and 87 uses it with `m = 4`.
+    CanonicalMod2m { x: Vec<FieldElement<F>>, m: usize },
+    /// `x mod d`, exactly, for any `x` read as an integer in `[0, p)` and a
+    /// public `d ≥ 2` that divides `p − 1`. Needs uniform masks. The `w1` of
+    /// ML-DSA-44 uses it with `d = 44`.
+    CanonicalMod { x: Vec<FieldElement<F>>, d: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -166,21 +181,60 @@ pub enum OpType {
     /// `m` is part of the type: the carry tree's levels, and so the engine
     /// rounds the plan reserves, depend on it.
     Mod2m { m: usize },
+    LessThanPub,
+    /// `m` is part of the type, as for `Mod2m`.
+    CanonicalMod2m { m: usize },
+    /// `d` is part of the type: the power steps depend on it.
+    CanonicalMod { d: usize },
+}
+
+/// What a field must have to run an op type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldClass {
+    /// Any protocol field: `Mul`, `Add`, `Reveal`.
+    Any,
+    /// A prime field with uniform masks in `[0, p)` and their bits: a
+    /// Mersenne prime, or a prime `p = 2^p_bits_0 − 2^p_bits_1 + 1` (the
+    /// uniform-mask prefix). `MaskReveal`, `LessThanPub`, `CanonicalMod2m`,
+    /// `CanonicalMod`.
+    UniformMasks,
+    /// A Mersenne prime field `p = 2^p_bits − 1`: the ops that use its two
+    /// facts (`p` is all ones, `p` is odd).
+    Mersenne,
 }
 
 impl OpType {
-    /// True for the ops that need a Mersenne prime field `p = 2^ℓ − 1`:
-    /// everything that reads the bits of a public value. `Mul`, `Add` and
-    /// `Reveal` run over any protocol field.
-    pub fn needs_mersenne(self) -> bool {
-        !matches!(self, OpType::Mul | OpType::Add | OpType::Reveal)
+    /// What a field must have to run this op type.
+    pub fn field_class(self) -> FieldClass {
+        match self {
+            OpType::Mul | OpType::Add | OpType::Reveal => FieldClass::Any,
+            OpType::MaskReveal | OpType::LessThanPub | OpType::CanonicalMod2m { .. } | OpType::CanonicalMod { .. } => {
+                FieldClass::UniformMasks
+            }
+            _ => FieldClass::Mersenne,
+        }
     }
 
-    /// edaBits an element of this type consumes: one for anything that
-    /// blinds a value with a random `r` it also needs the bits of — the
-    /// same set as [`needs_mersenne`](Self::needs_mersenne).
+    /// edaBits an element of this type consumes: one for every op that
+    /// blinds a value with a random `r` it also needs the bits of.
     pub fn edabits_per_element(self) -> usize {
-        usize::from(self.needs_mersenne())
+        usize::from(self.field_class() != FieldClass::Any)
+    }
+
+    /// Refuse the type, by name, when the field cannot run it. `p_bits` is
+    /// `F::MERSENNE_BITS`: the bits of `p = 2^p_bits − 1` over a Mersenne
+    /// prime field, `None` otherwise; `has_masks` says whether the field has
+    /// uniform masks.
+    pub fn check_field(self, p_bits: Option<usize>, has_masks: bool) -> Result<()> {
+        match self.field_class() {
+            FieldClass::Mersenne if p_bits.is_none() => {
+                bail!("{:?} needs a Mersenne prime field (m61base, m31base or m127base)", self)
+            }
+            FieldClass::UniformMasks if !has_masks => {
+                bail!("{:?} needs uniform masks: a Mersenne prime field or a prime p = 2^p_bits_0 − 2^p_bits_1 + 1", self)
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -200,6 +254,9 @@ impl<F: ProtocolField> Op<F> {
             Op::Truncate { .. } => OpType::Truncate,
             Op::FixedMul { .. } => OpType::FixedMul,
             Op::Mod2m { m, .. } => OpType::Mod2m { m: *m },
+            Op::LessThanPub { .. } => OpType::LessThanPub,
+            Op::CanonicalMod2m { m, .. } => OpType::CanonicalMod2m { m: *m },
+            Op::CanonicalMod { d, .. } => OpType::CanonicalMod { d: *d },
         }
     }
 
@@ -207,7 +264,8 @@ impl<F: ProtocolField> Op<F> {
     pub fn len(&self) -> usize {
         match self {
             Op::Mul { x, .. } | Op::Add { x, .. } | Op::Reveal { x } | Op::MaskReveal { x }
-            | Op::Truncate { x, .. } | Op::FixedMul { x, .. } | Op::Mod2m { x, .. } => x.len(),
+            | Op::Truncate { x, .. } | Op::FixedMul { x, .. } | Op::Mod2m { x, .. } | Op::LessThanPub { x, .. }
+            | Op::CanonicalMod2m { x, .. } | Op::CanonicalMod { x, .. } => x.len(),
             Op::Compare { a, .. } | Op::ComparePub { a, .. } | Op::Max { a, .. } | Op::Min { a, .. }
             | Op::MaxPub { a, .. } | Op::MinPub { a, .. } => a.len(),
         }
@@ -223,12 +281,11 @@ impl<F: ProtocolField> Op<F> {
     }
 
     /// Operand vectors agree in length, the field can run the op, and `d` is
-    /// in range for `ℓ` bits. `ell` is `Some(ℓ)` over a Mersenne prime field
-    /// and `None` over any other.
-    pub fn validate(&self, ell: Option<usize>) -> Result<()> {
-        if self.op_type().needs_mersenne() && ell.is_none() {
-            bail!("{:?} needs a Mersenne prime field (m61base, m31base or m127base)", self.op_type());
-        }
+    /// in range. `p_bits` is `F::MERSENNE_BITS`: the bits of
+    /// `p = 2^p_bits − 1` over a Mersenne prime field, `None` over any other;
+    /// `has_masks` says whether the field has uniform masks.
+    pub fn validate(&self, p_bits: Option<usize>, has_masks: bool) -> Result<()> {
+        self.op_type().check_field(p_bits, has_masks)?;
         let pair = |l: usize, r: usize, what: &str| -> Result<()> {
             if l != r {
                 bail!("{:?}: {} operands of length {} and {}", self.op_type(), what, l, r);
@@ -240,19 +297,23 @@ impl<F: ProtocolField> Op<F> {
             Op::Compare { a, b } | Op::Max { a, b } | Op::Min { a, b } => pair(a.len(), b.len(), "a, b"),
             Op::ComparePub { a, c } | Op::MaxPub { a, c } | Op::MinPub { a, c } => pair(a.len(), c.len(), "a, c"),
             Op::Reveal { .. } | Op::MaskReveal { .. } => Ok(()),
-            Op::Truncate { d, .. } => Self::check_d(*d, ell.expect("checked above")),
+            Op::Truncate { d, .. } => Self::check_d(*d, p_bits.expect("checked above")),
             Op::FixedMul { x, y, d } => {
                 pair(x.len(), y.len(), "x, y")?;
-                Self::check_d(*d, ell.expect("checked above"))
+                Self::check_d(*d, p_bits.expect("checked above"))
             }
-            Op::Mod2m { m, .. } => mod2m::check_m(*m, ell.expect("checked above")),
+            Op::Mod2m { m, .. } => mod2m::check_m(*m, p_bits.expect("checked above")),
+            Op::LessThanPub { x, c } => pair(x.len(), c.len(), "x, c"),
+            // `covers` makes the run use the declared `m`, and `Plan::compile` checked it.
+            Op::CanonicalMod2m { .. } | Op::CanonicalMod { .. } => Ok(()),
         }
     }
 
-    fn check_d(d: usize, ell: usize) -> Result<()> {
-        // ΠTrunc's correction term is 2^{ℓ−d−2}, so d ≤ ℓ − 3 keeps it ≥ 2.
-        if d == 0 || d + 2 >= ell {
-            bail!("truncation by {} bits is outside 1..={} for an {}-bit field", d, ell - 3, ell);
+    fn check_d(d: usize, p_bits: usize) -> Result<()> {
+        // ΠTrunc's correction term is 2^{p_bits−d−2}, so d ≤ p_bits − 3
+        // keeps it ≥ 2.
+        if d == 0 || d + 2 >= p_bits {
+            bail!("truncation by {} bits is outside 1..={} for an {}-bit field", d, p_bits - 3, p_bits);
         }
         Ok(())
     }
@@ -264,6 +325,8 @@ impl<F: ProtocolField> std::fmt::Debug for Op<F> {
         match self {
             Op::Truncate { d, .. } | Op::FixedMul { d, .. } => write!(f, "{:?}({} elements, d={})", self.op_type(), self.len(), d),
             Op::Mod2m { m, .. } => write!(f, "Mod2m({} elements, m={})", self.len(), m),
+            Op::CanonicalMod2m { m, .. } => write!(f, "CanonicalMod2m({} elements, m={})", self.len(), m),
+            Op::CanonicalMod { d, .. } => write!(f, "CanonicalMod({} elements, d={})", self.len(), d),
             _ => write!(f, "{:?}({} elements)", self.op_type(), self.len()),
         }
     }
@@ -340,36 +403,48 @@ mod tests {
     #[test]
     fn validation() {
         let m = Some(61);
-        assert!(Op::<F>::Mul { x: v(2), y: v(3) }.validate(m).is_err());
-        assert!(Op::<F>::Compare { a: v(2), b: v(2) }.validate(m).is_ok());
-        assert!(Op::<F>::Truncate { x: v(1), d: 0 }.validate(m).is_err());
-        assert!(Op::<F>::Truncate { x: v(1), d: 58 }.validate(m).is_ok());
-        assert!(Op::<F>::Truncate { x: v(1), d: 59 }.validate(m).is_err());
-        assert!(Op::<F>::FixedMul { x: v(1), y: v(1), d: 16 }.validate(m).is_ok());
-        assert!(Op::<F>::FixedMul { x: v(1), y: v(2), d: 16 }.validate(m).is_err());
+        assert!(Op::<F>::Mul { x: v(2), y: v(3) }.validate(m, true).is_err());
+        assert!(Op::<F>::Compare { a: v(2), b: v(2) }.validate(m, true).is_ok());
+        assert!(Op::<F>::Truncate { x: v(1), d: 0 }.validate(m, true).is_err());
+        assert!(Op::<F>::Truncate { x: v(1), d: 58 }.validate(m, true).is_ok());
+        assert!(Op::<F>::Truncate { x: v(1), d: 59 }.validate(m, true).is_err());
+        assert!(Op::<F>::FixedMul { x: v(1), y: v(1), d: 16 }.validate(m, true).is_ok());
+        assert!(Op::<F>::FixedMul { x: v(1), y: v(2), d: 16 }.validate(m, true).is_err());
         // Over a non-Mersenne field only Mul, Add and Reveal validate.
-        assert!(Op::<F>::Mul { x: v(2), y: v(2) }.validate(None).is_ok());
-        assert!(Op::<F>::Reveal { x: v(2) }.validate(None).is_ok());
-        let err = Op::<F>::Compare { a: v(2), b: v(2) }.validate(None).unwrap_err();
+        assert!(Op::<F>::Mul { x: v(2), y: v(2) }.validate(None, false).is_ok());
+        assert!(Op::<F>::Reveal { x: v(2) }.validate(None, false).is_ok());
+        let err = Op::<F>::Compare { a: v(2), b: v(2) }.validate(None, false).unwrap_err();
         assert!(err.to_string().contains("Mersenne"), "{err}");
-        assert!(Op::<F>::Truncate { x: v(1), d: 4 }.validate(None).is_err());
+        assert!(Op::<F>::Truncate { x: v(1), d: 4 }.validate(None, false).is_err());
+        // MaskReveal needs uniform masks, which a non-Mersenne prime of the
+        // form 2^p_bits_0 − 2^p_bits_1 + 1 has; the Mersenne-only ops still
+        // do not run.
+        assert!(Op::<F>::MaskReveal { x: v(2) }.validate(None, true).is_ok());
+        let err = Op::<F>::MaskReveal { x: v(2) }.validate(None, false).unwrap_err();
+        assert!(err.to_string().contains("uniform masks"), "{err}");
+        assert!(Op::<F>::Compare { a: v(2), b: v(2) }.validate(None, true).is_err());
+        // LessThanPub, like MaskReveal, needs only uniform masks.
+        assert!(Op::<F>::LessThanPub { x: v(2), c: v(2) }.validate(None, true).is_ok());
+        assert!(Op::<F>::LessThanPub { x: v(2), c: v(2) }.validate(None, false).is_err());
+        assert!(Op::<F>::LessThanPub { x: v(2), c: v(3) }.validate(None, true).is_err());
         assert!(OpDepthInput::<F>::op(0, Op::Add { x: v(1), y: v(1) }).is_err());
     }
 
-    /// `1 ≤ m ≤ ℓ − 1 − κ`: up to 20 at ℓ = 61, up to 86 at ℓ = 127, none at
-    /// ℓ = 31, and only over a Mersenne prime field.
+    /// `1 ≤ m ≤ p_bits − 1 − κ`: up to 20 at p_bits = 61, up to 86 at
+    /// p_bits = 127, none at p_bits = 31, and only over a Mersenne prime
+    /// field.
     #[test]
     fn mod2m_validation() {
         let mod2m = |m| Op::<F>::Mod2m { x: v(2), m };
-        assert!(mod2m(1).validate(Some(61)).is_ok());
-        assert!(mod2m(20).validate(Some(61)).is_ok());
-        assert!(mod2m(0).validate(Some(61)).is_err());
-        assert!(mod2m(21).validate(Some(61)).is_err());
-        assert!(mod2m(86).validate(Some(127)).is_ok());
-        assert!(mod2m(87).validate(Some(127)).is_err());
-        let err = mod2m(1).validate(Some(31)).unwrap_err();
-        assert!(err.to_string().contains("ℓ = 31"), "{err}");
-        assert!(mod2m(1).validate(None).is_err());
+        assert!(mod2m(1).validate(Some(61), true).is_ok());
+        assert!(mod2m(20).validate(Some(61), true).is_ok());
+        assert!(mod2m(0).validate(Some(61), true).is_err());
+        assert!(mod2m(21).validate(Some(61), true).is_err());
+        assert!(mod2m(86).validate(Some(127), true).is_ok());
+        assert!(mod2m(87).validate(Some(127), true).is_err());
+        let err = mod2m(1).validate(Some(31), true).unwrap_err();
+        assert!(err.to_string().contains("p_bits = 31"), "{err}");
+        assert!(mod2m(1).validate(None, false).is_err());
         assert_eq!(mod2m(7).params(), OpParams::new(OpType::Mod2m { m: 7 }, 2));
         assert_eq!(OpParams::new(OpType::Mod2m { m: 7 }, 5).edabits(), 5);
         assert_eq!(format!("{:?}", mod2m(7)), "Mod2m(2 elements, m=7)");
