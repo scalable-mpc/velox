@@ -12,15 +12,19 @@ For every (parties n, signatures S) point of the grid this
   3. runs scripts/test_threshold_mldsa.sh (key generation, the preprocessing
      of S·B attempts, and the signatures of S messages; each party runs
      under /usr/bin/time) and waits for the syncer to report the output
-     phase. A memory guard adds up the resident memory of all parties each
-     second. When the total passes the budget, it stops the run and records
-     the status "over budget". The guard is only a safety stop: the
+     phase. A memory guard adds up the memory of all parties each second:
+     on macOS the physical footprint, which also counts the compressed and
+     the swapped memory (the resident memory does not); on Linux the
+     resident and the swapped memory. When the total passes the budget, it
+     stops the run and records the status "over budget". The guard is only a safety stop: the
      prediction must keep the runs below the budget;
   4. reads the phase latencies off the syncer log, the plan off party 0's log
      (op-depths, engine depths, edaBits, random bits), and off every party's
      log the time of the signing op-depths 6 to 9, the first passing attempt
      of each message, the number of signed messages and the RustCrypto
-     results; and off every party's /usr/bin/time output its peak memory;
+     results; and off every party's /usr/bin/time output its peak memory
+     (macOS: "peak memory footprint"; Linux: maximum resident set size). The
+     sum of these peaks is the column footprint_total_mb;
 
 and appends one row per run to a CSV. Repetitions are separate rows; the
 report step takes medians. The points run in order of growing memory: n
@@ -38,6 +42,8 @@ Needs release builds of threshold_mldsa and config.
 
 import argparse
 import csv
+import ctypes
+import ctypes.util
 import os
 import re
 import statistics
@@ -51,9 +57,10 @@ from bench_ops import ROOT, COMP, phase_latencies_in  # noqa: E402
 FIELDS = ["parties", "signatures", "attempts", "rep", "status", "op_depths", "engine_depths", "edabits",
           "random_bits", "preprocessing_ms", "circuit_ms", "verification_ms", "total_ms", "signing_ms",
           "signed", "parties_done", "rejected_parties", "passed_attempts",
-          "peak_party_mb", "median_party_mb", "peak_total_mb", "predicted_total_mb"]
+          "peak_party_mb", "median_party_mb", "peak_total_mb", "footprint_total_mb", "predicted_total_mb"]
 
 MB = 1 << 20
+LIBPROC = ctypes.CDLL(ctypes.util.find_library("proc")) if sys.platform == "darwin" else None
 
 
 def party_log(n, party):
@@ -88,18 +95,31 @@ def ensure_config(n):
                    stdout=subprocess.DEVNULL)
 
 
-def total_rss_mb():
-    """The resident memory of all threshold_mldsa processes, in MB."""
-    out = subprocess.run(["ps", "-axo", "rss=,comm="], capture_output=True, text=True).stdout
-    kb = sum(int(line.split(None, 1)[0]) for line in out.splitlines()
-             if line.strip().endswith("threshold_mldsa"))
-    return kb / 1024
+def total_memory_mb():
+    """The memory of all threshold_mldsa processes now, in MB. On macOS this is
+    the physical footprint (`ri_phys_footprint` of proc_pid_rusage), because
+    `ps` RSS does not count compressed or swapped memory: at n = 4, S = 4 the
+    RSS sum was 8.4 GB and the footprint sum 30.1 GB. On Linux it is VmRSS +
+    VmSwap."""
+    pids = subprocess.run(["pgrep", "-x", "threshold_mldsa"], capture_output=True, text=True).stdout.split()
+    total = 0
+    for pid in map(int, pids):
+        if sys.platform == "darwin":
+            info = ctypes.create_string_buffer(256)  # struct rusage_info_v0
+            if LIBPROC.proc_pid_rusage(pid, 0, info) == 0:
+                # 16-byte uuid, then 7 u64 fields before ri_phys_footprint
+                total += int.from_bytes(info.raw[72:80], "little")
+        else:
+            status = read(f"/proc/{pid}/status")
+            total += 1024 * sum(int(kb) for kb in re.findall(r"^Vm(?:RSS|Swap):\s+(\d+) kB", status, re.M))
+    return total / MB
 
 
 def peak_party_mb(n, party):
-    """The party's peak memory from /usr/bin/time: bytes on macOS, kbytes on Linux."""
+    """The party's peak memory from /usr/bin/time: the peak physical footprint
+    in bytes on macOS, the maximum resident set size in kbytes on Linux."""
     text = read(rss_file(n, party))
-    m = re.search(r"(\d+)\s+maximum resident set size", text)
+    m = re.search(r"(\d+)\s+peak memory footprint", text)
     if m:
         return int(m[1]) / MB
     m = re.search(r"Maximum resident set size \(kbytes\): (\d+)", text)
@@ -115,7 +135,7 @@ def run_point(n, signatures, attempts, rep, timeout, grace, limit_mb):
     start, status, peak_total, phases = time.time(), "timeout", 0.0, {}
     while time.time() - start < timeout:
         time.sleep(1)
-        peak_total = max(peak_total, total_rss_mb())
+        peak_total = max(peak_total, total_memory_mb())
         if peak_total > limit_mb:
             status = "over budget"
             break
@@ -158,6 +178,7 @@ def run_point(n, signatures, attempts, rep, timeout, grace, limit_mb):
     row.update(signing_ms=statistics.median(signing) if signing else None,
                signed=max(signed) if signed else None, parties_done=done, rejected_parties=rejected,
                peak_party_mb=round(max(memory)) if memory else None,
+               footprint_total_mb=round(sum(memory)) if len(memory) == n else None,
                median_party_mb=round(statistics.median(memory)) if memory else None)
     return row
 
@@ -166,9 +187,11 @@ def predicted_mb(rows, n, signatures):
     """The predicted peak memory of all parties of the point (n, S), in MB,
     or None when no point is measured yet.
 
-    A measured point gives the median of its runs. A run that the guard
-    stopped counts as infinite memory, so that point and all points that
-    are predicted from it are skipped. For a new point, each of these is an
+    A measured point gives the median of the footprint_total_mb of its runs:
+    the sum of the parties' peaks is an upper bound of their peak together.
+    Rows without footprint_total_mb (before 2026-11-03: `ps` RSS only) do not
+    count. A run that the guard stopped counts as infinite memory, so that
+    point and all points that are predicted from it are skipped. For a new point, each of these is an
     estimate from above, and the prediction is the smallest of them:
 
     - from the largest smaller n with the same S: the memory times n/n'.
@@ -180,8 +203,8 @@ def predicted_mb(rows, n, signatures):
     """
     measured = {}
     for r in rows:
-        if r["status"] in ("ok", "over budget") and r["peak_total_mb"]:
-            mb = float("inf") if r["status"] == "over budget" else float(r["peak_total_mb"])
+        if r["status"] == "over budget" or (r["status"] == "ok" and r.get("footprint_total_mb")):
+            mb = float("inf") if r["status"] == "over budget" else float(r["footprint_total_mb"])
             measured.setdefault((int(r["parties"]), int(r["signatures"])), []).append(mb)
     measured = {point: statistics.median(mbs) for point, mbs in measured.items()}
     if (n, signatures) in measured:
@@ -239,7 +262,7 @@ def median(group, column):
 def report(args):
     rows = list(csv.DictReader(open(os.path.join(ROOT, args.out))))
     columns = ["preprocessing_ms", "circuit_ms", "signing_ms", "verification_ms", "total_ms",
-               "peak_party_mb", "peak_total_mb", "predicted_total_mb"]
+               "peak_party_mb", "peak_total_mb", "footprint_total_mb", "predicted_total_mb"]
     print("| n | S | runs | status | random bits | edaBits | " + " | ".join(columns) + " | signed |")
     print("|---" * (len(columns) + 7) + "|")
     for n, s in sorted({(int(r["parties"]), int(r["signatures"])) for r in rows}):
