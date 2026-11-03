@@ -7,7 +7,7 @@
 //! accepts it.
 //!
 //! - [`mldsa`] — ML-DSA in the clear: the parameter sets and the public
-//!   arithmetic that every party computes alone.
+//!   arithmetic that every party computes alone, locally using linear operations on sharings.
 //! - [`small_coefficients`] — sharings of coefficients uniform in `[−η, η]`.
 //! - [`preprocessing`] — the sharings of the signing attempts.
 //! - [`signing`] — the responses of the attempts and their bound tests.
