@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque, HashSet};
 
-use fields::{LargeFieldSer, ProtocolField};
+use fields::ProtocolField;
 use types::Replica;
 use lambdaworks_math::field::element::FieldElement;
 
@@ -9,8 +9,8 @@ pub struct RandSharings<F: ProtocolField>{
     // index is the ACSS/Sh2t instance id). We hold the raw secrets here and deal
     // them one batch at a time so that only ~1 ACSS/Sh2t instance is in flight per
     // module at a time, keeping peak memory bounded for large batch sizes.
-    pub acss_pending: Vec<Vec<LargeFieldSer>>,
-    pub sh2t_pending: Vec<Vec<LargeFieldSer>>,
+    pub acss_pending: Vec<Vec<FieldElement<F>>>,
+    pub sh2t_pending: Vec<Vec<FieldElement<F>>>,
     // Index of the next batch to dispatch for each module (also equals the number
     // already dispatched; the in-flight batch is `cursor - 1`).
     pub acss_dispatch_cursor: usize,

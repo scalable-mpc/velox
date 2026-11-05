@@ -5,8 +5,9 @@ use fields::LargeFieldSer;
 use types::Replica;
 
 pub struct Sh2tState{
-    // Shares, Nonce, Blinding nonce share in each tuple
-    pub shares: HashMap<Replica, (Vec<LargeFieldSer>, LargeFieldSer)>,
+    // Shares (one flat buffer, see `fields::ser_be_flat`) and nonce share of
+    // each dealer
+    pub shares: HashMap<Replica, (Vec<u8>, LargeFieldSer)>,
     // Commitments to shares, commitments to blinding polynomial, and DZK polynomial
     pub commitments: HashMap<Replica, Vec<Hash>>,
     // Reliable Agreement

@@ -4,7 +4,6 @@ use crypto::hash::Hash;
 use types::Replica;
 
 use crate::msg::{AVIDShard};
-use consensus::CheckedShard;
 use crate::{AVIDState};
 
 use crate::Context;
@@ -76,12 +75,10 @@ impl Context {
             // rather than corrupt the output -- the check the explicit Merkle
             // root comparison used to perform.
             let commitment = shards_map.values().next().unwrap().0;
-            let checked: Vec<CheckedShard> =
-                shards_map.values().map(|(_, shard)| shard.clone()).collect();
 
             let message = match consensus::decode(
                 &commitment,
-                checked.iter(),
+                shards_map.values().map(|(_, shard)| shard),
                 self.num_nodes - 2 * self.num_faults,
                 2 * self.num_faults,
                 &self.hash_context,
@@ -99,7 +96,8 @@ impl Context {
             if avid_context.message.is_some(){
                 log::info!("Received n-f READY messages for AVID Instance ID {} from origin {}, terminating",instance_id, origin);
                 // Terminate protocol
-                let message = avid_context.message.clone().unwrap();
+                // The instance terminates here, so the message moves out.
+                let message = avid_context.message.take().unwrap();
                 avid_context.terminated = true;
                 if message.len() >= 32 && &message[0..32] == self.zero_hash{
                     log::info!("Received dummy message, not sending to parent process");

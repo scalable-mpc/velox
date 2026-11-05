@@ -13,7 +13,7 @@ use network::{
     plaintcp::{CancelHandler},
     Acknowledgement,
 };
-use fields::{LargeFieldSer, gen_roots_of_unity, ProtocolField};
+use fields::{gen_roots_of_unity, ProtocolField};
 //use signal_hook::{iterator::Signals, consts::{SIGINT, SIGTERM}};
 use tokio::{sync::{
     mpsc::{Receiver, Sender, channel},
@@ -53,8 +53,8 @@ pub struct Context<F: ProtocolField> {
 
     pub num_threads: usize,
     /// Input and output message queues for Reliable Broadcast
-    pub inp_acss: Receiver<(usize,Vec<LargeFieldSer>)>,
-    pub out_acss: Sender<(usize, Replica,Option<Vec<LargeFieldSer>>)>,
+    pub inp_acss: Receiver<(usize,Vec<FieldElement<F>>)>,
+    pub out_acss: Sender<(usize, Replica,Option<Vec<FieldElement<F>>>)>,
 
     /// CTRBC input and output channels
     pub inp_ctrbc: Sender<Vec<u8>>,
@@ -78,8 +78,8 @@ pub struct Context<F: ProtocolField> {
 impl<F: ProtocolField> Context<F>{
     pub fn spawn(
         config: Node,
-        input_msgs: Receiver<(usize,Vec<LargeFieldSer>)>, 
-        output_msgs: Sender<(usize, Replica, Option<Vec<LargeFieldSer>>)>,
+        input_msgs: Receiver<(usize,Vec<FieldElement<F>>)>, 
+        output_msgs: Sender<(usize, Replica, Option<Vec<FieldElement<F>>>)>,
         use_fft: bool, 
         _byz: bool
     ) -> anyhow::Result<(oneshot::Sender<()>, Vec<Result<oneshot::Sender<()>>>)> {
@@ -257,9 +257,7 @@ impl<F: ProtocolField> Context<F>{
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap()
                                 .as_millis());
-                    
-                    let secrets_field: Vec<FieldElement<F>> = secrets.into_iter().map(|secret| F::from_bytes_be(&secret).unwrap()).collect();
-                    self.init_sh2t(secrets_field, id).await;
+                    self.init_sh2t(secrets, id).await;
                 },
                 ctrbc_msg = self.recv_out_ctrbc.recv() =>{
                     let ctrbc_msg = ctrbc_msg.ok_or_else(||

@@ -84,7 +84,7 @@ impl Context {
         let sec_key_map = self.sec_key_map.clone();
         for (replica, sec_key) in sec_key_map.into_iter() {
             // TODO: Encryption
-            let avid_shards = party_wise_share_map.get(&replica).unwrap().clone();
+            let avid_shards = party_wise_share_map.remove(&replica).unwrap();
             
             let avid_msg = AVIDMsg {
                 shards: avid_shards,
@@ -93,7 +93,7 @@ impl Context {
             };
             
             let protocol_msg = ProtMsg::Init(avid_msg, instance_id);
-            let wrapper_msg = WrapperMsg::new(protocol_msg.clone(), self.myid, &sec_key.as_slice());
+            let wrapper_msg = WrapperMsg::new(protocol_msg, self.myid, &sec_key.as_slice());
             let cancel_handler: CancelHandler<Acknowledgement> = self.net_send.send(replica, wrapper_msg).await;
             self.add_cancel_handler(cancel_handler);
         }
@@ -132,8 +132,8 @@ impl Context {
         for index_msg in indices{
             let recipient = index_msg.recipient;
             let protocol_msg = ProtMsg::Echo(index_msg, instance_id);
-            let sec_key = self.sec_key_map.get(&recipient).unwrap().clone();
-            let wrapper_msg = WrapperMsg::new(protocol_msg.clone(), self.myid, &sec_key.as_slice());
+            let sec_key = self.sec_key_map.get(&recipient).unwrap();
+            let wrapper_msg = WrapperMsg::new(protocol_msg, self.myid, &sec_key.as_slice());
             let cancel_handler: CancelHandler<Acknowledgement> = self.net_send.send(recipient, wrapper_msg).await;
             self.add_cancel_handler(cancel_handler);
         }        

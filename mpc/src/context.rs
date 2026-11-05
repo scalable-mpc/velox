@@ -71,14 +71,14 @@ pub struct Context<F: ProtocolField, A: Application<F>> {
     pub max_id: usize, 
 
     /// Input and output message queues for Reliable Broadcast
-    pub acss_ab_send: Sender<(usize, Vec<LargeFieldSer>)>,
-    pub acss_ab_out_recv: Receiver<(usize, Replica, Option<Vec<LargeFieldSer>>)>,
+    pub acss_ab_send: Sender<(usize, Vec<FieldElement<F>>)>,
+    pub acss_ab_out_recv: Receiver<(usize, Replica, Option<Vec<FieldElement<F>>>)>,
 
     pub avss_send: Sender<(bool, Option<Vec<LargeFieldSer>>, Option<(Replica, Replica, AvssShare)>)>,
     pub avss_out_recv: Receiver<(bool, Option<(Replica,AvssShare)>, Option<(Replica,Replica,AvssShare)>)>,
 
-    pub sh2t_send: Sender<(usize, Vec<LargeFieldSer>)>,
-    pub sh2t_out_recv: Receiver<(usize, Replica, Option<Vec<LargeFieldSer>>)>,
+    pub sh2t_send: Sender<(usize, Vec<FieldElement<F>>)>,
+    pub sh2t_out_recv: Receiver<(usize, Replica, Option<Vec<FieldElement<F>>>)>,
 
     pub acs_event_send: Sender<(usize,Vec<u8>, Vec<Hash>)>,
     pub acs_out_recv: Receiver<(usize,Vec<u8>)>,

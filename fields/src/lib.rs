@@ -5,7 +5,7 @@ pub mod byte_conv;
 pub use byte_conv::ByteConversion;
 
 pub mod protocol_field;
-pub use protocol_field::{FieldSer, ProtocolField};
+pub use protocol_field::{ser_be_flat, FieldSer, ProtocolField};
 
 pub mod mersenne_prime;
 /// Fields with modulus `2^p_bits − 1`; what the comparison/truncation layer is
@@ -45,7 +45,7 @@ pub mod mul;
 pub use mul::*;
 
 pub mod par;
-pub use par::rayon_async;
+pub use par::{deserialize_shares_async, rayon_async};
 
 #[cfg(target_arch = "x86_64")]
 pub mod simd;

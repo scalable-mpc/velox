@@ -1,5 +1,4 @@
 use planner::api::engine::Application;
-use std::sync::Arc;
 
 use crate::{context::Context, msg::ProtMsg};
 use crypto::{hash::verf_mac};
@@ -9,11 +8,11 @@ use fields::ProtocolField;
 impl<F: ProtocolField, A: Application<F>> Context<F, A>{
     // This function verifies the Message Authentication Code (MAC) of a sent message
     // A node cannot impersonate as another node because of MACs
-    pub fn check_proposal(&self, wrapper_msg: Arc<WrapperMsg<ProtMsg>>) -> bool {
+    pub fn check_proposal(&self, wrapper_msg: &WrapperMsg<ProtMsg>) -> bool {
         // validate MAC
         let byte_val =
             bincode::serialize(&wrapper_msg.protmsg).expect("Failed to serialize object");
-        let sec_key = match self.sec_key_map.get(&wrapper_msg.clone().sender) {
+        let sec_key = match self.sec_key_map.get(&wrapper_msg.sender) {
             Some(val) => val,
             None => {
                 panic!("Secret key not available, this shouldn't happen")
@@ -28,11 +27,9 @@ impl<F: ProtocolField, A: Application<F>> Context<F, A>{
 
     pub(crate) async fn process_msg(&mut self, wrapper_msg: WrapperMsg<ProtMsg>) {
         log::trace!("Received protocol msg: {:?}", wrapper_msg);
-        let msg = Arc::new(wrapper_msg.clone());
-
         // Verify the message's authenticity before proceeding
-        if self.check_proposal(msg) {
-            match wrapper_msg.clone().protmsg {
+        if self.check_proposal(&wrapper_msg) {
+            match wrapper_msg.protmsg {
                 ProtMsg::ReconL1(bytes, depth) => {
                     log::debug!("Received reconstruction L1 shares for depth {} from node : {}", depth, wrapper_msg.sender);
                     self.handle_recon_l1(bytes, depth, wrapper_msg.sender).await;
